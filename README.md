@@ -37,23 +37,47 @@ npm start
 
 デフォルトで `http://localhost:8787` で起動します。
 
+### Claude Code CLI モード（APIキー不要）
+
+Claudeサブスクリプション（Claude Code）ユーザーは、APIキーなしでAI機能を使えます。
+
+```bash
+# 1. Claude Code をインストール（未インストールの場合）
+npm install -g @anthropic-ai/claude-code
+
+# 2. ログイン（初回のみ。対話モードを開いて /login）
+claude
+
+# 3. CLIバックエンドで起動
+BACKEND=cli npm start
+```
+
+注意:
+
+- **サブスクリプションの利用上限を消費します**（AI実行のたびに Claude Code の1リクエストとしてカウントされます）。
+- **画像は渡されません**（テキストグリッドのみでAIが判断します。見た目依存の指示は精度が下がる場合があります）。
+- モデルは `CLI_MODEL`（既定 `sonnet`）で指定します。本文ストリーミングは行われず、完了時に結果がまとめて届きます（実行中は30秒ごとの進捗ハートビートのみ）。
+- 現在のバックエンドはキャンバス下部に表示されます（「バックエンド: API / Claude Code CLI / MOCK」）。
+
 ### MOCKモード（APIキー無しで動作確認）
 
 ```bash
 MOCK=1 npm start
 ```
 
-APIを呼ばず、選択範囲（選択が無ければフレーム全体の中央8×8）をパレット最後の色で塗るパッチを2秒かけて疑似ストリーミングで返します。UI・SSE通信・パッチ適用の動作確認用です。
+APIを呼ばず、選択範囲（選択が無ければフレーム全体の中央8×8）をパレット最後の色で塗るパッチを2秒かけて疑似ストリーミングで返します。UI・SSE通信・パッチ適用の動作確認用です。`MOCK=1` は `BACKEND` 指定より優先されます。
 
 ## 環境変数
 
 | 変数 | 既定値 | 説明 |
 |---|---|---|
 | `PORT` | `8787` | サーバーのリッスンポート |
-| `MODEL` | `claude-opus-4-8` | 使用するClaudeモデル |
-| `EFFORT` | `medium` | 構造化出力の `output_config.effort` |
-| `MOCK` | 未設定 | `1` を指定するとAPIを呼ばずモック応答を返す |
-| `ANTHROPIC_API_KEY` | — | Anthropic APIキー（MOCK=1 の場合は不要） |
+| `BACKEND` | `api` | `api` = Anthropic API / `cli` = ローカルの Claude Code CLI |
+| `MODEL` | `claude-opus-4-8` | 使用するClaudeモデル（BACKEND=api） |
+| `CLI_MODEL` | `sonnet` | 使用するモデル（BACKEND=cli） |
+| `EFFORT` | `medium` | 構造化出力の `output_config.effort`（BACKEND=api） |
+| `MOCK` | 未設定 | `1` を指定するとAPIを呼ばずモック応答を返す（BACKENDより優先） |
+| `ANTHROPIC_API_KEY` | — | Anthropic APIキー（BACKEND=api のとき必要。MOCK=1 / BACKEND=cli では不要） |
 
 ## 使い方
 

@@ -527,6 +527,24 @@ function initGlobalShortcuts() {
 // ---------------------------------------------------------------------------
 // 起動
 // ---------------------------------------------------------------------------
+// サーバー設定を取得してバックエンド表示（§15.1）
+async function initBackendLabel() {
+  const label = document.getElementById("backendLabel");
+  try {
+    const res = await fetch("/api/config");
+    const cfg = await res.json();
+    const name = cfg.mock ? "MOCK" : cfg.backend === "cli" ? "Claude Code CLI" : "API";
+    label.textContent = `バックエンド: ${name}`;
+    label.title = cfg.mock
+      ? "MOCKモード（APIを呼びません）"
+      : cfg.backend === "cli"
+        ? `Claude Code CLI（モデル: ${cfg.cliModel}。画像は送信されません）`
+        : `Anthropic API（モデル: ${cfg.model}, effort: ${cfg.effort}）`;
+  } catch {
+    label.textContent = "バックエンド: 不明";
+  }
+}
+
 function main() {
   initHeader();
   initGlobalShortcuts();
@@ -534,6 +552,7 @@ function main() {
   initTimeline(store, toast);
   initAi(store, toast);
   initRig(store, toast);
+  initBackendLabel();
   store.notify();
   // デバッグ/E2Eテスト用フック（UIには影響しない）
   window.aiMeglio = { store };

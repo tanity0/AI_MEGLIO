@@ -6,6 +6,7 @@ import fs from "node:fs/promises";
 import fssync from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawn } from "node:child_process";
 import Anthropic from "@anthropic-ai/sdk";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -15,6 +16,10 @@ const PORT = Number(process.env.PORT || 8787);
 const MODEL = process.env.MODEL || "claude-opus-4-8";
 const EFFORT = process.env.EFFORT || "medium";
 const MOCK = process.env.MOCK === "1";
+const BACKEND = process.env.BACKEND === "cli" ? "cli" : "api"; // §15.1: api（既定）| cli
+const CLI_MODEL = process.env.CLI_MODEL || "sonnet";
+const CLI_TIMEOUT_MS = 180 * 1000; // §15.2: タイムアウト180秒
+const CLI_CONCURRENCY = 2; // §15.2: 同時実行2のキュー
 
 const MAX_BODY_BYTES = 5 * 1024 * 1024; // 5MB 上限
 
@@ -326,25 +331,10 @@ const PRESET_LABELS = { walk: "歩き", run: "走り", attack: "攻撃", idle: "
 const MAGNITUDE_LABELS = { small: "小", medium: "中", large: "大" };
 const FACING_LABELS = { keep: "そのまま", right: "横（右向き）", left: "横（左向き）" };
 
-function buildUserContent(body) {
-  const { project, scope, frameIndex, selection, instruction, images, mode, baseFrameGrid, lockedRects, motion, allowedMask } = body;
+// ユーザープロンプトのテキスト部（全バックエンド共通）
+function buildUserText(body) {
+  const { project, scope, frameIndex, selection, instruction, mode, baseFrameGrid, lockedRects, motion, allowedMask } = body;
   const { width, height, fps, palette, framesGrid } = project;
-
-  const content = [];
-
-  if (Array.isArray(images)) {
-    for (const im of images) {
-      content.push({
-        type: "image",
-        source: {
-          type: "base64",
-          media_type: "image/png",
-          data: extractBase64FromDataUrl(im.dataUrl),
-        },
-      });
-      content.push({ type: "text", text: `↑ フレーム${im.frame} の参考画像（8倍拡大PNG）` });
-    }
-  }
 
   const paletteText = palette
     .map((color, i) => `${charForIndex(i)}: ${color}`)
@@ -399,7 +389,7 @@ function buildUserContent(body) {
     motionSection = `\n## モーション生成モード\nベースフレームを基に、以下の設定でモーションの全フレームを newFrames として生成してください。edits と paletteChanges は空配列にしてください。\n${lines.join("\n")}\n`;
   }
 
-  const text = `## キャンバス
+  return `## キャンバス
 サイズ: ${width}x${height}, fps: ${fps}
 
 ## パレット（index: 色）
@@ -412,9 +402,12 @@ ${lockedSection}${segmentSection}${cleanupSection}${motionSection}
 
 ## 編集指示
 ${instruction}`;
+}
 
-  content.push({ type: "text", text });
-  return content;
+// リクエストから画像（base64）を正規化して取り出す
+function buildImages(body) {
+  if (!Array.isArray(body.images)) return [];
+  return body.images.map((im) => ({ frame: im.frame, data: extractBase64FromDataUrl(im.dataUrl) }));
 }
 
 // ---------------------------------------------------------------------------
@@ -814,73 +807,224 @@ async function runMock(body, res, aborted) {
 }
 
 // ---------------------------------------------------------------------------
-// 実API呼び出し
+// バックエンド抽象化（§15.3）: callBackend({ systemText, userText, images, schema, onDelta })
+// api / cli の2実装（mock は runMock が最優先で処理）。
+// 戻り値: { text, usage } — text はモデルのJSONテキスト（cliはフェンス除去済み）
+// ---------------------------------------------------------------------------
+function userError(msg) {
+  const e = new Error(msg);
+  e.userFacing = true; // describeAnthropicError でそのまま表示する
+  return e;
+}
+
+async function callBackend(opts) {
+  if (BACKEND === "cli") return callBackendCli(opts);
+  return callBackendApi(opts);
+}
+
+// --- BACKEND=api: @anthropic-ai/sdk（現行どおり・§6の形状） ---
+async function callBackendApi({ systemText, userText, images, schema, onDelta, registerCancel }) {
+  const client = new Anthropic();
+  const content = [];
+  for (const im of images) {
+    content.push({ type: "image", source: { type: "base64", media_type: "image/png", data: im.data } });
+    content.push({ type: "text", text: `↑ フレーム${im.frame} の参考画像（8倍拡大PNG）` });
+  }
+  content.push({ type: "text", text: userText });
+
+  const stream = client.messages.stream({
+    model: MODEL,
+    max_tokens: 64000,
+    thinking: { type: "adaptive" },
+    output_config: {
+      effort: EFFORT,
+      format: { type: "json_schema", schema },
+    },
+    system: [{ type: "text", text: systemText, cache_control: { type: "ephemeral" } }],
+    messages: [{ role: "user", content }],
+  });
+
+  registerCancel(() => { try { stream.abort(); } catch {} });
+  stream.on("text", (delta) => onDelta(delta));
+  stream.on("error", () => { /* finalMessage() 側で処理 */ });
+
+  const final = await stream.finalMessage();
+  if (final.stop_reason === "refusal") {
+    throw userError("モデルがこの指示への応答を拒否しました。指示内容を変えて再試行してください。");
+  }
+  if (final.stop_reason === "max_tokens") {
+    throw userError("出力がトークン上限に達しました。指示の範囲を狭めて再試行してください。");
+  }
+  const textBlock = final.content.find((b) => b.type === "text");
+  if (!textBlock || !textBlock.text) {
+    throw userError("モデルからの応答にテキストが含まれていませんでした。");
+  }
+  return { text: textBlock.text, usage: final.usage || {} };
+}
+
+// --- BACKEND=cli: claude CLI を spawn（§15.2） ---
+let cliActive = 0;
+const cliWaiters = [];
+function acquireCliSlot() {
+  return new Promise((resolve) => {
+    if (cliActive < CLI_CONCURRENCY) {
+      cliActive++;
+      resolve();
+    } else {
+      cliWaiters.push(resolve);
+    }
+  });
+}
+function releaseCliSlot() {
+  const next = cliWaiters.shift();
+  if (next) {
+    next(); // スロットを引き継ぐ（cliActive は据え置き）
+  } else {
+    cliActive--;
+  }
+}
+
+function stripCodeFence(text) {
+  const t = text.trim();
+  const m = /^```[a-zA-Z]*\r?\n([\s\S]*?)\r?\n?```$/.exec(t);
+  return m ? m[1].trim() : t;
+}
+
+function spawnClaudeCli(prompt, { registerCancel }) {
+  return new Promise((resolve, reject) => {
+    let child;
+    try {
+      child = spawn("claude", ["-p", "--output-format", "json", "--model", CLI_MODEL], {
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+    } catch (err) {
+      reject(err);
+      return;
+    }
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const settle = (fn, arg) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn(arg);
+    };
+    const timer = setTimeout(() => {
+      try { child.kill("SIGKILL"); } catch {}
+      settle(reject, userError("Claude Code CLI がタイムアウトしました（180秒）。指示の範囲を狭めて再試行してください。"));
+    }, CLI_TIMEOUT_MS);
+
+    registerCancel(() => {
+      try { child.kill("SIGKILL"); } catch {}
+      const e = new Error("リクエストが中断されました。");
+      e.name = "AbortError";
+      settle(reject, e);
+    });
+
+    child.on("error", (err) => {
+      if (err && err.code === "ENOENT") {
+        settle(reject, userError("Claude Code CLI が見つかりません。`npm install -g @anthropic-ai/claude-code` の上 `claude` にログインしてください。"));
+      } else {
+        settle(reject, userError(`Claude Code CLI の起動に失敗しました: ${err.message}`));
+      }
+    });
+    child.stdout.on("data", (d) => { stdout += d; });
+    child.stderr.on("data", (d) => { stderr += d; });
+    child.on("close", (code) => {
+      if (code !== 0) {
+        settle(reject, userError(`Claude Code CLI がエラー終了しました (code ${code}): ${stderr.slice(0, 200)}`));
+        return;
+      }
+      settle(resolve, stdout);
+    });
+
+    child.stdin.write(prompt);
+    child.stdin.end();
+  });
+}
+
+async function callBackendCli({ systemText, userText, schema, onDelta, registerCancel }) {
+  // 構造化出力APIは使えないため、スキーマをプロンプト末尾に埋め込む（§15.2）
+  const basePrompt = `${systemText}
+
+${userText}
+
+## 出力形式（厳守）
+出力は次のJSON Schemaに厳密に従うJSONのみを返すこと。コードフェンス（\`\`\`）や説明文は一切禁止。
+${JSON.stringify(schema)}`;
+
+  await acquireCliSlot();
+  const heartbeat = setInterval(() => onDelta("…"), 30 * 1000); // 進捗ハートビート（§15.2）
+  try {
+    const runOnce = async (prompt) => {
+      const stdout = await spawnClaudeCli(prompt, { registerCancel });
+      let envelope;
+      try {
+        envelope = JSON.parse(stdout);
+      } catch {
+        throw userError("Claude Code CLI の応答エンベロープの解析に失敗しました。");
+      }
+      if (typeof envelope.result !== "string") {
+        throw userError("Claude Code CLI の応答に result フィールドがありません。");
+      }
+      return stripCodeFence(envelope.result);
+    };
+
+    let text = await runOnce(basePrompt);
+    try {
+      JSON.parse(text);
+    } catch {
+      // パース失敗時は1回だけリトライ（§15.2）
+      onDelta("…");
+      text = await runOnce(`${basePrompt}
+
+前回の出力はJSONとして解析できませんでした。今度こそ、JSONのみで再出力してください。`);
+      try {
+        JSON.parse(text);
+      } catch {
+        throw userError("Claude Code CLI の出力をJSONとして解析できませんでした（リトライ後も失敗）。");
+      }
+    }
+    return { text, usage: { backend: "cli", model: CLI_MODEL } };
+  } finally {
+    clearInterval(heartbeat);
+    releaseCliSlot();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 実AI呼び出し（バックエンド共通のSSE整形・検証。§15.3: この層は backend に依存しない）
 // ---------------------------------------------------------------------------
 async function runReal(body, res, aborted) {
-  const client = new Anthropic();
-  const userContent = buildUserContent(body);
+  const schema = body.mode === "segment" ? SEGMENT_SCHEMA : PATCH_SCHEMA;
+  const includeImages = BACKEND !== "cli"; // §15.2: CLIモードは画像を渡さない
+  const images = includeImages ? buildImages(body) : [];
+  const userText = buildUserText(body);
 
-  let stream;
-  try {
-    stream = client.messages.stream({
-      model: MODEL,
-      max_tokens: 64000,
-      thinking: { type: "adaptive" },
-      output_config: {
-        effort: EFFORT,
-        format: { type: "json_schema", schema: body.mode === "segment" ? SEGMENT_SCHEMA : PATCH_SCHEMA },
-      },
-      system: [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }],
-      messages: [{ role: "user", content: userContent }],
-    });
-  } catch (err) {
-    sseSend(res, { type: "error", message: describeAnthropicError(err) });
-    res.end();
-    return;
-  }
-
+  const cancelFns = [];
   const onClose = () => {
     aborted.value = true;
-    try { stream.abort(); } catch {}
+    for (const fn of cancelFns) { try { fn(); } catch {} }
   };
   res.req.on("close", onClose);
 
-  stream.on("text", (delta) => {
-    if (aborted.value) return;
-    sseSend(res, { type: "delta", text: delta });
-  });
-
-  stream.on("error", (err) => {
-    // finalMessage() 側の catch でも処理するが、念のためログ
-  });
-
   try {
-    const final = await stream.finalMessage();
+    const { text, usage } = await callBackend({
+      systemText: SYSTEM_PROMPT,
+      userText,
+      images,
+      schema,
+      onDelta: (delta) => { if (!aborted.value) sseSend(res, { type: "delta", text: delta }); },
+      registerCancel: (fn) => cancelFns.push(fn),
+    });
     res.req.off("close", onClose);
     if (aborted.value) { res.end(); return; }
 
-    if (final.stop_reason === "refusal") {
-      sseSend(res, { type: "error", message: "モデルがこの指示への応答を拒否しました。指示内容を変えて再試行してください。" });
-      res.end();
-      return;
-    }
-    if (final.stop_reason === "max_tokens") {
-      sseSend(res, { type: "error", message: "出力がトークン上限に達しました。指示の範囲を狭めて再試行してください。" });
-      res.end();
-      return;
-    }
-
-    const textBlock = final.content.find((b) => b.type === "text");
-    if (!textBlock || !textBlock.text) {
-      sseSend(res, { type: "error", message: "モデルからの応答にテキストが含まれていませんでした。" });
-      res.end();
-      return;
-    }
-
     let raw;
     try {
-      raw = JSON.parse(textBlock.text);
-    } catch (err) {
+      raw = JSON.parse(text);
+    } catch {
       sseSend(res, { type: "error", message: "モデル出力のJSON解析に失敗しました。" });
       res.end();
       return;
@@ -889,15 +1033,13 @@ async function runReal(body, res, aborted) {
     try {
       if (body.mode === "segment") {
         const segment = validateSegment(raw, body);
-        sseSend(res, { type: "result", segment, usage: final.usage || {} });
+        sseSend(res, { type: "result", segment, usage });
       } else {
         const patch = validateAndClampPatch(raw, body);
-        sseSend(res, { type: "result", patch, usage: final.usage || {} });
+        sseSend(res, { type: "result", patch, usage });
       }
     } catch (err) {
       sseSend(res, { type: "error", message: `結果の検証に失敗しました: ${err.message}` });
-      res.end();
-      return;
     }
     res.end();
   } catch (err) {
@@ -909,6 +1051,9 @@ async function runReal(body, res, aborted) {
 }
 
 function describeAnthropicError(err) {
+  if (err && err.userFacing) {
+    return err.message;
+  }
   if (err instanceof Anthropic.AuthenticationError) {
     return "ANTHROPIC_API_KEY を設定してください。";
   }
@@ -940,7 +1085,7 @@ function describeAnthropicError(err) {
 // ルーティング
 // ---------------------------------------------------------------------------
 async function handleApiConfig(req, res) {
-  const body = JSON.stringify({ model: MODEL, effort: EFFORT, mock: MOCK });
+  const body = JSON.stringify({ model: MODEL, effort: EFFORT, mock: MOCK, backend: BACKEND, cliModel: CLI_MODEL });
   res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Content-Length": Buffer.byteLength(body) });
   res.end(body);
 }
@@ -1005,5 +1150,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`AI Meglio server listening on http://localhost:${PORT} (MOCK=${MOCK ? "1" : "0"}, MODEL=${MODEL}, EFFORT=${EFFORT})`);
+  console.log(`AI Meglio server listening on http://localhost:${PORT} (MOCK=${MOCK ? "1" : "0"}, BACKEND=${BACKEND}, MODEL=${BACKEND === "cli" ? CLI_MODEL : MODEL}, EFFORT=${EFFORT})`);
 });
