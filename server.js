@@ -82,6 +82,36 @@ const PATCH_SCHEMA = {
   additionalProperties: false,
 };
 
+// パーツ自動分割（mode=segment）用スキーマ（§14.2 / §14.6）
+const SEGMENT_SCHEMA = {
+  type: "object",
+  properties: {
+    parts: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          name: { type: "string" },
+          x: { type: "integer" },
+          y: { type: "integer" },
+          w: { type: "integer" },
+          h: { type: "integer" },
+          pivotX: { type: "integer" },
+          pivotY: { type: "integer" },
+          z: { type: "integer" },
+          parent: { type: "string" },
+        },
+        required: ["id", "name", "x", "y", "w", "h", "pivotX", "pivotY", "z", "parent"],
+        additionalProperties: false,
+      },
+    },
+    note: { type: "string" },
+  },
+  required: ["parts", "note"],
+  additionalProperties: false,
+};
+
 const SYSTEM_PROMPT = `あなたはドット絵アニメーションの精密編集エンジンです。
 
 ## グリッド表現
@@ -104,6 +134,12 @@ const SYSTEM_PROMPT = `あなたはドット絵アニメーションの精密編
 
 ## ロック領域
 リクエストに「ロック領域」が含まれる場合、その矩形内のセルは変更禁止です。ロック領域内のセルへの編集はサーバー側でベースの値に強制上書きされます。ロック領域を避けて編集してください。
+
+## パーツ自動分割（segmentモードのとき適用）
+ベースフレームのキャラクターを「頭 / 胴 / 右腕 / 左腕 / 右脚 / 左脚 / 武器」などの意味のあるパーツ矩形に分割してください。各パーツには回転の支点 pivot（肩・股関節・首の付け根など。パッチ内のローカル座標）と描画順 z（小さいほど奥）、親パーツid（胴を親にするのが基本。親が無ければ空文字列 ""）を与えてください。パーツの矩形はキャンバス座標で、重なり・隙間があっても構いません。結果はユーザーが調整可能な下書きです。
+
+## AI清書（cleanupモードのとき適用）
+リグ合成で生じた回転ジャギー・パーツ継ぎ目の隙間を、パレット内の色・最小差分で修正してください。変更許可セル（リクエストに含まれるマスクで '1' のセル）以外への編集はサーバー側で破棄されます。newFrames と paletteChanges は使わず、対象フレームへの edits のみを返してください。
 
 ## モーション生成の定石（モーション生成モードのとき適用）
 - 歩き（4フレーム）: コンタクト→ダウン→パッシング→アップ。左右の足は前後が入れ替わる。接地（コンタクト/ダウン）フレームで体が最も低い。腕は足と逆位相に振る。
@@ -195,7 +231,7 @@ const MOTION_FACINGS = ["keep", "right", "left"];
 
 function validateEditRequest(body) {
   if (!body || typeof body !== "object") throw new Error("リクエストが不正です");
-  const { project, scope, frameIndex, selection, instruction, images, mode, baseFrameGrid, lockedRects, motion } = body;
+  const { project, scope, frameIndex, selection, instruction, images, mode, baseFrameGrid, lockedRects, motion, allowedMask } = body;
   if (!project || typeof project !== "object") throw new Error("project が必要です");
   const { width, height, fps, palette, framesGrid } = project;
   if (!Number.isInteger(width) || width < 8 || width > 96) throw new Error("width が不正です");
@@ -220,8 +256,8 @@ function validateEditRequest(body) {
   if (typeof instruction !== "string" || !instruction.trim()) throw new Error("instruction が必要です");
   if (instruction.length > 2000) throw new Error("instruction が長すぎます");
 
-  // --- §13.4 追加フィールド ---
-  if (mode !== undefined && !["patch", "motion"].includes(mode)) throw new Error("mode が不正です");
+  // --- §13.4 / §14.6 追加フィールド ---
+  if (mode !== undefined && !["patch", "motion", "segment", "cleanup"].includes(mode)) throw new Error("mode が不正です");
   if (baseFrameGrid !== undefined && baseFrameGrid !== null) {
     if (typeof baseFrameGrid !== "string") throw new Error("baseFrameGrid が不正です");
     const rows = baseFrameGrid.split("\n");
@@ -238,6 +274,19 @@ function validateEditRequest(body) {
       if (x < 0 || y < 0 || w <= 0 || h <= 0 || x + w > width || y + h > height) {
         throw new Error("lockedRects がキャンバス範囲外です");
       }
+    }
+  }
+  if (mode === "segment") {
+    if (!baseFrameGrid) throw new Error("mode=segment では baseFrameGrid が必要です");
+  }
+  if (mode === "cleanup") {
+    if (!Number.isInteger(frameIndex) || frameIndex < 0 || frameIndex >= framesGrid.length) {
+      throw new Error("mode=cleanup では対象の frameIndex が必要です");
+    }
+    if (typeof allowedMask !== "string") throw new Error("mode=cleanup では allowedMask が必要です");
+    const maskRows = allowedMask.split("\n");
+    if (maskRows.length !== height || !maskRows.every((r) => r.length === width && /^[01]*$/.test(r))) {
+      throw new Error("allowedMask のサイズまたは文字が不正です");
     }
   }
   if (mode === "motion") {
@@ -278,7 +327,7 @@ const MAGNITUDE_LABELS = { small: "小", medium: "中", large: "大" };
 const FACING_LABELS = { keep: "そのまま", right: "横（右向き）", left: "横（左向き）" };
 
 function buildUserContent(body) {
-  const { project, scope, frameIndex, selection, instruction, images, mode, baseFrameGrid, lockedRects, motion } = body;
+  const { project, scope, frameIndex, selection, instruction, images, mode, baseFrameGrid, lockedRects, motion, allowedMask } = body;
   const { width, height, fps, palette, framesGrid } = project;
 
   const content = [];
@@ -327,6 +376,16 @@ function buildUserContent(body) {
     lockedSection = `\n## ロック領域（変更禁止。編集してもベースの値に強制上書きされる）\n${rects}\n`;
   }
 
+  let segmentSection = "";
+  if (mode === "segment") {
+    segmentSection = `\n## パーツ自動分割モード\nベースフレームのキャラクターを意味のあるパーツ矩形（頭/胴/右腕/左腕/右脚/左脚/武器 など、存在するものだけ）に分割し、スキーマに従って parts を返してください。id は英数字の短い識別子（例: head, torso, arm_r）、pivot はパッチ内ローカル座標の回転支点、z は描画順（小さいほど奥）、parent は親パーツの id（無ければ ""）です。\n`;
+  }
+
+  let cleanupSection = "";
+  if (mode === "cleanup" && typeof allowedMask === "string") {
+    cleanupSection = `\n## AI清書モード（対象: フレーム${frameIndex}）\nリグ合成による回転ジャギー・継ぎ目の隙間を最小差分で清書してください。以下のマスクで '1' のセルだけ変更が許可されています（'0' のセルへの edits はサーバー側で破棄されます）。\n${allowedMask}\n`;
+  }
+
   let motionSection = "";
   if (mode === "motion" && motion) {
     const lines = [
@@ -348,7 +407,7 @@ ${paletteText}
 ${baseSection}
 ## 現在のフレーム（テキストグリッド）
 ${framesText}
-${lockedSection}${motionSection}
+${lockedSection}${segmentSection}${cleanupSection}${motionSection}
 ## ${scopeText}
 
 ## 編集指示
@@ -504,6 +563,36 @@ function validateAndClampPatch(rawPatch, body) {
     cleanPaletteChanges.length = 0;
   }
 
+  // --- AI清書（§14.4-2）: 許可セル（allowedMask='1'）外の edits を破棄 ---
+  if (mode === "cleanup" && typeof body.allowedMask === "string") {
+    const maskRows = body.allowedMask.split("\n");
+    let discarded = 0;
+    for (const e of cleanEdits) {
+      e.rows = e.rows.map((row, ry) => {
+        let out = "";
+        for (let rx = 0; rx < row.length; rx++) {
+          const ax = e.x + rx, ay = e.y + ry;
+          if (row[rx] !== "?" && maskRows[ay][ax] !== "1") {
+            discarded++;
+            out += "?";
+          } else {
+            out += row[rx];
+          }
+        }
+        return out;
+      });
+    }
+    if (discarded > 0) warnings.push(`許可セル外の ${discarded} セルの編集を破棄しました`);
+    if (cleanNewFrames.length > 0) {
+      warnings.push(`清書モードのため newFrames（${cleanNewFrames.length}件）を破棄しました`);
+      cleanNewFrames.length = 0;
+    }
+    if (cleanPaletteChanges.length > 0) {
+      warnings.push(`清書モードのため paletteChanges（${cleanPaletteChanges.length}件）を破棄しました`);
+      cleanPaletteChanges.length = 0;
+    }
+  }
+
   return {
     edits: cleanEdits,
     newFrames: cleanNewFrames,
@@ -511,6 +600,54 @@ function validateAndClampPatch(rawPatch, body) {
     note,
     warnings,
   };
+}
+
+// ---------------------------------------------------------------------------
+// segment レスポンスの検証（§14.2）
+// ---------------------------------------------------------------------------
+function validateSegment(rawSegment, body) {
+  const warnings = [];
+  const { width, height } = body.project;
+  if (!rawSegment || typeof rawSegment !== "object") throw new Error("segment結果の形式が不正です");
+  const rawParts = Array.isArray(rawSegment.parts) ? rawSegment.parts : [];
+  const note = typeof rawSegment.note === "string" ? rawSegment.note : "";
+
+  const parts = [];
+  const seenIds = new Set();
+  for (const p of rawParts) {
+    if (!p || typeof p !== "object") continue;
+    const { id, name, x, y, w, h, pivotX, pivotY, z, parent } = p;
+    if (typeof id !== "string" || !/^[a-zA-Z0-9_-]{1,32}$/.test(id) || seenIds.has(id)) {
+      warnings.push("id が不正または重複するパーツを無視しました");
+      continue;
+    }
+    if (typeof name !== "string" || !name.trim()) {
+      warnings.push(`パーツ ${id} の name が不正なため無視しました`);
+      continue;
+    }
+    if (![x, y, w, h, pivotX, pivotY, z].every(Number.isInteger)) {
+      warnings.push(`パーツ ${id} の数値が不正なため無視しました`);
+      continue;
+    }
+    if (x < 0 || y < 0 || w <= 0 || h <= 0 || x + w > width || y + h > height) {
+      warnings.push(`パーツ ${id} の矩形がキャンバス範囲外のため無視しました`);
+      continue;
+    }
+    const px = Math.max(0, Math.min(w - 1, pivotX));
+    const py = Math.max(0, Math.min(h - 1, pivotY));
+    if (px !== pivotX || py !== pivotY) warnings.push(`パーツ ${id} の pivot をパッチ内に丸めました`);
+    parts.push({ id, name: name.trim().slice(0, 32), x, y, w, h, pivotX: px, pivotY: py, z, parent: typeof parent === "string" ? parent : "" });
+    seenIds.add(id);
+  }
+  // 親の存在チェック（無ければ "" に）
+  for (const p of parts) {
+    if (p.parent && !seenIds.has(p.parent)) {
+      warnings.push(`パーツ ${p.id} の親 ${p.parent} が存在しないため解除しました`);
+      p.parent = "";
+    }
+    if (p.parent === p.id) p.parent = "";
+  }
+  return { parts, note, warnings };
 }
 
 // 矩形(sx,sy,sw,sh)にrows(x,yから始まる)をクリップする
@@ -565,13 +702,51 @@ function sseSend(res, obj) {
 // MOCKモード: 選択範囲（なければフレーム全体の中央8x8）をパレット最後の色で塗る
 // ---------------------------------------------------------------------------
 async function runMock(body, res, aborted) {
-  const { project, scope, frameIndex, selection, mode, baseFrameGrid, motion } = body;
+  const { project, scope, frameIndex, selection, mode, baseFrameGrid, motion, allowedMask } = body;
   const { width, height, palette } = project;
   const lastIdx = palette.length - 1;
   const ch = charForIndex(lastIdx) || "1";
 
   let fakePatch;
-  if (mode === "motion" && motion && baseFrameGrid) {
+  if (mode === "segment") {
+    // 固定の3パーツ（頭・胴・脚）を比率で返す
+    const tw = Math.max(2, Math.floor(width * 0.4));
+    const tx = Math.floor((width - tw) / 2);
+    const headH = Math.max(2, Math.floor(height * 0.25));
+    const torsoH = Math.max(2, Math.floor(height * 0.3));
+    const legsH = Math.max(2, Math.floor(height * 0.2));
+    const headY = Math.max(0, Math.floor(height * 0.1));
+    const torsoY = Math.min(height - torsoH, headY + headH);
+    const legsY = Math.min(height - legsH, torsoY + torsoH);
+    fakePatch = {
+      parts: [
+        { id: "torso", name: "胴", x: tx, y: torsoY, w: tw, h: torsoH, pivotX: Math.floor(tw / 2), pivotY: Math.floor(torsoH / 2), z: 1, parent: "" },
+        { id: "head", name: "頭", x: tx, y: headY, w: tw, h: headH, pivotX: Math.floor(tw / 2), pivotY: headH - 1, z: 2, parent: "torso" },
+        { id: "legs", name: "脚", x: tx, y: legsY, w: tw, h: legsH, pivotX: Math.floor(tw / 2), pivotY: 0, z: 0, parent: "torso" },
+      ],
+      note: "MOCK: 頭・胴・脚の3パーツに分割しました（下書き）",
+    };
+  } else if (mode === "cleanup" && typeof allowedMask === "string") {
+    // 許可セルの先頭1セル + 許可外の先頭1セルへの edits を返す
+    // （許可外セルはサーバー側の破棄処理の確認用）
+    const maskRows = allowedMask.split("\n");
+    let allowed = null, denied = null;
+    for (let y = 0; y < height && (!allowed || !denied); y++) {
+      for (let x = 0; x < width && (!allowed || !denied); x++) {
+        if (maskRows[y][x] === "1" && !allowed) allowed = { x, y };
+        if (maskRows[y][x] === "0" && !denied) denied = { x, y };
+      }
+    }
+    const edits = [];
+    if (allowed) edits.push({ frame: frameIndex, x: allowed.x, y: allowed.y, rows: [ch] });
+    if (denied) edits.push({ frame: frameIndex, x: denied.x, y: denied.y, rows: [ch] });
+    fakePatch = {
+      edits,
+      newFrames: [],
+      paletteChanges: [],
+      note: "MOCK: 許可セル1点を清書（許可外1点はサーバーで破棄されるはず）",
+    };
+  } else if (mode === "motion" && motion && baseFrameGrid) {
     // ベースフレームのコピーを上下にシフトした newFrames を motion.frames 枚生成
     const baseRows = baseFrameGrid.split("\n");
     const blankRow = ".".repeat(width);
@@ -624,15 +799,17 @@ async function runMock(body, res, aborted) {
   }
   if (aborted.value) return;
 
-  let patch;
   try {
-    patch = validateAndClampPatch(JSON.parse(fakeText), body);
+    if (mode === "segment") {
+      const segment = validateSegment(JSON.parse(fakeText), body);
+      sseSend(res, { type: "result", segment, usage: { mock: true } });
+    } else {
+      const patch = validateAndClampPatch(JSON.parse(fakeText), body);
+      sseSend(res, { type: "result", patch, usage: { mock: true } });
+    }
   } catch (err) {
-    sseSend(res, { type: "error", message: `MOCKパッチの検証に失敗しました: ${err.message}` });
-    res.end();
-    return;
+    sseSend(res, { type: "error", message: `MOCK結果の検証に失敗しました: ${err.message}` });
   }
-  sseSend(res, { type: "result", patch, usage: { mock: true } });
   res.end();
 }
 
@@ -651,7 +828,7 @@ async function runReal(body, res, aborted) {
       thinking: { type: "adaptive" },
       output_config: {
         effort: EFFORT,
-        format: { type: "json_schema", schema: PATCH_SCHEMA },
+        format: { type: "json_schema", schema: body.mode === "segment" ? SEGMENT_SCHEMA : PATCH_SCHEMA },
       },
       system: [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }],
       messages: [{ role: "user", content: userContent }],
@@ -700,25 +877,28 @@ async function runReal(body, res, aborted) {
       return;
     }
 
-    let rawPatch;
+    let raw;
     try {
-      rawPatch = JSON.parse(textBlock.text);
+      raw = JSON.parse(textBlock.text);
     } catch (err) {
       sseSend(res, { type: "error", message: "モデル出力のJSON解析に失敗しました。" });
       res.end();
       return;
     }
 
-    let patch;
     try {
-      patch = validateAndClampPatch(rawPatch, body);
+      if (body.mode === "segment") {
+        const segment = validateSegment(raw, body);
+        sseSend(res, { type: "result", segment, usage: final.usage || {} });
+      } else {
+        const patch = validateAndClampPatch(raw, body);
+        sseSend(res, { type: "result", patch, usage: final.usage || {} });
+      }
     } catch (err) {
-      sseSend(res, { type: "error", message: `パッチの検証に失敗しました: ${err.message}` });
+      sseSend(res, { type: "error", message: `結果の検証に失敗しました: ${err.message}` });
       res.end();
       return;
     }
-
-    sseSend(res, { type: "result", patch, usage: final.usage || {} });
     res.end();
   } catch (err) {
     res.req.off("close", onClose);

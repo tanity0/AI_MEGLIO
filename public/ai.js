@@ -7,6 +7,7 @@ import {
   indexForChar,
   drawFrameToContext,
 } from "./app.js";
+import { streamEdit } from "./api.js";
 
 const PRESET_DEFAULT_FRAMES = { walk: 4, run: 6, attack: 3, idle: 2, jump: 4 };
 const PRESET_LABELS = { walk: "歩き", run: "走り", attack: "攻撃", idle: "待機", jump: "ジャンプ", custom: "カスタム" };
@@ -27,8 +28,10 @@ export function initAi(store, toast) {
   // タブ・モーション生成UI
   const tabPatchBtn = document.getElementById("tabPatchBtn");
   const tabMotionBtn = document.getElementById("tabMotionBtn");
+  const tabRigBtn = document.getElementById("tabRigBtn");
   const patchTab = document.getElementById("patchTab");
   const motionTab = document.getElementById("motionTab");
+  const rigTab = document.getElementById("rigTab");
   const runMotionBtn = document.getElementById("runMotionBtn");
   const motionPreset = document.getElementById("motionPreset");
   const motionCustomText = document.getElementById("motionCustomText");
@@ -41,17 +44,25 @@ export function initAi(store, toast) {
   let userChoseScopeManually = false;
 
   // ---------------------------------------------------------------------
-  // タブ切替（§13.3）
+  // タブ切替（§13.3 / §14.5）
   // ---------------------------------------------------------------------
+  const tabs = [
+    { name: "patch", btn: tabPatchBtn, body: patchTab },
+    { name: "motion", btn: tabMotionBtn, body: motionTab },
+    { name: "rig", btn: tabRigBtn, body: rigTab },
+  ];
   function setTab(name) {
-    const isPatch = name === "patch";
-    tabPatchBtn.classList.toggle("is-active", isPatch);
-    tabMotionBtn.classList.toggle("is-active", !isPatch);
-    patchTab.hidden = !isPatch;
-    motionTab.hidden = isPatch;
+    for (const t of tabs) {
+      t.btn.classList.toggle("is-active", t.name === name);
+      t.body.hidden = t.name !== name;
+    }
+    // リグの「ドラッグ移動」モードはリグタブ以外では無効化
+    if (name !== "rig" && store.state.rigAdjustMode) {
+      store.state.rigAdjustMode = false;
+      store.notify();
+    }
   }
-  tabPatchBtn.addEventListener("click", () => setTab("patch"));
-  tabMotionBtn.addEventListener("click", () => setTab("motion"));
+  for (const t of tabs) t.btn.addEventListener("click", () => setTab(t.name));
 
   motionPreset.addEventListener("change", () => {
     const def = PRESET_DEFAULT_FRAMES[motionPreset.value];
@@ -360,69 +371,26 @@ export function initAi(store, toast) {
     let receivedChars = 0;
     progressEl.textContent = "送信中…";
 
-    let pushedUndo = false;
-
     try {
-      const res = await fetch("/api/edit", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+      const evt = await streamEdit(body, {
         signal: abortController.signal,
+        onDelta: (text) => {
+          receivedChars += text.length;
+          progressEl.textContent = `生成中… (${receivedChars}文字受信)`;
+        },
       });
-
-      if (!res.ok || !res.body) {
-        let msg = `サーバーエラー (HTTP ${res.status})`;
-        try {
-          const errJson = await res.json();
-          if (errJson.error) msg = errJson.error;
-        } catch {}
-        throw new Error(msg);
-      }
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder("utf-8");
-      let buffer = "";
-      let finished = false;
-
-      while (!finished) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        let sepIdx;
-        while ((sepIdx = buffer.indexOf("\n\n")) !== -1) {
-          const rawEvent = buffer.slice(0, sepIdx);
-          buffer = buffer.slice(sepIdx + 2);
-          const line = rawEvent.split("\n").find((l) => l.startsWith("data:"));
-          if (!line) continue;
-          const jsonText = line.slice(5).trim();
-          let evt;
-          try { evt = JSON.parse(jsonText); } catch { continue; }
-
-          if (evt.type === "delta") {
-            receivedChars += evt.text.length;
-            progressEl.textContent = `生成中… (${receivedChars}文字受信)`;
-          } else if (evt.type === "result") {
-            if (!pushedUndo) { store.pushUndo(); pushedUndo = true; }
-            const { changedCells, addedFrames } = applyFn(evt.patch);
-            flashChangedCells(changedCells);
-            store.notify();
-            addHistoryEntry({
-              instruction,
-              note: evt.patch.note,
-              editedCells: changedCells.length,
-              addedFrames,
-              warnings: evt.patch.warnings,
-            });
-            progressEl.textContent = `完了（適用セル数: ${changedCells.length}）`;
-            finished = true;
-          } else if (evt.type === "error") {
-            addHistoryEntry({ instruction, error: evt.message });
-            toast(evt.message, "error");
-            progressEl.textContent = `エラー: ${evt.message}`;
-            finished = true;
-          }
-        }
-      }
+      store.pushUndo();
+      const { changedCells, addedFrames } = applyFn(evt.patch);
+      flashChangedCells(changedCells);
+      store.notify();
+      addHistoryEntry({
+        instruction,
+        note: evt.patch.note,
+        editedCells: changedCells.length,
+        addedFrames,
+        warnings: evt.patch.warnings,
+      });
+      progressEl.textContent = `完了（適用セル数: ${changedCells.length}）`;
     } catch (err) {
       if (err.name === "AbortError") {
         progressEl.textContent = "中断しました";

@@ -4,6 +4,7 @@ import { initTimeline } from "./timeline.js";
 import { initAi } from "./ai.js";
 import { encodeGif } from "./gif.js";
 import { importImageFile } from "./import.js";
+import { initRig } from "./rig.js";
 
 // ---------------------------------------------------------------------------
 // テキストグリッド文字割当て（サーバー側 server.js と同一の規則）
@@ -126,6 +127,28 @@ export function pixelsToPngDataUrl(pixels, width, height, palette, cellSize = 8)
 // ---------------------------------------------------------------------------
 // プロジェクトのシリアライズ（保存/読込・Undo用）
 // ---------------------------------------------------------------------------
+function cloneRig(rig, toPlain) {
+  if (!rig) return null;
+  const conv = toPlain ? (px) => Array.from(px) : (px) => Uint8Array.from(px);
+  return {
+    parts: (rig.parts || []).map((p) => ({
+      id: p.id,
+      name: p.name,
+      patch: { x: p.patch.x, y: p.patch.y, w: p.patch.w, h: p.patch.h, pixels: conv(p.patch.pixels) },
+      pivot: { x: p.pivot.x, y: p.pivot.y },
+      z: p.z,
+      parent: p.parent || "",
+      visible: p.visible !== false,
+    })),
+    keyframes: (rig.keyframes || []).map((kf) => {
+      const out = {};
+      for (const [id, t] of Object.entries(kf)) out[id] = { dx: t.dx || 0, dy: t.dy || 0, rot: t.rot || 0 };
+      return out;
+    }),
+    generatedAt: Number.isInteger(rig.generatedAt) ? rig.generatedAt : null,
+  };
+}
+
 export function cloneProject(project) {
   return {
     width: project.width,
@@ -135,6 +158,7 @@ export function cloneProject(project) {
     frames: project.frames.map((f) => ({ pixels: Uint8Array.from(f.pixels) })),
     baseFrame: project.baseFrame ? Uint8Array.from(project.baseFrame) : null,
     lockedRects: (project.lockedRects || []).map((r) => ({ ...r })),
+    rig: cloneRig(project.rig, false),
   };
 }
 export function projectToPlain(project) {
@@ -146,8 +170,60 @@ export function projectToPlain(project) {
     frames: project.frames.map((f) => Array.from(f.pixels)),
     baseFrame: project.baseFrame ? Array.from(project.baseFrame) : null,
     lockedRects: (project.lockedRects || []).map((r) => ({ ...r })),
+    rig: cloneRig(project.rig, true),
   };
 }
+function rigFromPlain(raw, width, height) {
+  if (!raw || typeof raw !== "object") return null;
+  const parts = [];
+  const seen = new Set();
+  if (Array.isArray(raw.parts)) {
+    for (const p of raw.parts) {
+      if (!p || typeof p.id !== "string" || seen.has(p.id) || typeof p.name !== "string") continue;
+      const pa = p.patch;
+      if (!pa || ![pa.x, pa.y, pa.w, pa.h].every(Number.isInteger)) continue;
+      if (pa.x < 0 || pa.y < 0 || pa.w <= 0 || pa.h <= 0 || pa.x + pa.w > width || pa.y + pa.h > height) continue;
+      if (!Array.isArray(pa.pixels) || pa.pixels.length !== pa.w * pa.h) continue;
+      if (!p.pivot || !Number.isInteger(p.pivot.x) || !Number.isInteger(p.pivot.y)) continue;
+      parts.push({
+        id: p.id,
+        name: p.name,
+        patch: { x: pa.x, y: pa.y, w: pa.w, h: pa.h, pixels: Uint8Array.from(pa.pixels) },
+        pivot: {
+          x: Math.max(0, Math.min(pa.w - 1, p.pivot.x)),
+          y: Math.max(0, Math.min(pa.h - 1, p.pivot.y)),
+        },
+        z: Number.isInteger(p.z) ? p.z : 0,
+        parent: typeof p.parent === "string" ? p.parent : "",
+        visible: p.visible !== false,
+      });
+      seen.add(p.id);
+    }
+  }
+  for (const p of parts) if (p.parent && !seen.has(p.parent)) p.parent = "";
+  const keyframes = [];
+  if (Array.isArray(raw.keyframes)) {
+    for (const kf of raw.keyframes) {
+      if (!kf || typeof kf !== "object") continue;
+      const out = {};
+      for (const [id, t] of Object.entries(kf)) {
+        if (!seen.has(id) || !t) continue;
+        out[id] = {
+          dx: Number.isFinite(t.dx) ? Math.round(t.dx) : 0,
+          dy: Number.isFinite(t.dy) ? Math.round(t.dy) : 0,
+          rot: Number.isFinite(t.rot) ? Math.round(t.rot / 15) * 15 : 0,
+        };
+      }
+      keyframes.push(out);
+    }
+  }
+  return {
+    parts,
+    keyframes,
+    generatedAt: Number.isInteger(raw.generatedAt) ? raw.generatedAt : null,
+  };
+}
+
 export function projectFromPlain(o) {
   if (!o || typeof o !== "object") throw new Error("不正なプロジェクトファイルです");
   const { width, height, fps, palette, frames, baseFrame, lockedRects } = o;
@@ -179,6 +255,7 @@ export function projectFromPlain(o) {
     }),
     baseFrame: base,
     lockedRects: locked,
+    rig: rigFromPlain(o.rig, width, height),
   };
 }
 
@@ -254,6 +331,8 @@ class Store {
       selection: null, // { frameIndex, x, y, w, h }
       onionSkin: false,
       diffView: false,
+      rigSelectedPart: null,
+      rigAdjustMode: false,
       zoom: 12,
       zoomAuto: true,
       timelinePlaying: false,
@@ -306,6 +385,10 @@ class Store {
       if (sel.frameIndex >= n || sel.x + sel.w > this.state.project.width || sel.y + sel.h > this.state.project.height) {
         this.state.selection = null;
       }
+    }
+    const rig = this.state.project.rig;
+    if (this.state.rigSelectedPart && !(rig && rig.parts.some((p) => p.id === this.state.rigSelectedPart))) {
+      this.state.rigSelectedPart = null;
     }
   }
   resetProject(project) {
@@ -450,6 +533,7 @@ function main() {
   initEditor(store, toast);
   initTimeline(store, toast);
   initAi(store, toast);
+  initRig(store, toast);
   store.notify();
   // デバッグ/E2Eテスト用フック（UIには影響しない）
   window.aiMeglio = { store };

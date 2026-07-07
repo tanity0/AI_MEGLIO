@@ -74,6 +74,7 @@
     <div class="ai-tabs" role="tablist">
       <button id="tabPatchBtn" class="ai-tab is-active" role="tab" data-tab="patch">修正</button>
       <button id="tabMotionBtn" class="ai-tab" role="tab" data-tab="motion">モーション生成</button>
+      <button id="tabRigBtn" class="ai-tab" role="tab" data-tab="rig">リグ</button>
     </div>
 
     <div id="patchTab" class="tab-body">
@@ -132,6 +133,78 @@
       </div>
       <div class="ai-actions">
         <button id="runMotionBtn" class="btn btn-accent">モーション生成</button>
+      </div>
+    </div>
+
+    <div id="rigTab" class="tab-body" hidden>
+      <div class="ai-actions">
+        <button id="registerPartBtn" class="btn btn-small" title="矩形選択した範囲をベースフレームからパーツとして切り出す">パーツとして登録</button>
+        <button id="segmentBtn" class="btn btn-small" title="AIがベースフレームをパーツ矩形に自動分割（下書き）">AI自動分割</button>
+      </div>
+
+      <div id="partForm" class="part-form" hidden>
+        <label class="form-row">名前 <input id="partNameInput" type="text" maxlength="32"></label>
+        <label class="form-row">z順（小=奥）<input id="partZInput" type="number" step="1" value="0"></label>
+        <label class="form-row">親 <select id="partParentSelect"></select></label>
+        <div class="pivot-pick">
+          <canvas id="partPreviewCanvas"></canvas>
+          <span id="pivotLabel" class="hint">プレビューをクリックしてpivot（回転支点）を指定</span>
+        </div>
+        <div class="ai-actions">
+          <button id="partConfirmBtn" class="btn btn-accent btn-small">登録</button>
+          <button id="partCancelBtn" class="btn btn-small">キャンセル</button>
+        </div>
+      </div>
+
+      <ul id="partList" class="part-list"></ul>
+
+      <div class="motion-form">
+        <label class="form-row">プリセット
+          <select id="rigPreset">
+            <option value="walk" selected>歩き (4f)</option>
+            <option value="run">走り (6f)</option>
+            <option value="attack">攻撃 (3f)</option>
+            <option value="idle">待機 (2f)</option>
+            <option value="jump">ジャンプ (4f)</option>
+          </select>
+        </label>
+        <label class="form-row">振り幅
+          <select id="rigMagnitude">
+            <option value="0.5">0.5×</option>
+            <option value="1" selected>1.0×</option>
+            <option value="1.5">1.5×</option>
+          </select>
+        </label>
+        <label class="check-row"><input type="checkbox" id="rigBounce" checked> バウンス（胴体の上下動）</label>
+        <label class="form-row">フレーム数
+          <input id="rigFrames" type="number" min="2" max="12" value="4">
+        </label>
+        <fieldset class="scope-fieldset">
+          <legend>生成結果の反映</legend>
+          <label class="radio-row"><input type="radio" name="rigApply" value="replace" checked> 既存フレームを置き換え（frame 0 以外）</label>
+          <label class="radio-row"><input type="radio" name="rigApply" value="append"> 末尾に追記</label>
+        </fieldset>
+        <div class="ai-actions">
+          <button id="rigGenerateBtn" class="btn btn-accent">フレーム生成</button>
+          <button id="rigCleanupBtn" class="btn" title="合成で変化したセルの周囲2pxだけをAIが清書">AI清書</button>
+          <button id="rigAbortBtn" class="btn" disabled>中断</button>
+        </div>
+        <div id="rigProgress" class="ai-progress" aria-live="polite"></div>
+      </div>
+
+      <div class="rig-adjust">
+        <div class="hint">微調整（選択パーツ・現在フレーム）
+          <label class="check-row inline"><input type="checkbox" id="rigAdjustMode"> キャンバスでドラッグ移動</label>
+        </div>
+        <div class="ai-actions adjust-btns">
+          <button id="adjLeft" class="btn btn-small" title="左へ1px">←</button>
+          <button id="adjRight" class="btn btn-small" title="右へ1px">→</button>
+          <button id="adjUp" class="btn btn-small" title="上へ1px">↑</button>
+          <button id="adjDown" class="btn btn-small" title="下へ1px">↓</button>
+          <button id="adjRotL" class="btn btn-small" title="反時計回りに15°">⟲15°</button>
+          <button id="adjRotR" class="btn btn-small" title="時計回りに15°">⟳15°</button>
+        </div>
+        <div id="adjInfo" class="hint"></div>
       </div>
     </div>
 

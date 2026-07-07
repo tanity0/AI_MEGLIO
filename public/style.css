@@ -243,6 +243,80 @@ aside, #canvasPanel {
 .motion-form select, .motion-form input[type=number] { width: 140px; }
 .motion-form input[type=text] { width: 100%; }
 
+/* ---------- リグタブ（§14） ---------- */
+.part-form {
+  border: 1px solid var(--accent-dark);
+  border-radius: var(--radius);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--bg-2);
+}
+.part-form[hidden] { display: none; }
+.pivot-pick { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+#partPreviewCanvas {
+  image-rendering: pixelated;
+  border: 1px solid var(--border);
+  background-color: #202020;
+  cursor: crosshair;
+}
+.hint { font-size: 11px; color: var(--text-2); }
+.check-row.inline { display: inline-flex; margin-left: 8px; }
+
+.part-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 20vh;
+  overflow-y: auto;
+}
+.part-list .part-empty { font-size: 11px; color: var(--text-2); padding: 4px; }
+.part-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 4px 6px;
+  font-size: 12px;
+}
+.part-item.is-selected { border-color: var(--accent); }
+.part-item .part-name {
+  flex: 1;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--text-0);
+  cursor: pointer;
+  padding: 2px;
+  font-size: 12px;
+}
+.part-item.is-selected .part-name { color: var(--accent); font-weight: 700; }
+.part-item .part-z { width: 44px; }
+.part-item .part-parent { max-width: 90px; }
+.part-item input, .part-item select {
+  background: var(--bg-1);
+  color: var(--text-0);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 4px;
+  font-size: 11px;
+}
+
+.rig-adjust {
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.adjust-btns .btn { flex: 0 1 auto; min-width: 38px; }
+
 .target-info {
   background: var(--bg-2);
   border: 1px solid var(--border);

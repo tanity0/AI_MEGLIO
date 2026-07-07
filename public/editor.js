@@ -102,6 +102,7 @@ export function initEditor(store, toast) {
   // マウス操作
   // ---------------------------------------------------------------------
   canvas.addEventListener("mousedown", (ev) => {
+    if (store.state.rigAdjustMode) return; // リグ調整モード中はrig.jsがドラッグを処理する
     const { x, y } = cellFromEvent(ev);
     const tool = store.state.tool;
     const frameIndex = store.state.currentFrame;
