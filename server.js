@@ -18,7 +18,8 @@ const EFFORT = process.env.EFFORT || "medium";
 const MOCK = process.env.MOCK === "1";
 const BACKEND = process.env.BACKEND === "cli" ? "cli" : "api"; // §15.1: api（既定）| cli
 const CLI_MODEL = process.env.CLI_MODEL || "sonnet";
-const CLI_TIMEOUT_MS = 180 * 1000; // §15.2: タイムアウト180秒
+const CLI_TIMEOUT_SEC = Number(process.env.CLI_TIMEOUT) > 0 ? Number(process.env.CLI_TIMEOUT) : 300; // §15.5-1: 既定300秒、CLI_TIMEOUT（秒）で上書き
+const CLI_TIMEOUT_MS = CLI_TIMEOUT_SEC * 1000;
 const CLI_CONCURRENCY = 2; // §15.2: 同時実行2のキュー
 
 const MAX_BODY_BYTES = 5 * 1024 * 1024; // 5MB 上限
@@ -127,6 +128,7 @@ const SYSTEM_PROMPT = `あなたはドット絵アニメーションの精密編
 
 ## 最小差分の原則
 指示を実現するために変更が必要なセルだけを edits に含めてください。無関係なセルは書き換えず、パッチの rows 内では \`?\` にしてください（矩形全体を再送する必要はありません。変更箇所を囲む小さな矩形で十分です）。
+ただし、変更が対象領域の大部分に及ぶ場合は、\`?\` による差分化に固執せず、対象矩形全体（またはフレーム全体）を書き直した rows を返して構いません。差分の厳密さより応答の速さを優先してください。
 
 ## アニメーションの一貫性
 複数フレームにまたがる編集を行う場合は、動きの連続性を保ってください。「中割りを追加」のような指示では、前後のフレームを補間した新しいフレームを newFrames に追加してください。
@@ -912,7 +914,7 @@ function spawnClaudeCli(prompt, { registerCancel }) {
     };
     const timer = setTimeout(() => {
       try { child.kill("SIGKILL"); } catch {}
-      settle(reject, userError("Claude Code CLI がタイムアウトしました（180秒）。指示の範囲を狭めて再試行してください。"));
+      settle(reject, userError(`Claude Code CLI がタイムアウトしました（${CLI_TIMEOUT_SEC}秒）。対処: (1) 矩形選択で範囲を狭めて指示する、(2) 環境変数 CLI_TIMEOUT でタイムアウト秒数を延ばす、(3) CLI_MODEL=haiku など高速なモデルを試す。`));
     }, CLI_TIMEOUT_MS);
 
     registerCancel(() => {
@@ -955,7 +957,11 @@ ${userText}
 ${JSON.stringify(schema)}`;
 
   await acquireCliSlot();
-  const heartbeat = setInterval(() => onDelta("…"), 30 * 1000); // 進捗ハートビート（§15.2）
+  const startedAt = Date.now();
+  const heartbeat = setInterval(() => {
+    const sec = Math.floor((Date.now() - startedAt) / 1000);
+    onDelta(`（${sec}秒経過）`);
+  }, 10 * 1000); // 進捗ハートビート: 10秒間隔+経過秒数（§15.5-4）
   try {
     const runOnce = async (prompt) => {
       const stdout = await spawnClaudeCli(prompt, { registerCancel });
@@ -997,6 +1003,17 @@ ${JSON.stringify(schema)}`;
 // 実AI呼び出し（バックエンド共通のSSE整形・検証。§15.3: この層は backend に依存しない）
 // ---------------------------------------------------------------------------
 async function runReal(body, res, aborted) {
+  // §15.5-3: CLIバックエンドで scope=all の編集（mode=patch）は
+  // フレームごとの個別呼び出しに分割する（1呼び出しの出力量・推論時間を分割）
+  const effectiveMode = body.mode || "patch";
+  if (
+    BACKEND === "cli" &&
+    effectiveMode === "patch" &&
+    body.scope === "all" &&
+    body.project.framesGrid.length > 1
+  ) {
+    return runRealSplitAllFrames(body, res, aborted);
+  }
   const schema = body.mode === "segment" ? SEGMENT_SCHEMA : PATCH_SCHEMA;
   const includeImages = BACKEND !== "cli"; // §15.2: CLIモードは画像を渡さない
   const images = includeImages ? buildImages(body) : [];
@@ -1048,6 +1065,96 @@ async function runReal(body, res, aborted) {
     sseSend(res, { type: "error", message: describeAnthropicError(err) });
     try { res.end(); } catch {}
   }
+}
+
+// §15.5-3: scope=all の編集をフレームごとのバックエンド呼び出しに分割し、
+// edits を統合して1つのSSE resultで返す（CLI キューにより並列2で実行される）
+async function runRealSplitAllFrames(body, res, aborted) {
+  const frameCount = body.project.framesGrid.length;
+
+  const cancelFns = [];
+  const onClose = () => {
+    aborted.value = true;
+    for (const fn of cancelFns) { try { fn(); } catch {} }
+  };
+  res.req.on("close", onClose);
+
+  let doneCount = 0;
+  const tasks = [];
+  for (let i = 0; i < frameCount; i++) {
+    const subBody = {
+      ...body,
+      scope: "frame",
+      frameIndex: i,
+      selection: null,
+      instruction: `${body.instruction}\n（この指示は全フレーム共通です。全フレーム共通の指示を、このフレーム${i}に適用してください。他フレームとの一貫性を保ってください）`,
+    };
+    const userText = buildUserText(subBody);
+    tasks.push(
+      callBackend({
+        systemText: SYSTEM_PROMPT,
+        userText,
+        images: [], // 分割はCLIモードのみ = 画像なし
+        schema: PATCH_SCHEMA,
+        onDelta: (delta) => { if (!aborted.value) sseSend(res, { type: "delta", text: delta }); },
+        registerCancel: (fn) => cancelFns.push(fn),
+      }).then(({ text }) => {
+        const raw = JSON.parse(text); // callBackendCli がパース可能性を保証（リトライ込み）
+        doneCount++;
+        if (!aborted.value) sseSend(res, { type: "delta", text: `フレーム ${doneCount}/${frameCount} 完了` });
+        return { frame: i, raw };
+      })
+    );
+  }
+
+  const results = await Promise.allSettled(tasks);
+  res.req.off("close", onClose);
+  if (aborted.value) { try { res.end(); } catch {} return; }
+
+  const fulfilled = results.filter((r) => r.status === "fulfilled").map((r) => r.value);
+  const rejected = results
+    .map((r, i) => (r.status === "rejected" ? { frame: i, reason: r.reason } : null))
+    .filter(Boolean);
+
+  if (fulfilled.length === 0) {
+    sseSend(res, { type: "error", message: describeAnthropicError(rejected[0]?.reason) });
+    try { res.end(); } catch {}
+    return;
+  }
+
+  // edits をフレーム番号を差し替えて統合。newFrames は分割モードでは破棄して警告。
+  const splitWarnings = [];
+  const mergedRaw = { edits: [], newFrames: [], paletteChanges: [], note: "" };
+  let discardedNewFrames = 0;
+  const notes = [];
+  for (const { frame, raw } of fulfilled) {
+    if (Array.isArray(raw.edits)) {
+      for (const e of raw.edits) {
+        if (e && typeof e === "object") mergedRaw.edits.push({ ...e, frame });
+      }
+    }
+    if (Array.isArray(raw.newFrames) && raw.newFrames.length > 0) {
+      discardedNewFrames += raw.newFrames.length;
+    }
+    if (Array.isArray(raw.paletteChanges)) mergedRaw.paletteChanges.push(...raw.paletteChanges);
+    if (typeof raw.note === "string" && raw.note) notes.push(raw.note);
+  }
+  if (discardedNewFrames > 0) {
+    splitWarnings.push(`フレーム分割モードのため newFrames（${discardedNewFrames}件）を破棄しました（中割りは「現在のフレーム」スコープで指示してください）`);
+  }
+  for (const rj of rejected) {
+    splitWarnings.push(`フレーム${rj.frame}の処理に失敗しました: ${describeAnthropicError(rj.reason)}`);
+  }
+  mergedRaw.note = notes.length ? `全${frameCount}フレームに個別適用: ${notes[0]}` : `全${frameCount}フレームに個別適用しました`;
+
+  try {
+    const patch = validateAndClampPatch(mergedRaw, body);
+    patch.warnings.push(...splitWarnings);
+    sseSend(res, { type: "result", patch, usage: { backend: "cli", model: CLI_MODEL, split: frameCount } });
+  } catch (err) {
+    sseSend(res, { type: "error", message: `結果の検証に失敗しました: ${err.message}` });
+  }
+  try { res.end(); } catch {}
 }
 
 function describeAnthropicError(err) {

@@ -369,6 +369,15 @@ export function initAi(store, toast) {
     abortBtn.disabled = false;
     progressEl.classList.add("is-busy");
     let receivedChars = 0;
+    let lastSplitProgress = "";
+    const startedAt = Date.now();
+    // 実行中は経過秒を常時表示（§15.5-4）
+    const renderProgress = () => {
+      const sec = Math.floor((Date.now() - startedAt) / 1000);
+      const tail = lastSplitProgress ? ` / ${lastSplitProgress}` : "";
+      progressEl.textContent = `生成中… (${receivedChars}文字受信・${sec}秒経過)${tail}`;
+    };
+    const progressTimer = setInterval(renderProgress, 1000);
     progressEl.textContent = "送信中…";
 
     try {
@@ -376,7 +385,8 @@ export function initAi(store, toast) {
         signal: abortController.signal,
         onDelta: (text) => {
           receivedChars += text.length;
-          progressEl.textContent = `生成中… (${receivedChars}文字受信)`;
+          if (text.includes("フレーム") && text.includes("完了")) lastSplitProgress = text;
+          renderProgress();
         },
       });
       store.pushUndo();
@@ -401,6 +411,7 @@ export function initAi(store, toast) {
         toast(err.message, "error");
       }
     } finally {
+      clearInterval(progressTimer);
       store.state.aiBusy = false;
       runBtn.disabled = false;
       runMotionBtn.disabled = false;
