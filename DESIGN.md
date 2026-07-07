@@ -369,3 +369,46 @@ project.rig = {
 ### 14.6 API追加
 
 `POST /api/edit` の `mode` に `"segment"` と `"cleanup"` を追加。それぞれ専用の構造化出力スキーマ（segment: parts配列、cleanup: v1と同じedits形式）。システムプロンプトに用途別の追記。
+
+---
+
+## 15. 【v3】Claude Code CLI バックエンド（APIキー不要モード）
+
+Claudeサブスクリプション（Claude Code）ユーザーがAPIキーなしでAI機能を使えるようにする。サーバーのAI呼び出し部分を抽象化し、環境変数 `BACKEND` で切り替える。
+
+### 15.1 切り替え
+
+- `BACKEND=api`（既定）: 現行どおり `@anthropic-ai/sdk`。
+- `BACKEND=cli`: ローカルにインストール・ログイン済みの `claude` CLI を `child_process.spawn` で呼ぶ。
+- `MOCK=1` は従来どおり最優先。
+- `/api/config` に `backend` を追加し、UIのフッター等に表示（「バックエンド: API / Claude Code CLI / MOCK」）。
+
+### 15.2 CLI呼び出し仕様
+
+```js
+spawn("claude", [
+  "-p",                        // 非対話モード
+  "--output-format", "json",   // 結果をJSONエンベロープで受ける
+  "--model", CLI_MODEL,        // env CLI_MODEL、既定 "sonnet"
+], { stdio: ["pipe", "pipe", "pipe"] })
+// プロンプト全文（システム相当 + ユーザー相当を連結したもの）を stdin に書いて閉じる
+```
+
+- 構造化出力APIは使えないため、プロンプト末尾に「出力は次のJSON Schemaに厳密に従うJSONのみ。コードフェンス禁止」としてスキーマ(JSON文字列)を埋め込む。
+- 応答: `--output-format json` のエンベロープから `result` フィールド（テキスト）を取り出し、コードフェンス除去 → `JSON.parse` → **既存のパッチ検証をそのまま通す**（検証機構は共通なので、モデル出力が乱れてもサーバーで守られる）。パース失敗時は1回だけリトライ（「JSONのみで再出力」と付けて再実行）、それでも失敗ならエラーをSSEで返す。
+- 画像は渡さない（テキストグリッドのみ）。プロンプト組み立て関数に `includeImages` フラグを追加して分岐。
+- ストリーミング: CLIモードでは本文ストリームは不要。SSEでは30秒ごとに `{type:"delta", text:"…"}` 相当の進捗ハートビートだけ流し、完了時に `result` を返す（クライアント側は現行実装のまま動く）。
+- タイムアウト 180秒。`claude` コマンドが見つからない場合（ENOENT）は「Claude Code CLI が見つかりません。`npm install -g @anthropic-ai/claude-code` の上 `claude` にログインしてください」を返す。プロセス終了コード非0は stderr の先頭200文字を添えてエラー。
+- 同時実行: cleanup の並列リクエストが来るため、CLIモードではサーバー側で同時実行数を2に制限するキューを入れる。
+
+### 15.3 実装配置
+
+- `server.js` の Anthropic 呼び出し部を `callBackend({ systemText, userText, images, schema, onDelta })` に抽出し、`api` / `cli` / `mock` の3実装を持たせる。既存のバリデーション・SSE整形・モード分岐（edit/motion/segment/cleanup）は一切変えない。
+- README に CLI モードのセットアップ（Claude Code のインストール・ログイン・`BACKEND=cli npm start`）と、サブスク利用上限を消費する旨・画像を渡さない旨を追記。
+
+### 15.4 検証
+
+- `claude` が無い環境でも検証できるよう、**ダミーCLI**（`scratchpad/fake-claude`: stdin を読み、固定パッチJSONを `--output-format json` エンベロープで出力するNodeスクリプト）を作り、`PATH` 先頭に置いて `BACKEND=cli` の全経路（edit/motion/segment/cleanup、パース・検証・SSE完了）を curl で確認する。
+- ENOENT経路（PATHから外して起動）でエラーメッセージが返ることを確認。
+- コードフェンス付きJSONを返すダミーで除去→パース成功を確認。
+- 既存の §11 / §13 / §14 検証が `BACKEND=api`（既定）で退行していないことをスモーク確認。
