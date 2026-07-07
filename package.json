@@ -1,0 +1,13 @@
+{
+  "name": "ai-meglio",
+  "version": "1.0.0",
+  "description": "ドット絵アニメーション AI編集スタジオ",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.110.0"
+  }
+}

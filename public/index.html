@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Meglio — ドット絵アニメーション AI編集スタジオ</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%2314151c'/%3E%3Crect x='6' y='2' width='4' height='4' fill='%236ee7c8'/%3E%3Crect x='2' y='6' width='4' height='4' fill='%236ee7c8'/%3E%3Crect x='10' y='6' width='4' height='4' fill='%236ee7c8'/%3E%3Crect x='6' y='10' width='4' height='4' fill='%236ee7c8'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header id="appHeader">
+  <div class="brand">
+    <span class="brand-mark">◆</span>
+    <span class="brand-name">AI Meglio</span>
+  </div>
+  <div class="header-actions">
+    <button id="newProjectBtn" class="btn" title="新規プロジェクト">新規</button>
+    <button id="saveJsonBtn" class="btn" title="プロジェクトをJSONで保存">保存 (JSON)</button>
+    <label class="btn" for="loadJsonInput" title="JSONファイルからプロジェクトを読込">
+      読込 (JSON)
+      <input id="loadJsonInput" type="file" accept="application/json" hidden>
+    </label>
+    <button id="exportPngBtn" class="btn" title="スプライトシートPNGを書き出し">PNG書き出し</button>
+    <button id="exportGifBtn" class="btn btn-accent" title="アニメーションGIFを書き出し">GIF書き出し</button>
+  </div>
+</header>
+
+<main id="appMain">
+  <aside id="toolPanel">
+    <h2 class="panel-title">ツール</h2>
+    <div class="tool-grid" id="toolGrid">
+      <button class="tool-btn is-active" data-tool="pen" title="ペン (B)">✏️<span>ペン</span></button>
+      <button class="tool-btn" data-tool="eraser" title="消しゴム (E)">🧹<span>消しゴム</span></button>
+      <button class="tool-btn" data-tool="fill" title="塗りつぶし (F)">🪣<span>塗りつぶし</span></button>
+      <button class="tool-btn" data-tool="select" title="矩形選択 (S)">▭<span>矩形選択</span></button>
+      <button class="tool-btn" data-tool="eyedropper" title="スポイト (I)">💧<span>スポイト</span></button>
+    </div>
+
+    <div class="tool-options">
+      <label class="check-row"><input type="checkbox" id="onionSkinToggle"> オニオンスキン</label>
+      <div class="zoom-row">
+        <span>ズーム</span>
+        <input type="range" id="zoomRange" min="2" max="32" step="1" value="12">
+        <span id="zoomLabel">12x</span>
+      </div>
+      <button id="clearSelectionBtn" class="btn btn-small">選択解除</button>
+    </div>
+
+    <h2 class="panel-title">パレット</h2>
+    <div class="palette-grid" id="paletteGrid"></div>
+    <button id="paletteAddBtn" class="btn btn-small">+ 色を追加</button>
+  </aside>
+
+  <section id="canvasPanel">
+    <div id="canvasWrap">
+      <canvas id="mainCanvas"></canvas>
+    </div>
+    <div id="canvasStatus">
+      <span id="canvasSizeLabel">32 x 32</span>
+      <span id="cursorPosLabel"></span>
+    </div>
+  </section>
+
+  <aside id="aiPanel">
+    <h2 class="panel-title">AI編集</h2>
+
+    <div id="targetInfo" class="target-info">対象: フレーム全体</div>
+
+    <fieldset class="scope-fieldset">
+      <legend>対象スコープ</legend>
+      <label class="radio-row"><input type="radio" name="scope" value="selection" id="scopeSelection"> 選択範囲のみ</label>
+      <label class="radio-row"><input type="radio" name="scope" value="frame" id="scopeFrame" checked> 現在のフレーム</label>
+      <label class="radio-row"><input type="radio" name="scope" value="all" id="scopeAll"> 全フレーム</label>
+    </fieldset>
+
+    <textarea id="instructionInput" placeholder="例:「腕の振りをもっと大きく」「輪郭のジャギーを滑らかに」「フレーム1と2の間に中割りを追加」「全体を夕暮れの色調に」「この範囲の剣を炎の剣にして」（Cmd/Ctrl+Enterで実行）" rows="4"></textarea>
+
+    <div class="ai-actions">
+      <button id="runAiBtn" class="btn btn-accent">実行</button>
+      <button id="abortAiBtn" class="btn" disabled>中断</button>
+    </div>
+    <div id="aiProgress" class="ai-progress" aria-live="polite"></div>
+
+    <h3 class="panel-subtitle">履歴ログ</h3>
+    <ul id="historyLog" class="history-log"></ul>
+
+    <h3 class="panel-subtitle">再生プレビュー</h3>
+    <div class="preview-row">
+      <canvas id="previewCanvas"></canvas>
+      <div class="preview-controls">
+        <label class="check-row"><input type="checkbox" id="previewPlayToggle" checked> ループ再生</label>
+      </div>
+    </div>
+  </aside>
+</main>
+
+<footer id="timelineBar">
+  <div id="frameList"></div>
+  <div class="timeline-controls">
+    <button id="frameAddBtn" class="btn btn-small" title="フレーム追加">+追加</button>
+    <button id="frameDupBtn" class="btn btn-small" title="複製">複製</button>
+    <button id="frameDelBtn" class="btn btn-small" title="削除">削除</button>
+    <button id="frameMoveLeftBtn" class="btn btn-small" title="左へ移動">←</button>
+    <button id="frameMoveRightBtn" class="btn btn-small" title="右へ移動">→</button>
+    <span class="sep"></span>
+    <label class="fps-row">fps<input type="number" id="fpsInput" min="1" max="24" value="8"></label>
+    <button id="playBtn" class="btn btn-small">▶ 再生</button>
+  </div>
+</footer>
+
+<div id="toastRoot" aria-live="polite"></div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
