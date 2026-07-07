@@ -8,6 +8,9 @@ import {
   pixelsToGridString,
   pixelsToPngDataUrl,
   drawFrameToContext,
+  adjustTagsOnInsert,
+  adjustTagsOnDelete,
+  addGeneratedTag,
 } from "./app.js";
 
 // ---------------------------------------------------------------------------
@@ -539,12 +542,19 @@ export function initRig(store, toast) {
     store.pushUndo();
     const applyMode = document.querySelector('input[name="rigApply"]:checked')?.value || "replace";
     if (applyMode === "replace") {
+      const removed = p.frames.length - 1;
       p.frames = [p.frames[0], ...composed];
+      for (let i = 0; i < removed; i++) adjustTagsOnDelete(p, 1); // §16.1: タグ範囲の自動補正
+      adjustTagsOnInsert(p, 1, composed.length);
       rig.generatedAt = 1;
     } else {
       rig.generatedAt = p.frames.length;
       p.frames.push(...composed);
     }
+    // §16.1: 生成結果を新しいタグとして追加（プリセット名から自動命名）
+    const genTag = addGeneratedTag(p, rigPreset.value, rig.generatedAt, rig.generatedAt + composed.length - 1);
+    genTag.fps = p.fps;
+    store.state.activeTagIndex = p.tags.indexOf(genTag);
     rig.keyframes = keyframes;
     store.clampAfterProjectChange();
     store.state.currentFrame = rig.generatedAt;

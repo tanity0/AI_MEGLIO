@@ -228,6 +228,22 @@
 </main>
 
 <footer id="timelineBar">
+  <div id="tagBar">
+    <span class="tag-bar-label">タグ</span>
+    <div id="tagList"></div>
+    <button id="tagAddBtn" class="btn btn-small" title="現在のフレームを初期範囲としてタグを作成">＋タグ</button>
+    <div id="tagForm" class="tag-form" hidden>
+      <input id="tagNameInput" type="text" placeholder="タグ名" maxlength="32">
+      <label>start<input id="tagStartInput" type="number" min="0" step="1"></label>
+      <label>end<input id="tagEndInput" type="number" min="0" step="1"></label>
+      <label>fps<input id="tagFpsInput" type="number" min="1" max="24" step="1"></label>
+      <label class="check-row inline"><input id="tagLoopInput" type="checkbox" checked> loop</label>
+      <button id="tagSaveBtn" class="btn btn-small btn-accent">保存</button>
+      <button id="tagDeleteBtn" class="btn btn-small" hidden>削除</button>
+      <button id="tagCancelBtn" class="btn btn-small">×</button>
+    </div>
+  </div>
+  <div class="timeline-main">
   <div id="frameList"></div>
   <div class="timeline-controls">
     <button id="frameAddBtn" class="btn btn-small" title="フレーム追加">+追加</button>
@@ -238,6 +254,7 @@
     <span class="sep"></span>
     <label class="fps-row">fps<input type="number" id="fpsInput" min="1" max="24" value="8"></label>
     <button id="playBtn" class="btn btn-small">▶ 再生</button>
+  </div>
   </div>
 </footer>
 

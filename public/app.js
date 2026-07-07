@@ -149,6 +149,94 @@ function cloneRig(rig, toPlain) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// アニメーションタグ（§16.1）: フレーム範囲参照 {name, start, end, fps, loop}
+// ---------------------------------------------------------------------------
+export function defaultTags(project) {
+  return [{ name: "all", start: 0, end: project.frames.length - 1, fps: project.fps, loop: true }];
+}
+
+function cloneTags(tags) {
+  return (tags || []).map((t) => ({ name: t.name, start: t.start, end: t.end, fps: t.fps, loop: !!t.loop }));
+}
+
+function tagsFromPlain(raw, frameCount, fps) {
+  const tags = [];
+  if (Array.isArray(raw)) {
+    for (const t of raw) {
+      if (!t || typeof t.name !== "string" || !t.name.trim()) continue;
+      if (!Number.isInteger(t.start) || !Number.isInteger(t.end)) continue;
+      const start = Math.max(0, Math.min(frameCount - 1, t.start));
+      const end = Math.max(start, Math.min(frameCount - 1, t.end));
+      const tfps = Number.isInteger(t.fps) && t.fps >= 1 && t.fps <= 24 ? t.fps : fps;
+      tags.push({ name: t.name.trim().slice(0, 32), start, end, fps: tfps, loop: t.loop !== false });
+    }
+  }
+  return tags;
+}
+
+function variantsFromPlain(raw, paletteLen) {
+  const variants = [];
+  if (Array.isArray(raw)) {
+    for (const v of raw) {
+      if (!v || typeof v.name !== "string" || !v.name.trim()) continue;
+      if (!Array.isArray(v.palette) || v.palette.length < 1 || v.palette.length > 32) continue;
+      if (!v.palette.every((c) => typeof c === "string")) continue;
+      variants.push({ name: v.name.trim().slice(0, 32), palette: v.palette.slice() });
+    }
+  }
+  return variants;
+}
+
+// フレーム挿入時のタグ範囲自動補正（index の位置に count 枚挿入）
+export function adjustTagsOnInsert(project, index, count = 1) {
+  for (const t of project.tags || []) {
+    if (index <= t.start) {
+      t.start += count;
+      t.end += count;
+    } else if (index <= t.end) {
+      t.end += count; // タグ内部への挿入はタグを広げる
+    }
+  }
+}
+
+// フレーム削除時のタグ範囲自動補正（index のフレームを1枚削除した後に呼ぶ）
+export function adjustTagsOnDelete(project, index) {
+  const tags = project.tags || [];
+  for (let i = tags.length - 1; i >= 0; i--) {
+    const t = tags[i];
+    if (index < t.start) {
+      t.start--;
+      t.end--;
+    } else if (index <= t.end) {
+      t.end--;
+    }
+    if (t.end < t.start || t.start < 0) tags.splice(i, 1);
+  }
+}
+
+export function uniqueTagName(project, baseName) {
+  const names = new Set((project.tags || []).map((t) => t.name));
+  if (!names.has(baseName)) return baseName;
+  let n = 2;
+  while (names.has(`${baseName}_${n}`)) n++;
+  return `${baseName}_${n}`;
+}
+
+// モーション/リグ生成結果を新しいタグとして末尾に追加（§16.1）
+export function addGeneratedTag(project, baseName, start, end) {
+  if (!Array.isArray(project.tags)) project.tags = [];
+  const tag = {
+    name: uniqueTagName(project, baseName),
+    start,
+    end,
+    fps: project.fps,
+    loop: true,
+  };
+  project.tags.push(tag);
+  return tag;
+}
+
 export function cloneProject(project) {
   return {
     width: project.width,
@@ -159,6 +247,9 @@ export function cloneProject(project) {
     baseFrame: project.baseFrame ? Uint8Array.from(project.baseFrame) : null,
     lockedRects: (project.lockedRects || []).map((r) => ({ ...r })),
     rig: cloneRig(project.rig, false),
+    tags: cloneTags(project.tags),
+    variants: (project.variants || []).map((v) => ({ name: v.name, palette: v.palette.slice() })),
+    profile: project.profile ? JSON.parse(JSON.stringify(project.profile)) : null,
   };
 }
 export function projectToPlain(project) {
@@ -171,6 +262,9 @@ export function projectToPlain(project) {
     baseFrame: project.baseFrame ? Array.from(project.baseFrame) : null,
     lockedRects: (project.lockedRects || []).map((r) => ({ ...r })),
     rig: cloneRig(project.rig, true),
+    tags: cloneTags(project.tags),
+    variants: (project.variants || []).map((v) => ({ name: v.name, palette: v.palette.slice() })),
+    profile: project.profile ? JSON.parse(JSON.stringify(project.profile)) : null,
   };
 }
 function rigFromPlain(raw, width, height) {
@@ -245,7 +339,7 @@ export function projectFromPlain(o) {
       locked.push({ x: r.x, y: r.y, w: r.w, h: r.h });
     }
   }
-  return {
+  const project = {
     width, height, fps,
     palette: palette.slice(),
     frames: frames.map((arr) => {
@@ -256,7 +350,13 @@ export function projectFromPlain(o) {
     baseFrame: base,
     lockedRects: locked,
     rig: rigFromPlain(o.rig, width, height),
+    variants: variantsFromPlain(o.variants, palette.length),
+    profile: o.profile && typeof o.profile === "object" ? o.profile : null,
   };
+  // §16.1: 既存プロジェクト（tags無し）は「all」タグを自動生成
+  const tags = tagsFromPlain(o.tags, project.frames.length, fps);
+  project.tags = tags.length ? tags : defaultTags(project);
+  return project;
 }
 
 // ---------------------------------------------------------------------------
@@ -313,7 +413,9 @@ export function createSampleProject() {
   ];
   // frame 0 をベースフレームとして保持（逸脱メーター・差分ビュー・アンカリング用）
   const baseFrame = Uint8Array.from(frames[0].pixels);
-  return { width, height, fps: 8, palette, frames, baseFrame, lockedRects: [] };
+  const project = { width, height, fps: 8, palette, frames, baseFrame, lockedRects: [], variants: [], profile: null };
+  project.tags = defaultTags(project);
+  return project;
 }
 
 // ---------------------------------------------------------------------------
@@ -333,6 +435,7 @@ class Store {
       diffView: false,
       rigSelectedPart: null,
       rigAdjustMode: false,
+      activeTagIndex: -1, // §16.1: 選択中タグ（-1 = 全体）
       zoom: 12,
       zoomAuto: true,
       timelinePlaying: false,
@@ -390,6 +493,16 @@ class Store {
     if (this.state.rigSelectedPart && !(rig && rig.parts.some((p) => p.id === this.state.rigSelectedPart))) {
       this.state.rigSelectedPart = null;
     }
+    const p = this.state.project;
+    if (!Array.isArray(p.tags)) p.tags = defaultTags(p);
+    for (let i = p.tags.length - 1; i >= 0; i--) {
+      const t = p.tags[i];
+      t.start = Math.max(0, Math.min(n - 1, t.start));
+      t.end = Math.max(t.start, Math.min(n - 1, t.end));
+      if (t.end < t.start) p.tags.splice(i, 1);
+    }
+    if (this.state.activeTagIndex >= p.tags.length) this.state.activeTagIndex = -1;
+    if (!Array.isArray(p.variants)) p.variants = [];
   }
   resetProject(project) {
     this.pushUndo();
@@ -492,9 +605,15 @@ function initHeader() {
 
   document.getElementById("exportGifBtn").addEventListener("click", () => {
     try {
-      const bytes = encodeGif(store.state.project);
-      downloadBlob(new Blob([bytes], { type: "image/gif" }), "ai-meglio.gif");
-      toast("GIFを書き出しました");
+      const project = store.state.project;
+      const tag = store.state.activeTagIndex >= 0 ? project.tags[store.state.activeTagIndex] : null;
+      const target = tag
+        ? { ...project, fps: tag.fps, frames: project.frames.slice(tag.start, tag.end + 1) }
+        : project;
+      const bytes = encodeGif(target);
+      const name = tag ? `ai-meglio_${tag.name}.gif` : "ai-meglio.gif";
+      downloadBlob(new Blob([bytes], { type: "image/gif" }), name);
+      toast(tag ? `タグ「${tag.name}」をGIF書き出ししました` : "GIFを書き出しました");
     } catch (err) {
       toast(`GIF書き出しに失敗しました: ${err.message}`, "error");
       console.error(err);

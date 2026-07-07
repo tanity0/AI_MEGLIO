@@ -196,7 +196,7 @@ export async function importImageFile(file) {
     }
   }
 
-  return {
+  const project = {
     width: outW,
     height: outH,
     fps: 8,
@@ -204,5 +204,9 @@ export async function importImageFile(file) {
     frames: [{ pixels: outPixels }],
     baseFrame: Uint8Array.from(outPixels),
     lockedRects: [],
+    variants: [],
+    profile: null,
   };
+  project.tags = [{ name: "all", start: 0, end: 0, fps: 8, loop: true }];
+  return project;
 }

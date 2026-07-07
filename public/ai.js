@@ -6,6 +6,9 @@ import {
   pixelsToPngDataUrl,
   indexForChar,
   drawFrameToContext,
+  adjustTagsOnInsert,
+  adjustTagsOnDelete,
+  addGeneratedTag,
 } from "./app.js";
 import { streamEdit } from "./api.js";
 
@@ -170,6 +173,7 @@ export function initAi(store, toast) {
       }
       const insertIdx = Math.min(Math.max(nf.insertAfter + 1, 0), project.frames.length);
       project.frames.splice(insertIdx, 0, { pixels });
+      adjustTagsOnInsert(project, insertIdx, 1); // §16.1: タグ範囲の自動補正
       addedFrames++;
     }
 
@@ -326,11 +330,11 @@ export function initAi(store, toast) {
     };
 
     const applyMode = motionApplyMode();
-    await executeEdit(body, instruction, (patch) => applyMotionPatch(patch, applyMode));
+    await executeEdit(body, instruction, (patch) => applyMotionPatch(patch, applyMode, motion.preset));
   }
 
-  // モーション生成結果の適用: newFrames を置き換え/追記で反映
-  function applyMotionPatch(patch, applyMode) {
+  // モーション生成結果の適用: newFrames を置き換え/追記で反映（結果は新タグ化・§16.1）
+  function applyMotionPatch(patch, applyMode, presetName = "motion") {
     const project = store.state.project;
     const framesPixels = patch.newFrames.map((nf) => {
       const pixels = new Uint8Array(project.width * project.height);
@@ -345,11 +349,21 @@ export function initAi(store, toast) {
     });
 
     if (framesPixels.length > 0) {
+      let start;
       if (applyMode === "replace") {
-        project.frames = [project.frames[0], ...framesPixels];
+        // 置き換え: フレーム1以降を削除 → 生成フレームを挿入（タグ範囲を追随補正）
+        const removed = project.frames.length - 1;
+        project.frames = [project.frames[0]];
+        for (let i = 0; i < removed; i++) adjustTagsOnDelete(project, 1);
+        start = 1;
+        project.frames.push(...framesPixels);
+        adjustTagsOnInsert(project, 1, framesPixels.length);
       } else {
+        start = project.frames.length;
         project.frames.push(...framesPixels);
       }
+      const tag = addGeneratedTag(project, presetName, start, start + framesPixels.length - 1);
+      store.state.activeTagIndex = project.tags.indexOf(tag);
     }
     store.clampAfterProjectChange();
 
@@ -464,11 +478,18 @@ export function initAi(store, toast) {
     const dt = ts - lastTs;
     lastTs = ts;
     previewAcc += dt;
-    const frameDuration = 1000 / Math.max(1, p.fps);
+    // 選択タグがあればその範囲・そのfpsでループ（§16.1）
+    const ti = store.state.activeTagIndex;
+    const tag = ti >= 0 && p.tags && p.tags[ti] ? p.tags[ti] : null;
+    const start = tag ? tag.start : 0;
+    const end = tag ? Math.min(tag.end, p.frames.length - 1) : p.frames.length - 1;
+    const fps = tag ? tag.fps : p.fps;
+    const frameDuration = 1000 / Math.max(1, fps);
     while (previewAcc >= frameDuration) {
       previewAcc -= frameDuration;
-      previewFrame = (previewFrame + 1) % p.frames.length;
+      previewFrame = previewFrame + 1 > end || previewFrame + 1 < start ? start : previewFrame + 1;
     }
+    if (previewFrame < start || previewFrame > end) previewFrame = start;
     const ctx = previewCanvas.getContext("2d");
     drawFrameToContext(ctx, p, previewFrame, previewCellSize);
   }
