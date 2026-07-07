@@ -137,6 +137,18 @@ APIを呼ばず、選択範囲（選択が無ければフレーム全体の中�
 - **ゲーム書き出し**: 「ゲーム書き出し」ボタンから、`sheet+json`（1枚のシートPNG + Aseprite json-array 互換メタJSON。frameTags 付きで大抵のエンジンが読めます）/ `strip-per-tag`（タグごとの横ストリップ）/ `frames`（連番PNG）を書き出せます。`scale` で整数拡大、プロファイルが `mirror: "export"` なら左右反転タグ（walk_left 等）もタグ単位のON/OFF付きで出力します。書き出し先はブラウザダウンロードか、`EXPORT_ROOT=<ゲームリポジトリ> npm start` で起動していればリポジトリへの直接書き出し（`/api/export`。EXPORT_ROOT 配下限定・パストラバーサル拒否）が選べます。
 - **ゲームビュープレビュー**: AIパネル下部で背景画像（ゲームのスクリーンショット等）を読み込み、×1〜×4のゲームスケールで移動ループ再生して実機の見え方を確認できます（背景はセッション限りで保存されません）。
 
+#### zombie リポジトリとの連携（§16.6）
+
+zombie は `public/sprites/<name>.png` の単体PNGをロードする構成のため、`zombie` プロファイルは `primaryExport: "first-frame-of-idle"` を持ちます。
+
+```bash
+EXPORT_ROOT=/path/to/zombie BACKEND=cli npm start
+```
+
+で起動し、プロファイル「zombie」を選んで「ゲーム書き出し」→「ゲームリポジトリ」を選ぶと、**idle タグの先頭フレームが `public/sprites/{キャラ名}.png` として直接書き込まれます**（idle タグが無い場合はフレーム0で代替し警告表示）。同時に全タグの連番PNG（`{char}_{tag}_{n}.png`）と将来のフレームアニメ対応用の sheet+json（`{char}_sheet.png/.json`）も出力されます。
+
+注意: 新規キャラ名で書き出した場合、ゲーム側では `src/pixi/pixiTextures.ts` の standalone 配列への追記が必要です（ツールの範囲外。書き出し完了メッセージにも表示されます）。
+
 ## API
 
 ### `GET /api/config`

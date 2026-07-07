@@ -1,9 +1,10 @@
 {
   "name": "zombie",
-  "exportDir": "assets/sprites",
-  "format": "sheet+json",
+  "exportDir": "public/sprites",
+  "format": "frames",
   "scale": 1,
-  "naming": "{char}_{variant}",
+  "naming": "{char}",
   "requiredTags": ["idle", "walk", "attack", "death"],
-  "mirror": "runtime"
+  "mirror": "runtime",
+  "primaryExport": "first-frame-of-idle"
 }

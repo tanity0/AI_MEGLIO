@@ -38,13 +38,22 @@ function renderNaming(template, charName, variantName) {
 }
 
 // ---------------------------------------------------------------------------
-// 書き出しファイル生成（§16.4）
-// tags: [{name, start, end, fps, mirror:boolean}] — mirror=true なら反転版も生成
+// 書き出しファイル生成（§16.4 / §16.6）
+// 戻り値: { files: [{path, dataUrl}], warnings: [string] }
+// primaryExport: "first-frame-of-idle" のとき idle タグの先頭フレームを
+// {base}.png として単体出力し、同時に frames と sheet+json も出力する（§16.6）
 // ---------------------------------------------------------------------------
 export function buildExportFiles(project, opts) {
-  const { charName, format, scale, variants, mirrorTags } = opts;
+  const { charName, format, scale, variants, mirrorTags, primaryExport } = opts;
   const { width, height } = project;
   const files = [];
+  const warnings = [];
+  const seenPaths = new Set();
+  const pushFile = (path, dataUrl) => {
+    if (seenPaths.has(path)) return;
+    seenPaths.add(path);
+    files.push({ path, dataUrl });
+  };
 
   // 実効タグ列（mirror:"export" のタグは反転版 {name}_left を追加）
   const effTags = [];
@@ -57,10 +66,15 @@ export function buildExportFiles(project, opts) {
   if (!effTags.length) throw new Error("書き出すタグがありません");
 
   for (const variant of variants) {
-    const base = renderNaming(opts.naming, charName, variant.name);
+    let base = renderNaming(opts.naming, charName, variant.name);
+    // naming に {variant} が無いテンプレート（例: zombie の "{char}"）では
+    // base 以外のバリエーションが衝突するため接尾辞を付ける
+    if (variant.name !== "base" && !(opts.naming || "").includes("{variant}")) {
+      base = `${base}_${variant.name.replace(/[\\/:*?"<>|\s\x00-\x1f]/g, "_")}`;
+    }
     const palette = variant.palette;
 
-    if (format === "sheet+json") {
+    const emitSheetJson = (fileBase) => {
       // 行=タグ、列=フレーム
       const maxLen = Math.max(...effTags.map((t) => t.end - t.start + 1));
       const cellW = width * scale;
@@ -78,7 +92,7 @@ export function buildExportFiles(project, opts) {
           const c = renderPixelsToCanvas(project.frames[t.start + i].pixels, width, height, palette, scale, t.mirror);
           ctx.drawImage(c, i * cellW, row * cellH);
           framesJson.push({
-            filename: `${base}_${t.name}_${i}`,
+            filename: `${fileBase}_${t.name}_${i}`,
             frame: { x: i * cellW, y: row * cellH, w: cellW, h: cellH },
             rotated: false,
             trimmed: false,
@@ -93,15 +107,17 @@ export function buildExportFiles(project, opts) {
       const meta = {
         app: "AI Meglio",
         version: "1.0",
-        image: `${base}.png`,
+        image: `${fileBase}.png`,
         format: "RGBA8888",
         size: { w: sheet.width, h: sheet.height },
         scale: String(scale),
         frameTags,
       };
-      files.push({ path: `${base}.png`, dataUrl: sheet.toDataURL("image/png") });
-      files.push({ path: `${base}.json`, dataUrl: jsonToDataUrl({ frames: framesJson, meta }) });
-    } else if (format === "strip-per-tag") {
+      pushFile(`${fileBase}.png`, sheet.toDataURL("image/png"));
+      pushFile(`${fileBase}.json`, jsonToDataUrl({ frames: framesJson, meta }));
+    };
+
+    const emitStrip = () => {
       for (const t of effTags) {
         const n = t.end - t.start + 1;
         const strip = document.createElement("canvas");
@@ -112,20 +128,45 @@ export function buildExportFiles(project, opts) {
           const c = renderPixelsToCanvas(project.frames[t.start + i].pixels, width, height, palette, scale, t.mirror);
           ctx.drawImage(c, i * width * scale, 0);
         }
-        files.push({ path: `${base}_${t.name}.png`, dataUrl: strip.toDataURL("image/png") });
+        pushFile(`${base}_${t.name}.png`, strip.toDataURL("image/png"));
       }
-    } else if (format === "frames") {
+    };
+
+    const emitFrames = () => {
       for (const t of effTags) {
         for (let i = 0; i <= t.end - t.start; i++) {
           const c = renderPixelsToCanvas(project.frames[t.start + i].pixels, width, height, palette, scale, t.mirror);
-          files.push({ path: `${base}_${t.name}_${i}.png`, dataUrl: c.toDataURL("image/png") });
+          pushFile(`${base}_${t.name}_${i}.png`, c.toDataURL("image/png"));
         }
       }
-    } else {
-      throw new Error(`不明な書き出し形式です: ${format}`);
+    };
+
+    // §16.6: primaryExport — idle タグの先頭フレームを {base}.png として単体出力
+    if (primaryExport === "first-frame-of-idle") {
+      const idle = (project.tags || []).find((t) => t.name.toLowerCase() === "idle");
+      let frameIdx;
+      if (idle) {
+        frameIdx = idle.start;
+      } else {
+        frameIdx = 0;
+        warnings.push(`idle タグが無いため、フレーム0を ${base}.png として出力しました（idle タグの作成を推奨）`);
+      }
+      const c = renderPixelsToCanvas(project.frames[frameIdx].pixels, width, height, palette, scale, false);
+      pushFile(`${base}.png`, c.toDataURL("image/png"));
+      // 将来のフレームアニメ対応用に frames と sheet+json も同時出力
+      // （プライマリPNGとの衝突を避けるためシートは {base}_sheet.*）
+      emitFrames();
+      emitSheetJson(`${base}_sheet`);
+      if (format === "strip-per-tag") emitStrip();
+      continue;
     }
+
+    if (format === "sheet+json") emitSheetJson(base);
+    else if (format === "strip-per-tag") emitStrip();
+    else if (format === "frames") emitFrames();
+    else throw new Error(`不明な書き出し形式です: ${format}`);
   }
-  return files;
+  return { files, warnings };
 }
 
 function downloadDataUrl(dataUrl, filename) {
@@ -307,19 +348,27 @@ export function initGameExport(store, toast) {
     const variants = [{ name: "base", palette: p.palette }, ...(p.variants || [])];
 
     let files;
+    let exportWarnings = [];
     try {
-      files = buildExportFiles(p, {
+      ({ files, warnings: exportWarnings } = buildExportFiles(p, {
         charName,
         format,
         scale,
         naming: prof?.naming || "{char}_{variant}",
         variants,
         mirrorTags,
-      });
+        primaryExport: prof?.primaryExport || null, // §16.6
+      }));
     } catch (err) {
       toast(err.message, "error");
       return;
     }
+    const warnText = exportWarnings.length ? ` / 警告: ${exportWarnings.join(" / ")}` : "";
+    for (const w of exportWarnings) toast(w, "error");
+    // §16.6: zombie プロファイルではゲーム側の登録が必要な場合がある旨を表示
+    const pixiNote = prof?.name === "zombie"
+      ? "。新規キャラ名の場合、ゲーム側で pixiTextures.ts への登録が必要なことがあります"
+      : "";
 
     if (destRadios() === "repo") {
       const dir = exportDirInput.value.trim().replace(/^\/+|\/+$/g, "");
@@ -335,16 +384,16 @@ export function initGameExport(store, toast) {
         });
         const json = await res.json();
         if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
-        exportStatus.textContent = `${json.written.length}ファイルを ${json.root} に書き出しました`;
-        toast(`ゲームリポジトリに ${json.written.length} ファイルを書き出しました`);
+        exportStatus.textContent = `${json.written.length}ファイルを ${json.root} に書き出しました${pixiNote}${warnText}`;
+        toast(`ゲームリポジトリに ${json.written.length} ファイルを書き出しました${pixiNote}`);
       } catch (err) {
         exportStatus.textContent = `エラー: ${err.message}`;
         toast(err.message, "error");
       }
     } else {
       for (const f of files) downloadDataUrl(f.dataUrl, f.path);
-      exportStatus.textContent = `${files.length}ファイルをダウンロードしました`;
-      toast(`${files.length}ファイルをダウンロードしました`);
+      exportStatus.textContent = `${files.length}ファイルをダウンロードしました${pixiNote}${warnText}`;
+      toast(`${files.length}ファイルをダウンロードしました${pixiNote}`);
     }
   });
 
