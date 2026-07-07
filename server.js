@@ -21,6 +21,7 @@ const CLI_MODEL = process.env.CLI_MODEL || "sonnet";
 const CLI_TIMEOUT_SEC = Number(process.env.CLI_TIMEOUT) > 0 ? Number(process.env.CLI_TIMEOUT) : 300; // §15.5-1: 既定300秒、CLI_TIMEOUT（秒）で上書き
 const CLI_TIMEOUT_MS = CLI_TIMEOUT_SEC * 1000;
 const CLI_CONCURRENCY = 2; // §15.2: 同時実行2のキュー
+const EXPORT_ROOT = process.env.EXPORT_ROOT || ""; // §16.4: 未設定なら /api/export は無効
 
 const MAX_BODY_BYTES = 5 * 1024 * 1024; // 5MB 上限
 
@@ -118,6 +119,28 @@ const SEGMENT_SCHEMA = {
   additionalProperties: false,
 };
 
+// パレットスワップ（mode=palette）用スキーマ（§16.2）: paletteChanges のみ
+const PALETTE_SCHEMA = {
+  type: "object",
+  properties: {
+    paletteChanges: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          index: { type: "integer" },
+          color: { type: "string" },
+        },
+        required: ["index", "color"],
+        additionalProperties: false,
+      },
+    },
+    note: { type: "string" },
+  },
+  required: ["paletteChanges", "note"],
+  additionalProperties: false,
+};
+
 const SYSTEM_PROMPT = `あなたはドット絵アニメーションの精密編集エンジンです。
 
 ## グリッド表現
@@ -147,6 +170,9 @@ const SYSTEM_PROMPT = `あなたはドット絵アニメーションの精密編
 
 ## AI清書（cleanupモードのとき適用）
 リグ合成で生じた回転ジャギー・パーツ継ぎ目の隙間を、パレット内の色・最小差分で修正してください。変更許可セル（リクエストに含まれるマスクで '1' のセル）以外への編集はサーバー側で破棄されます。newFrames と paletteChanges は使わず、対象フレームへの edits のみを返してください。
+
+## パレットスワップ（paletteモードのとき適用）
+指示に従ってパレットの色だけを変更してください。ドットの形状には一切触れません。出力は paletteChanges と note のみです。index 0（透明）は変更しないでください。元のパレットの明暗関係（輪郭が最も暗い等）を保ったまま色相・彩度を変えると、キャラの読みやすさが維持されます。
 
 ## モーション生成の定石（モーション生成モードのとき適用）
 - 歩き（4フレーム）: コンタクト→ダウン→パッシング→アップ。左右の足は前後が入れ替わる。接地（コンタクト/ダウン）フレームで体が最も低い。腕は足と逆位相に振る。
@@ -264,7 +290,7 @@ function validateEditRequest(body) {
   if (instruction.length > 2000) throw new Error("instruction が長すぎます");
 
   // --- §13.4 / §14.6 追加フィールド ---
-  if (mode !== undefined && !["patch", "motion", "segment", "cleanup"].includes(mode)) throw new Error("mode が不正です");
+  if (mode !== undefined && !["patch", "motion", "segment", "cleanup", "palette"].includes(mode)) throw new Error("mode が不正です");
   if (baseFrameGrid !== undefined && baseFrameGrid !== null) {
     if (typeof baseFrameGrid !== "string") throw new Error("baseFrameGrid が不正です");
     const rows = baseFrameGrid.split("\n");
@@ -285,6 +311,9 @@ function validateEditRequest(body) {
   }
   if (mode === "segment") {
     if (!baseFrameGrid) throw new Error("mode=segment では baseFrameGrid が必要です");
+  }
+  if (mode === "palette") {
+    if (!baseFrameGrid) throw new Error("mode=palette では baseFrameGrid が必要です");
   }
   if (mode === "cleanup") {
     if (!Number.isInteger(frameIndex) || frameIndex < 0 || frameIndex >= framesGrid.length) {
@@ -337,6 +366,22 @@ const FACING_LABELS = { keep: "そのまま", right: "横（右向き）", left:
 function buildUserText(body) {
   const { project, scope, frameIndex, selection, instruction, mode, baseFrameGrid, lockedRects, motion, allowedMask } = body;
   const { width, height, fps, palette, framesGrid } = project;
+
+  // §16.2: paletteモードはパレット+ベースフレーム1枚のみの軽量プロンプト
+  if (mode === "palette") {
+    const palText = palette.map((color, i) => `${charForIndex(i)}: ${color}`).join(", ");
+    return `## パレットスワップモード
+サイズ: ${width}x${height}
+
+## 現在のパレット（index: 色）
+${palText}
+
+## ベースフレーム（参考。ドットは変更しない）
+${baseFrameGrid}
+
+## 配色指示
+${instruction}`;
+  }
 
   const paletteText = palette
     .map((color, i) => `${charForIndex(i)}: ${color}`)
@@ -598,6 +643,34 @@ function validateAndClampPatch(rawPatch, body) {
 }
 
 // ---------------------------------------------------------------------------
+// palette レスポンスの検証（§16.2）
+// ---------------------------------------------------------------------------
+function validatePaletteResult(raw, body) {
+  const warnings = [];
+  if (!raw || typeof raw !== "object") throw new Error("palette結果の形式が不正です");
+  const paletteLen = body.project.palette.length;
+  const hexRe = /^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$/;
+  const paletteChanges = [];
+  const rawChanges = Array.isArray(raw.paletteChanges) ? raw.paletteChanges : [];
+  for (const pc of rawChanges) {
+    if (!pc || !Number.isInteger(pc.index) || typeof pc.color !== "string" || !hexRe.test(pc.color)) {
+      warnings.push("不正な paletteChanges を無視しました");
+      continue;
+    }
+    if (pc.index === 0) {
+      warnings.push("index 0（透明）への変更を無視しました");
+      continue;
+    }
+    if (pc.index < 0 || pc.index >= paletteLen) {
+      warnings.push(`index ${pc.index} はパレット範囲外のため無視しました`);
+      continue;
+    }
+    paletteChanges.push({ index: pc.index, color: pc.color });
+  }
+  return { paletteChanges, note: typeof raw.note === "string" ? raw.note : "", warnings };
+}
+
+// ---------------------------------------------------------------------------
 // segment レスポンスの検証（§14.2）
 // ---------------------------------------------------------------------------
 function validateSegment(rawSegment, body) {
@@ -703,7 +776,15 @@ async function runMock(body, res, aborted) {
   const ch = charForIndex(lastIdx) || "1";
 
   let fakePatch;
-  if (mode === "segment") {
+  if (mode === "palette") {
+    // 固定の paletteChanges（緑基調・§16.7）
+    const greens = ["#1a3d1a", "#2e7d32", "#57a05a", "#7fc383", "#a5d6a7"];
+    const paletteChanges = [];
+    for (let i = 1; i < Math.min(palette.length, greens.length + 1); i++) {
+      paletteChanges.push({ index: i, color: greens[i - 1] });
+    }
+    fakePatch = { paletteChanges, note: "MOCK: 緑基調の配色に変更しました" };
+  } else if (mode === "segment") {
     // 固定の3パーツ（頭・胴・脚）を比率で返す
     const tw = Math.max(2, Math.floor(width * 0.4));
     const tx = Math.floor((width - tw) / 2);
@@ -798,6 +879,9 @@ async function runMock(body, res, aborted) {
     if (mode === "segment") {
       const segment = validateSegment(JSON.parse(fakeText), body);
       sseSend(res, { type: "result", segment, usage: { mock: true } });
+    } else if (mode === "palette") {
+      const palette = validatePaletteResult(JSON.parse(fakeText), body);
+      sseSend(res, { type: "result", palette, usage: { mock: true } });
     } else {
       const patch = validateAndClampPatch(JSON.parse(fakeText), body);
       sseSend(res, { type: "result", patch, usage: { mock: true } });
@@ -1014,7 +1098,7 @@ async function runReal(body, res, aborted) {
   ) {
     return runRealSplitAllFrames(body, res, aborted);
   }
-  const schema = body.mode === "segment" ? SEGMENT_SCHEMA : PATCH_SCHEMA;
+  const schema = body.mode === "segment" ? SEGMENT_SCHEMA : body.mode === "palette" ? PALETTE_SCHEMA : PATCH_SCHEMA;
   const includeImages = BACKEND !== "cli"; // §15.2: CLIモードは画像を渡さない
   const images = includeImages ? buildImages(body) : [];
   const userText = buildUserText(body);
@@ -1051,6 +1135,9 @@ async function runReal(body, res, aborted) {
       if (body.mode === "segment") {
         const segment = validateSegment(raw, body);
         sseSend(res, { type: "result", segment, usage });
+      } else if (body.mode === "palette") {
+        const palette = validatePaletteResult(raw, body);
+        sseSend(res, { type: "result", palette, usage });
       } else {
         const patch = validateAndClampPatch(raw, body);
         sseSend(res, { type: "result", patch, usage });
@@ -1192,9 +1279,116 @@ function describeAnthropicError(err) {
 // ルーティング
 // ---------------------------------------------------------------------------
 async function handleApiConfig(req, res) {
-  const body = JSON.stringify({ model: MODEL, effort: EFFORT, mock: MOCK, backend: BACKEND, cliModel: CLI_MODEL });
+  const body = JSON.stringify({
+    model: MODEL,
+    effort: EFFORT,
+    mock: MOCK,
+    backend: BACKEND,
+    cliModel: CLI_MODEL,
+    exportEnabled: !!EXPORT_ROOT,
+    exportRoot: EXPORT_ROOT || null,
+  });
   res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Content-Length": Buffer.byteLength(body) });
   res.end(body);
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/profiles — public/profiles/*.json を列挙（§16.3）
+// ---------------------------------------------------------------------------
+async function handleApiProfiles(req, res) {
+  const dir = path.join(PUBLIC_DIR, "profiles");
+  const profiles = [];
+  try {
+    const entries = await fs.readdir(dir);
+    for (const name of entries) {
+      if (!name.endsWith(".json")) continue;
+      try {
+        const raw = JSON.parse(await fs.readFile(path.join(dir, name), "utf8"));
+        if (raw && typeof raw === "object" && typeof raw.name === "string") profiles.push(raw);
+      } catch {}
+    }
+  } catch {}
+  const body = JSON.stringify(profiles);
+  res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Content-Length": Buffer.byteLength(body) });
+  res.end(body);
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/export — EXPORT_ROOT 配下へのゲームアセット直接書き出し（§16.4）
+// ---------------------------------------------------------------------------
+const MAX_EXPORT_BYTES = 50 * 1024 * 1024; // 書き出しは大きくなり得るため50MB
+const MAX_EXPORT_FILES = 200;
+
+function jsonError(res, code, message) {
+  const body = JSON.stringify({ error: message });
+  res.writeHead(code, { "Content-Type": "application/json; charset=utf-8", "Content-Length": Buffer.byteLength(body) });
+  res.end(body);
+}
+
+function decodeDataUrl(dataUrl) {
+  const m = /^data:([^;,]*)(;base64)?,([\s\S]*)$/.exec(dataUrl);
+  if (!m) return null;
+  return m[2] ? Buffer.from(m[3], "base64") : Buffer.from(decodeURIComponent(m[3]), "utf8");
+}
+
+async function handleApiExport(req, res) {
+  if (!EXPORT_ROOT) {
+    jsonError(res, 403, "EXPORT_ROOT が設定されていないため、書き出しAPIは無効です。EXPORT_ROOT=<ゲームリポジトリのパス> で起動してください");
+    return;
+  }
+  let raw;
+  try {
+    raw = await readBody(req, MAX_EXPORT_BYTES);
+  } catch {
+    jsonError(res, 413, "書き出しサイズが上限（50MB）を超えています");
+    return;
+  }
+  let body;
+  try {
+    body = JSON.parse(raw.toString("utf8"));
+  } catch {
+    jsonError(res, 400, "リクエストが不正です");
+    return;
+  }
+  if (!body || !Array.isArray(body.files) || body.files.length < 1 || body.files.length > MAX_EXPORT_FILES) {
+    jsonError(res, 400, `files は 1〜${MAX_EXPORT_FILES} 件の配列で指定してください`);
+    return;
+  }
+
+  const rootResolved = path.resolve(EXPORT_ROOT);
+  const written = [];
+  for (const f of body.files) {
+    if (!f || typeof f.path !== "string" || typeof f.dataUrl !== "string") {
+      jsonError(res, 400, "files の要素は {path, dataUrl} である必要があります");
+      return;
+    }
+    const rel = f.path.replace(/\\/g, "/");
+    // パストラバーサル・絶対パスの拒否
+    if (
+      rel.length === 0 || rel.length > 300 || rel.includes("\0") ||
+      path.isAbsolute(rel) || /^[a-zA-Z]:/.test(rel) ||
+      rel.split("/").some((seg) => seg === "..")
+    ) {
+      jsonError(res, 400, `不正なパスです: ${f.path}（EXPORT_ROOT 配下の相対パスのみ許可）`);
+      return;
+    }
+    const target = path.resolve(rootResolved, rel);
+    if (target !== rootResolved && !target.startsWith(rootResolved + path.sep)) {
+      jsonError(res, 400, `EXPORT_ROOT の外への書き込みは許可されていません: ${f.path}`);
+      return;
+    }
+    const buf = decodeDataUrl(f.dataUrl);
+    if (!buf) {
+      jsonError(res, 400, `dataUrl の形式が不正です: ${f.path}`);
+      return;
+    }
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.writeFile(target, buf);
+    written.push(rel);
+  }
+  const out = JSON.stringify({ written, root: rootResolved });
+  res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Content-Length": Buffer.byteLength(out) });
+  res.end(out);
 }
 
 async function handleApiEdit(req, res) {
@@ -1240,8 +1434,12 @@ const server = http.createServer(async (req, res) => {
     const urlPath = req.url.split("?")[0];
     if (req.method === "GET" && urlPath === "/api/config") {
       await handleApiConfig(req, res);
+    } else if (req.method === "GET" && urlPath === "/api/profiles") {
+      await handleApiProfiles(req, res);
     } else if (req.method === "POST" && urlPath === "/api/edit") {
       await handleApiEdit(req, res);
+    } else if (req.method === "POST" && urlPath === "/api/export") {
+      await handleApiExport(req, res);
     } else if (req.method === "GET") {
       await serveStatic(req, res);
     } else {

@@ -5,6 +5,7 @@ import { initAi } from "./ai.js";
 import { encodeGif } from "./gif.js";
 import { importImageFile } from "./import.js";
 import { initRig } from "./rig.js";
+import { initGameExport, initGameView } from "./gameexport.js";
 
 // ---------------------------------------------------------------------------
 // テキストグリッド文字割当て（サーバー側 server.js と同一の規則）
@@ -671,6 +672,8 @@ function main() {
   initTimeline(store, toast);
   initAi(store, toast);
   initRig(store, toast);
+  initGameExport(store, toast);
+  initGameView(store);
   initBackendLabel();
   store.notify();
   // デバッグ/E2Eテスト用フック（UIには影響しない）

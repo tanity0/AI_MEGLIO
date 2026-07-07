@@ -29,6 +29,15 @@
   </div>
 </header>
 
+<div id="profileBar">
+  <label class="profile-row">プロファイル
+    <select id="profileSelect"><option value="">プロファイルなし</option></select>
+  </label>
+  <div id="tagChecklist" title="プロファイルの必要タグ"></div>
+  <span class="profile-spacer"></span>
+  <button id="openExportBtn" class="btn btn-small btn-accent" title="ゲーム用のシート/ストリップ/連番PNGを書き出し">ゲーム書き出し</button>
+</div>
+
 <main id="appMain">
   <aside id="toolPanel">
     <h2 class="panel-title">ツール</h2>
@@ -92,6 +101,20 @@
 
       <div class="ai-actions">
         <button id="runAiBtn" class="btn btn-accent">実行</button>
+        <button id="paletteSwapBtn" class="btn" title="パレットの色だけをAIで変更（配色バリエーション・§16.2）">配色バリエーション</button>
+      </div>
+
+      <div id="paletteCandidate" class="palette-candidate" hidden>
+        <div class="hint">配色候補プレビュー</div>
+        <div class="preview-row">
+          <canvas id="paletteCandidateCanvas"></canvas>
+          <div id="paletteCandidateNote" class="hint"></div>
+        </div>
+        <div class="ai-actions">
+          <button id="paletteApplyBtn" class="btn btn-accent btn-small">このプロジェクトに適用</button>
+          <button id="paletteSaveVariantBtn" class="btn btn-small">バリエーションとして保存</button>
+          <button id="paletteDiscardBtn" class="btn btn-small">破棄</button>
+        </div>
       </div>
     </div>
 
@@ -224,6 +247,23 @@
         <label class="check-row"><input type="checkbox" id="previewPlayToggle" checked> ループ再生</label>
       </div>
     </div>
+
+    <h3 class="panel-subtitle">ゲームビュー</h3>
+    <div id="gameView">
+      <canvas id="gameViewCanvas" width="320" height="180"></canvas>
+      <div class="gameview-controls">
+        <label class="btn btn-small" for="gameViewBgInput">背景読込<input id="gameViewBgInput" type="file" accept="image/*" hidden></label>
+        <label class="form-row inline">スケール
+          <select id="gameViewScale">
+            <option value="1">×1</option>
+            <option value="2" selected>×2</option>
+            <option value="3">×3</option>
+            <option value="4">×4</option>
+          </select>
+        </label>
+        <label class="check-row inline"><input type="checkbox" id="gameViewPlay"> 再生</label>
+      </div>
+    </div>
   </aside>
 </main>
 
@@ -257,6 +297,43 @@
   </div>
   </div>
 </footer>
+
+<div id="exportPanel" class="modal-overlay" hidden>
+  <div class="modal">
+    <div class="modal-head">
+      <h2>ゲーム書き出し</h2>
+      <button id="exportCloseBtn" class="btn btn-small">×</button>
+    </div>
+    <label class="form-row">キャラ名 <input id="exportCharInput" type="text" value="char" maxlength="32"></label>
+    <label class="form-row">形式
+      <select id="exportFormatSelect">
+        <option value="sheet+json" selected>sheet+json（シート+Aseprite互換JSON）</option>
+        <option value="strip-per-tag">strip-per-tag（タグごとの横ストリップ）</option>
+        <option value="frames">frames（連番PNG）</option>
+      </select>
+    </label>
+    <label class="form-row">scale（整数拡大）<input id="exportScaleInput" type="number" min="1" max="8" value="1"></label>
+    <div class="form-row" hidden>
+      <span>反転タグ（mirror: export）</span>
+      <div id="exportMirrorList" class="mirror-list"></div>
+    </div>
+    <div>
+      <span class="hint">バリエーション（全て書き出されます）</span>
+      <ul id="exportVariantList" class="variant-list"></ul>
+    </div>
+    <fieldset class="scope-fieldset">
+      <legend>書き出し先</legend>
+      <label class="radio-row"><input type="radio" name="exportDest" value="download" checked> ブラウザダウンロード</label>
+      <label class="radio-row" id="exportDestRepoLabel"><input type="radio" name="exportDest" value="repo" id="exportDestRepo"> ゲームリポジトリ（EXPORT_ROOT）
+        <input id="exportDirInput" type="text" placeholder="assets/sprites（リポジトリ相対）" style="flex:1">
+      </label>
+    </fieldset>
+    <div class="ai-actions">
+      <button id="exportRunBtn" class="btn btn-accent">書き出し実行</button>
+    </div>
+    <div id="exportStatus" class="hint" aria-live="polite"></div>
+  </div>
+</div>
 
 <div id="toastRoot" aria-live="polite"></div>
 

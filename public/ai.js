@@ -435,6 +435,121 @@ export function initAi(store, toast) {
     }
   }
 
+  // ---------------------------------------------------------------------
+  // 配色バリエーション（mode:"palette"・§16.2）: 候補プレビュー→適用/保存
+  // ---------------------------------------------------------------------
+  const paletteSwapBtn = document.getElementById("paletteSwapBtn");
+  const paletteCandidate = document.getElementById("paletteCandidate");
+  const paletteCandidateCanvas = document.getElementById("paletteCandidateCanvas");
+  const paletteCandidateNote = document.getElementById("paletteCandidateNote");
+  const paletteApplyBtn = document.getElementById("paletteApplyBtn");
+  const paletteSaveVariantBtn = document.getElementById("paletteSaveVariantBtn");
+  const paletteDiscardBtn = document.getElementById("paletteDiscardBtn");
+
+  let candidatePalette = null;
+  let candidateInstruction = "";
+
+  function renderCandidatePreview() {
+    const p = store.state.project;
+    if (!candidatePalette) return;
+    const cellSize = Math.max(1, Math.min(5, Math.floor(140 / Math.max(p.width, p.height))));
+    paletteCandidateCanvas.width = p.width * cellSize;
+    paletteCandidateCanvas.height = p.height * cellSize;
+    const ctx = paletteCandidateCanvas.getContext("2d");
+    const base = p.baseFrame || p.frames[0].pixels;
+    const tmp = { width: p.width, height: p.height, palette: candidatePalette, frames: [{ pixels: base }] };
+    drawFrameToContext(ctx, tmp, 0, cellSize);
+  }
+
+  async function runPaletteSwap() {
+    const instruction = instructionInput.value.trim();
+    if (!instruction) {
+      toast("配色の指示を入力してください（例:「毒々しい緑基調に」）", "error");
+      return;
+    }
+    const project = store.state.project;
+    const base = project.baseFrame || project.frames[0].pixels;
+    const body = {
+      ...baseRequestFields(),
+      mode: "palette",
+      scope: "frame",
+      frameIndex: 0,
+      instruction,
+      images: [],
+    };
+    if (!body.baseFrameGrid) {
+      body.baseFrameGrid = pixelsToGridString(base, project.width, project.height);
+    }
+
+    abortController = new AbortController();
+    runBtn.disabled = true;
+    paletteSwapBtn.disabled = true;
+    abortBtn.disabled = false;
+    progressEl.classList.add("is-busy");
+    progressEl.textContent = "配色を生成中…";
+    try {
+      const evt = await streamEdit(body, { signal: abortController.signal });
+      const result = evt.palette;
+      if (!result || !result.paletteChanges.length) {
+        throw new Error("配色の変更が返されませんでした");
+      }
+      candidatePalette = project.palette.slice();
+      for (const pc of result.paletteChanges) {
+        if (pc.index < candidatePalette.length) candidatePalette[pc.index] = pc.color;
+      }
+      candidateInstruction = instruction;
+      paletteCandidateNote.textContent =
+        `${result.note}（変更色数: ${result.paletteChanges.length}）` +
+        (result.warnings?.length ? ` / 警告: ${result.warnings.join(" / ")}` : "");
+      paletteCandidate.hidden = false;
+      renderCandidatePreview();
+      progressEl.textContent = "配色候補を生成しました";
+      addHistoryEntry({ instruction: `[配色] ${instruction}`, note: result.note, editedCells: 0, warnings: result.warnings });
+    } catch (err) {
+      progressEl.textContent = err.name === "AbortError" ? "中断しました" : `エラー: ${err.message}`;
+      if (err.name !== "AbortError") {
+        toast(err.message, "error");
+        addHistoryEntry({ instruction: `[配色] ${instruction}`, error: err.message });
+      }
+    } finally {
+      runBtn.disabled = false;
+      paletteSwapBtn.disabled = false;
+      abortBtn.disabled = true;
+      progressEl.classList.remove("is-busy");
+      abortController = null;
+    }
+  }
+
+  paletteSwapBtn.addEventListener("click", runPaletteSwap);
+  paletteApplyBtn.addEventListener("click", () => {
+    if (!candidatePalette) return;
+    const project = store.state.project;
+    store.pushUndo();
+    project.palette = candidatePalette.slice();
+    store.notify();
+    paletteCandidate.hidden = true;
+    candidatePalette = null;
+    toast("配色をこのプロジェクトに適用しました");
+  });
+  paletteSaveVariantBtn.addEventListener("click", () => {
+    if (!candidatePalette) return;
+    const project = store.state.project;
+    const name = prompt("バリエーション名を入力してください", candidateInstruction.slice(0, 16)) ;
+    if (name === null) return;
+    const trimmed = name.trim().slice(0, 32) || `variant_${(project.variants || []).length + 1}`;
+    store.pushUndo();
+    if (!Array.isArray(project.variants)) project.variants = [];
+    project.variants.push({ name: trimmed, palette: candidatePalette.slice() });
+    store.notify();
+    paletteCandidate.hidden = true;
+    candidatePalette = null;
+    toast(`バリエーション「${trimmed}」を保存しました（書き出しに含まれます）`);
+  });
+  paletteDiscardBtn.addEventListener("click", () => {
+    paletteCandidate.hidden = true;
+    candidatePalette = null;
+  });
+
   runBtn.addEventListener("click", runAi);
   runMotionBtn.addEventListener("click", runMotion);
   abortBtn.addEventListener("click", () => {

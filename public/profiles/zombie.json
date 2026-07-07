@@ -1,0 +1,9 @@
+{
+  "name": "zombie",
+  "exportDir": "assets/sprites",
+  "format": "sheet+json",
+  "scale": 1,
+  "naming": "{char}_{variant}",
+  "requiredTags": ["idle", "walk", "attack", "death"],
+  "mirror": "runtime"
+}
