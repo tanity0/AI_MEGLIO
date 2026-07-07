@@ -3,6 +3,7 @@ import { initEditor } from "./editor.js";
 import { initTimeline } from "./timeline.js";
 import { initAi } from "./ai.js";
 import { encodeGif } from "./gif.js";
+import { importImageFile } from "./import.js";
 
 // ---------------------------------------------------------------------------
 // テキストグリッド文字割当て（サーバー側 server.js と同一の規則）
@@ -34,6 +35,29 @@ export function frameToGridRows(project, frameIndex) {
 }
 export function frameToGridString(project, frameIndex) {
   return frameToGridRows(project, frameIndex).join("\n");
+}
+
+// 任意のピクセル配列（Uint8Array）をグリッド文字列に変換（ベースフレーム用）
+export function pixelsToGridString(pixels, width, height) {
+  const rows = [];
+  for (let y = 0; y < height; y++) {
+    let row = "";
+    for (let x = 0; x < width; x++) row += charForIndex(pixels[y * width + x]) ?? ".";
+    rows.push(row);
+  }
+  return rows.join("\n");
+}
+
+// ベースフレームとの差分率（%）: §13.2-4 逸脱メーター
+export function deviationPercent(project, frameIndex) {
+  if (!project.baseFrame) return null;
+  const pixels = project.frames[frameIndex].pixels;
+  const base = project.baseFrame;
+  const n = Math.min(pixels.length, base.length);
+  if (n === 0) return 0;
+  let diff = 0;
+  for (let i = 0; i < n; i++) if (pixels[i] !== base[i]) diff++;
+  return Math.round((diff / n) * 100);
 }
 
 // ---------------------------------------------------------------------------
@@ -88,6 +112,17 @@ export function frameToPngDataUrl(project, frameIndex, cellSize = 8) {
   return canvas.toDataURL("image/png");
 }
 
+// 任意のピクセル配列をPNG data URLに（ベースフレーム画像用）
+export function pixelsToPngDataUrl(pixels, width, height, palette, cellSize = 8) {
+  const canvas = document.createElement("canvas");
+  canvas.width = width * cellSize;
+  canvas.height = height * cellSize;
+  const ctx = canvas.getContext("2d");
+  const tmpProject = { width, height, palette, frames: [{ pixels }] };
+  drawFrameToContext(ctx, tmpProject, 0, cellSize);
+  return canvas.toDataURL("image/png");
+}
+
 // ---------------------------------------------------------------------------
 // プロジェクトのシリアライズ（保存/読込・Undo用）
 // ---------------------------------------------------------------------------
@@ -98,6 +133,8 @@ export function cloneProject(project) {
     fps: project.fps,
     palette: project.palette.slice(),
     frames: project.frames.map((f) => ({ pixels: Uint8Array.from(f.pixels) })),
+    baseFrame: project.baseFrame ? Uint8Array.from(project.baseFrame) : null,
+    lockedRects: (project.lockedRects || []).map((r) => ({ ...r })),
   };
 }
 export function projectToPlain(project) {
@@ -107,16 +144,31 @@ export function projectToPlain(project) {
     fps: project.fps,
     palette: project.palette.slice(),
     frames: project.frames.map((f) => Array.from(f.pixels)),
+    baseFrame: project.baseFrame ? Array.from(project.baseFrame) : null,
+    lockedRects: (project.lockedRects || []).map((r) => ({ ...r })),
   };
 }
 export function projectFromPlain(o) {
   if (!o || typeof o !== "object") throw new Error("不正なプロジェクトファイルです");
-  const { width, height, fps, palette, frames } = o;
+  const { width, height, fps, palette, frames, baseFrame, lockedRects } = o;
   if (!Number.isInteger(width) || width < 8 || width > 96) throw new Error("width が不正です");
   if (!Number.isInteger(height) || height < 8 || height > 96) throw new Error("height が不正です");
   if (!Number.isInteger(fps) || fps < 1 || fps > 24) throw new Error("fps が不正です");
   if (!Array.isArray(palette) || palette.length < 1 || palette.length > 32) throw new Error("palette が不正です");
   if (!Array.isArray(frames) || frames.length < 1) throw new Error("frames が不正です");
+  let base = null;
+  if (Array.isArray(baseFrame)) {
+    base = Uint8Array.from(baseFrame);
+    if (base.length !== width * height) throw new Error("baseFrame のピクセル数が不正です");
+  }
+  const locked = [];
+  if (Array.isArray(lockedRects)) {
+    for (const r of lockedRects) {
+      if (!r || ![r.x, r.y, r.w, r.h].every(Number.isInteger)) continue;
+      if (r.x < 0 || r.y < 0 || r.w <= 0 || r.h <= 0 || r.x + r.w > width || r.y + r.h > height) continue;
+      locked.push({ x: r.x, y: r.y, w: r.w, h: r.h });
+    }
+  }
   return {
     width, height, fps,
     palette: palette.slice(),
@@ -125,6 +177,8 @@ export function projectFromPlain(o) {
       if (pixels.length !== width * height) throw new Error("frame のピクセル数が width*height と一致しません");
       return { pixels };
     }),
+    baseFrame: base,
+    lockedRects: locked,
   };
 }
 
@@ -180,7 +234,9 @@ export function createSampleProject() {
     buildSampleFrame(width, height, 0, false),
     buildSampleFrame(width, height, -2, true),
   ];
-  return { width, height, fps: 8, palette, frames };
+  // frame 0 をベースフレームとして保持（逸脱メーター・差分ビュー・アンカリング用）
+  const baseFrame = Uint8Array.from(frames[0].pixels);
+  return { width, height, fps: 8, palette, frames, baseFrame, lockedRects: [] };
 }
 
 // ---------------------------------------------------------------------------
@@ -197,6 +253,7 @@ class Store {
       colorIndex: 1,
       selection: null, // { frameIndex, x, y, w, h }
       onionSkin: false,
+      diffView: false,
       zoom: 12,
       zoomAuto: true,
       timelinePlaying: false,
@@ -296,6 +353,21 @@ function initHeader() {
     toast("新規プロジェクトを作成しました");
   });
 
+  document.getElementById("importImageInput").addEventListener("change", async (ev) => {
+    const file = ev.target.files[0];
+    ev.target.value = "";
+    if (!file) return;
+    try {
+      const project = await importImageFile(file);
+      if (!project) return; // ユーザーキャンセル
+      store.resetProject(project);
+      toast(`画像を ${project.width}×${project.height}・${project.palette.length}色 として読み込みました（frame 0 = ベースフレーム）`);
+    } catch (err) {
+      toast(`画像の読込に失敗しました: ${err.message}`, "error");
+      console.error(err);
+    }
+  });
+
   document.getElementById("saveJsonBtn").addEventListener("click", () => {
     const json = JSON.stringify(projectToPlain(store.state.project), null, 0);
     downloadBlob(new Blob([json], { type: "application/json" }), "ai-meglio-project.json");
@@ -379,6 +451,8 @@ function main() {
   initTimeline(store, toast);
   initAi(store, toast);
   store.notify();
+  // デバッグ/E2Eテスト用フック（UIには影響しない）
+  window.aiMeglio = { store };
 }
 
 document.addEventListener("DOMContentLoaded", main);

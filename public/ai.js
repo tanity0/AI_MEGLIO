@@ -1,5 +1,17 @@
-// ai.js — AIパネル・SSE受信・パッチ適用・再生プレビュー
-import { frameToGridString, frameToPngDataUrl, indexForChar, drawFrameToContext } from "./app.js";
+// ai.js — AIパネル・SSE受信・パッチ適用・モーション生成・再生プレビュー
+import {
+  frameToGridString,
+  frameToPngDataUrl,
+  pixelsToGridString,
+  pixelsToPngDataUrl,
+  indexForChar,
+  drawFrameToContext,
+} from "./app.js";
+
+const PRESET_DEFAULT_FRAMES = { walk: 4, run: 6, attack: 3, idle: 2, jump: 4 };
+const PRESET_LABELS = { walk: "歩き", run: "走り", attack: "攻撃", idle: "待機", jump: "ジャンプ", custom: "カスタム" };
+const MAGNITUDE_LABELS = { small: "小", medium: "中", large: "大" };
+const FACING_LABELS = { keep: "そのまま", right: "横（右向き）", left: "横（左向き）" };
 
 export function initAi(store, toast) {
   const targetInfo = document.getElementById("targetInfo");
@@ -12,8 +24,39 @@ export function initAi(store, toast) {
   const previewCanvas = document.getElementById("previewCanvas");
   const previewPlayToggle = document.getElementById("previewPlayToggle");
 
+  // タブ・モーション生成UI
+  const tabPatchBtn = document.getElementById("tabPatchBtn");
+  const tabMotionBtn = document.getElementById("tabMotionBtn");
+  const patchTab = document.getElementById("patchTab");
+  const motionTab = document.getElementById("motionTab");
+  const runMotionBtn = document.getElementById("runMotionBtn");
+  const motionPreset = document.getElementById("motionPreset");
+  const motionCustomText = document.getElementById("motionCustomText");
+  const motionFrames = document.getElementById("motionFrames");
+  const motionMagnitude = document.getElementById("motionMagnitude");
+  const motionBounce = document.getElementById("motionBounce");
+  const motionFacing = document.getElementById("motionFacing");
+
   let abortController = null;
   let userChoseScopeManually = false;
+
+  // ---------------------------------------------------------------------
+  // タブ切替（§13.3）
+  // ---------------------------------------------------------------------
+  function setTab(name) {
+    const isPatch = name === "patch";
+    tabPatchBtn.classList.toggle("is-active", isPatch);
+    tabMotionBtn.classList.toggle("is-active", !isPatch);
+    patchTab.hidden = !isPatch;
+    motionTab.hidden = isPatch;
+  }
+  tabPatchBtn.addEventListener("click", () => setTab("patch"));
+  tabMotionBtn.addEventListener("click", () => setTab("motion"));
+
+  motionPreset.addEventListener("change", () => {
+    const def = PRESET_DEFAULT_FRAMES[motionPreset.value];
+    if (def) motionFrames.value = String(def);
+  });
 
   // ---------------------------------------------------------------------
   // 対象情報表示 & スコープ自動切替
@@ -162,7 +205,28 @@ export function initAi(store, toast) {
   }
 
   // ---------------------------------------------------------------------
-  // 実行
+  // リクエスト共通フィールド（§13.4: baseFrameGrid と lockedRects は常に送る）
+  // ---------------------------------------------------------------------
+  function baseRequestFields() {
+    const project = store.state.project;
+    const fields = {
+      project: {
+        width: project.width,
+        height: project.height,
+        fps: project.fps,
+        palette: project.palette,
+        framesGrid: project.frames.map((_, i) => frameToGridString(project, i)),
+      },
+      lockedRects: (project.lockedRects || []).map((r) => ({ ...r })),
+    };
+    if (project.baseFrame) {
+      fields.baseFrameGrid = pixelsToGridString(project.baseFrame, project.width, project.height);
+    }
+    return fields;
+  }
+
+  // ---------------------------------------------------------------------
+  // 実行（修正タブ）
   // ---------------------------------------------------------------------
   async function runAi() {
     const instruction = instructionInput.value.trim();
@@ -179,20 +243,14 @@ export function initAi(store, toast) {
       return;
     }
 
-    const framesGrid = project.frames.map((_, i) => frameToGridString(project, i));
     const images = collectImageFrameIndexes(scope, frameIndex).map((i) => ({
       frame: i,
       dataUrl: frameToPngDataUrl(project, i, 8),
     }));
 
     const body = {
-      project: {
-        width: project.width,
-        height: project.height,
-        fps: project.fps,
-        palette: project.palette,
-        framesGrid,
-      },
+      ...baseRequestFields(),
+      mode: "patch",
       scope,
       instruction,
       images,
@@ -203,9 +261,100 @@ export function initAi(store, toast) {
       body.selection = { x: sel.x, y: sel.y, w: sel.w, h: sel.h };
     }
 
+    await executeEdit(body, instruction, (patch) => applyPatch(patch));
+  }
+
+  // ---------------------------------------------------------------------
+  // 実行（モーション生成タブ・§13.3）
+  // ---------------------------------------------------------------------
+  function motionApplyMode() {
+    const checked = document.querySelector('input[name="motionApply"]:checked');
+    return checked ? checked.value : "replace";
+  }
+
+  async function runMotion() {
+    const project = store.state.project;
+    if (!project.baseFrame) {
+      toast("ベースフレームがありません。「画像を開く」でドット絵を読み込んでください", "error");
+      return;
+    }
+    const motion = {
+      preset: motionPreset.value,
+      customText: motionCustomText.value.trim(),
+      frames: Math.max(2, Math.min(12, Number(motionFrames.value) || 4)),
+      magnitude: motionMagnitude.value,
+      bounce: motionBounce.checked,
+      facing: motionFacing.value,
+    };
+    if (motion.preset === "custom" && !motion.customText) {
+      toast("カスタムプリセットでは自由入力が必要です", "error");
+      return;
+    }
+
+    const parts = [
+      `「${PRESET_LABELS[motion.preset]}」モーションを${motion.frames}フレームで生成`,
+      `動きの大きさ:${MAGNITUDE_LABELS[motion.magnitude]}`,
+      `上下バウンス:${motion.bounce ? "あり" : "なし"}`,
+      `向き:${FACING_LABELS[motion.facing]}`,
+    ];
+    let instruction = parts.join("、");
+    if (motion.customText) instruction += `。${motion.customText}`;
+
+    const body = {
+      ...baseRequestFields(),
+      mode: "motion",
+      motion,
+      scope: "all",
+      instruction,
+      images: [
+        {
+          frame: 0,
+          dataUrl: pixelsToPngDataUrl(project.baseFrame, project.width, project.height, project.palette, 8),
+        },
+      ],
+    };
+
+    const applyMode = motionApplyMode();
+    await executeEdit(body, instruction, (patch) => applyMotionPatch(patch, applyMode));
+  }
+
+  // モーション生成結果の適用: newFrames を置き換え/追記で反映
+  function applyMotionPatch(patch, applyMode) {
+    const project = store.state.project;
+    const framesPixels = patch.newFrames.map((nf) => {
+      const pixels = new Uint8Array(project.width * project.height);
+      for (let y = 0; y < nf.rows.length && y < project.height; y++) {
+        const row = nf.rows[y];
+        for (let x = 0; x < row.length && x < project.width; x++) {
+          const idx = indexForChar(row[x]);
+          pixels[y * project.width + x] = idx >= 0 && idx < project.palette.length ? idx : 0;
+        }
+      }
+      return { pixels };
+    });
+
+    if (framesPixels.length > 0) {
+      if (applyMode === "replace") {
+        project.frames = [project.frames[0], ...framesPixels];
+      } else {
+        project.frames.push(...framesPixels);
+      }
+    }
+    store.clampAfterProjectChange();
+
+    // edits / paletteChanges は通常のパッチとして適用（newFramesは処理済み）
+    const { changedCells } = applyPatch({ ...patch, newFrames: [] });
+    return { changedCells, addedFrames: framesPixels.length };
+  }
+
+  // ---------------------------------------------------------------------
+  // SSE共通処理
+  // ---------------------------------------------------------------------
+  async function executeEdit(body, instruction, applyFn) {
     abortController = new AbortController();
     store.state.aiBusy = true;
     runBtn.disabled = true;
+    runMotionBtn.disabled = true;
     abortBtn.disabled = false;
     progressEl.classList.add("is-busy");
     let receivedChars = 0;
@@ -254,7 +403,7 @@ export function initAi(store, toast) {
             progressEl.textContent = `生成中… (${receivedChars}文字受信)`;
           } else if (evt.type === "result") {
             if (!pushedUndo) { store.pushUndo(); pushedUndo = true; }
-            const { changedCells, addedFrames } = applyPatch(evt.patch);
+            const { changedCells, addedFrames } = applyFn(evt.patch);
             flashChangedCells(changedCells);
             store.notify();
             addHistoryEntry({
@@ -286,6 +435,7 @@ export function initAi(store, toast) {
     } finally {
       store.state.aiBusy = false;
       runBtn.disabled = false;
+      runMotionBtn.disabled = false;
       abortBtn.disabled = true;
       progressEl.classList.remove("is-busy");
       abortController = null;
@@ -293,6 +443,7 @@ export function initAi(store, toast) {
   }
 
   runBtn.addEventListener("click", runAi);
+  runMotionBtn.addEventListener("click", runMotion);
   abortBtn.addEventListener("click", () => {
     if (abortController) abortController.abort();
   });

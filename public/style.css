@@ -199,6 +199,50 @@ aside, #canvasPanel {
   flex-direction: column;
   gap: 8px;
 }
+.ai-tabs {
+  display: flex;
+  gap: 4px;
+}
+.ai-tab {
+  flex: 1;
+  background: var(--bg-2);
+  color: var(--text-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius) var(--radius) 0 0;
+  padding: 7px 10px;
+  cursor: pointer;
+}
+.ai-tab:hover { color: var(--text-0); }
+.ai-tab.is-active {
+  background: var(--bg-3);
+  color: var(--accent);
+  font-weight: 600;
+  border-color: var(--accent-dark);
+}
+.tab-body { display: flex; flex-direction: column; gap: 8px; }
+.tab-body[hidden] { display: none; }
+
+.motion-form { display: flex; flex-direction: column; gap: 8px; }
+.form-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-1);
+}
+.motion-form select, .motion-form input[type=number], .motion-form input[type=text] {
+  background: var(--bg-2);
+  color: var(--text-0);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 5px 6px;
+  font-family: inherit;
+  font-size: 13px;
+}
+.motion-form select, .motion-form input[type=number] { width: 140px; }
+.motion-form input[type=text] { width: 100%; }
+
 .target-info {
   background: var(--bg-2);
   border: 1px solid var(--border);
@@ -320,6 +364,24 @@ aside, #canvasPanel {
   text-shadow: 0 0 2px #000;
 }
 .frame-thumb.is-active { border-color: var(--accent); }
+
+.frame-cell { display: flex; flex-direction: column; align-items: center; gap: 2px; flex: 0 0 auto; }
+.frame-cell .deviation {
+  font-size: 10px;
+  color: var(--text-2);
+  line-height: 1;
+  min-height: 10px;
+}
+.frame-cell .deviation.is-warn { color: var(--warn); font-weight: 700; }
+.frame-thumb .base-badge {
+  position: absolute; top: 0; left: 0;
+  font-size: 8px;
+  background: var(--accent-dark);
+  color: #0b1410;
+  padding: 1px 3px;
+  border-radius: 0 0 4px 0;
+  font-weight: 700;
+}
 
 .timeline-controls { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
 .timeline-controls .sep { width: 1px; height: 20px; background: var(--border); margin: 0 4px; }

@@ -9,6 +9,10 @@ export function initEditor(store, toast) {
   const wrap = document.getElementById("canvasWrap");
   const ctx = canvas.getContext("2d");
   const onionToggle = document.getElementById("onionSkinToggle");
+  const diffToggle = document.getElementById("diffViewToggle");
+  const lockSelectionBtn = document.getElementById("lockSelectionBtn");
+  const clearLocksBtn = document.getElementById("clearLocksBtn");
+  const lockCountEl = document.getElementById("lockCount");
   const zoomRange = document.getElementById("zoomRange");
   const zoomLabel = document.getElementById("zoomLabel");
   const clearSelectionBtn = document.getElementById("clearSelectionBtn");
@@ -188,6 +192,39 @@ export function initEditor(store, toast) {
     store.notify();
   });
 
+  diffToggle.addEventListener("change", () => {
+    store.state.diffView = diffToggle.checked;
+    if (diffToggle.checked && !project().baseFrame) {
+      toast("ベースフレームがありません（画像を開くとベースフレームが設定されます）");
+    }
+    store.notify();
+  });
+
+  // --- ロック領域（§13.2-3）---
+  lockSelectionBtn.addEventListener("click", () => {
+    const sel = store.state.selection;
+    if (!sel) {
+      toast("先に矩形選択ツールでロックする範囲を選択してください", "error");
+      return;
+    }
+    const p = project();
+    store.pushUndo();
+    if (!Array.isArray(p.lockedRects)) p.lockedRects = [];
+    p.lockedRects.push({ x: sel.x, y: sel.y, w: sel.w, h: sel.h });
+    store.state.selection = null;
+    store.notify();
+    toast(`ロック領域を追加しました（計 ${p.lockedRects.length} 件）`);
+  });
+
+  clearLocksBtn.addEventListener("click", () => {
+    const p = project();
+    if (!p.lockedRects || p.lockedRects.length === 0) return;
+    store.pushUndo();
+    p.lockedRects = [];
+    store.notify();
+    toast("すべてのロック領域を解除しました");
+  });
+
   // ---------------------------------------------------------------------
   // ツール切替
   // ---------------------------------------------------------------------
@@ -304,6 +341,37 @@ export function initEditor(store, toast) {
       ctx.restore();
     }
 
+    // 差分ビュー（§13.2-5）: ベースフレームとの差分セルをマゼンタ枠で表示
+    if (store.state.diffView && p.baseFrame) {
+      const pixels = p.frames[store.state.currentFrame].pixels;
+      ctx.save();
+      ctx.strokeStyle = "#ff3df0";
+      ctx.lineWidth = Math.max(1, Math.min(2, cellSize / 6));
+      for (let y = 0; y < p.height; y++) {
+        for (let x = 0; x < p.width; x++) {
+          const i = y * p.width + x;
+          if (pixels[i] !== p.baseFrame[i]) {
+            ctx.strokeRect(x * cellSize + 1, y * cellSize + 1, cellSize - 2, cellSize - 2);
+          }
+        }
+      }
+      ctx.restore();
+    }
+
+    // ロック領域（半透明赤）
+    const locked = p.lockedRects || [];
+    if (locked.length) {
+      ctx.save();
+      ctx.fillStyle = "rgba(239, 109, 122, 0.25)";
+      ctx.strokeStyle = "rgba(239, 109, 122, 0.9)";
+      ctx.lineWidth = 1.5;
+      for (const r of locked) {
+        ctx.fillRect(r.x * cellSize, r.y * cellSize, r.w * cellSize, r.h * cellSize);
+        ctx.strokeRect(r.x * cellSize + 0.5, r.y * cellSize + 0.5, r.w * cellSize - 1, r.h * cellSize - 1);
+      }
+      ctx.restore();
+    }
+
     // 選択範囲（点線）
     if (sel && sel.frameIndex === store.state.currentFrame) {
       ctx.save();
@@ -316,6 +384,8 @@ export function initEditor(store, toast) {
 
     renderPalette();
     canvasSizeLabel.textContent = `${p.width} x ${p.height}`;
+    lockCountEl.textContent = String((p.lockedRects || []).length);
+    diffToggle.checked = store.state.diffView;
     onionToggle.checked = store.state.onionSkin;
     zoomRange.value = String(store.state.zoom);
     zoomLabel.textContent = `${store.state.zoom}x`;

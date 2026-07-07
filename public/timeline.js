@@ -1,5 +1,5 @@
 // timeline.js — フレーム一覧・再生プレビュー（タイムラインバー）
-import { drawFrameToContext } from "./app.js";
+import { drawFrameToContext, deviationPercent } from "./app.js";
 
 const THUMB_SIZE = 48;
 
@@ -126,6 +126,9 @@ export function initTimeline(store, toast) {
 
     frameList.innerHTML = "";
     p.frames.forEach((frame, i) => {
+      const cell = document.createElement("div");
+      cell.className = "frame-cell";
+
       const thumb = document.createElement("div");
       thumb.className = "frame-thumb" + (i === store.state.currentFrame ? " is-active" : "");
       const canvas = document.createElement("canvas");
@@ -135,11 +138,31 @@ export function initTimeline(store, toast) {
       label.className = "frame-index";
       label.textContent = String(i);
       thumb.appendChild(label);
+      // ベースフレームバッジ（§13.1-4）
+      if (p.baseFrame && i === 0) {
+        const badge = document.createElement("span");
+        badge.className = "base-badge";
+        badge.textContent = "基準";
+        thumb.appendChild(badge);
+      }
       thumb.addEventListener("click", () => {
         store.state.currentFrame = i;
         store.notify();
       });
-      frameList.appendChild(thumb);
+      cell.appendChild(thumb);
+
+      // 逸脱メーター（§13.2-4）: ベースフレームとの差分率
+      const dev = document.createElement("span");
+      dev.className = "deviation";
+      const pct = deviationPercent(p, i);
+      if (pct !== null) {
+        dev.textContent = `${pct}%`;
+        dev.title = "ベースフレームとの差分率";
+        if (pct > 40) dev.classList.add("is-warn");
+      }
+      cell.appendChild(dev);
+
+      frameList.appendChild(cell);
     });
 
     delBtn.disabled = p.frames.length <= 1;

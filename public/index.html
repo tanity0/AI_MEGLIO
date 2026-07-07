@@ -15,6 +15,10 @@
   </div>
   <div class="header-actions">
     <button id="newProjectBtn" class="btn" title="新規プロジェクト">新規</button>
+    <label class="btn" for="importImageInput" title="ドット絵画像（PNG/GIF/WebP）を読み込み、frame 0 = ベースフレームにする">
+      画像を開く
+      <input id="importImageInput" type="file" accept="image/png,image/gif,image/webp" hidden>
+    </label>
     <button id="saveJsonBtn" class="btn" title="プロジェクトをJSONで保存">保存 (JSON)</button>
     <label class="btn" for="loadJsonInput" title="JSONファイルからプロジェクトを読込">
       読込 (JSON)
@@ -38,12 +42,15 @@
 
     <div class="tool-options">
       <label class="check-row"><input type="checkbox" id="onionSkinToggle"> オニオンスキン</label>
+      <label class="check-row"><input type="checkbox" id="diffViewToggle"> 差分ビュー（対ベース）</label>
       <div class="zoom-row">
         <span>ズーム</span>
         <input type="range" id="zoomRange" min="2" max="32" step="1" value="12">
         <span id="zoomLabel">12x</span>
       </div>
       <button id="clearSelectionBtn" class="btn btn-small">選択解除</button>
+      <button id="lockSelectionBtn" class="btn btn-small" title="選択中の矩形を変更禁止のロック領域にする">この範囲をロック</button>
+      <button id="clearLocksBtn" class="btn btn-small" title="すべてのロック領域を解除">全ロック解除 (<span id="lockCount">0</span>)</button>
     </div>
 
     <h2 class="panel-title">パレット</h2>
@@ -64,19 +71,71 @@
   <aside id="aiPanel">
     <h2 class="panel-title">AI編集</h2>
 
-    <div id="targetInfo" class="target-info">対象: フレーム全体</div>
+    <div class="ai-tabs" role="tablist">
+      <button id="tabPatchBtn" class="ai-tab is-active" role="tab" data-tab="patch">修正</button>
+      <button id="tabMotionBtn" class="ai-tab" role="tab" data-tab="motion">モーション生成</button>
+    </div>
 
-    <fieldset class="scope-fieldset">
-      <legend>対象スコープ</legend>
-      <label class="radio-row"><input type="radio" name="scope" value="selection" id="scopeSelection"> 選択範囲のみ</label>
-      <label class="radio-row"><input type="radio" name="scope" value="frame" id="scopeFrame" checked> 現在のフレーム</label>
-      <label class="radio-row"><input type="radio" name="scope" value="all" id="scopeAll"> 全フレーム</label>
-    </fieldset>
+    <div id="patchTab" class="tab-body">
+      <div id="targetInfo" class="target-info">対象: フレーム全体</div>
 
-    <textarea id="instructionInput" placeholder="例:「腕の振りをもっと大きく」「輪郭のジャギーを滑らかに」「フレーム1と2の間に中割りを追加」「全体を夕暮れの色調に」「この範囲の剣を炎の剣にして」（Cmd/Ctrl+Enterで実行）" rows="4"></textarea>
+      <fieldset class="scope-fieldset">
+        <legend>対象スコープ</legend>
+        <label class="radio-row"><input type="radio" name="scope" value="selection" id="scopeSelection"> 選択範囲のみ</label>
+        <label class="radio-row"><input type="radio" name="scope" value="frame" id="scopeFrame" checked> 現在のフレーム</label>
+        <label class="radio-row"><input type="radio" name="scope" value="all" id="scopeAll"> 全フレーム</label>
+      </fieldset>
+
+      <textarea id="instructionInput" placeholder="例:「腕の振りをもっと大きく」「輪郭のジャギーを滑らかに」「フレーム1と2の間に中割りを追加」「全体を夕暮れの色調に」「この範囲の剣を炎の剣にして」（Cmd/Ctrl+Enterで実行）" rows="4"></textarea>
+
+      <div class="ai-actions">
+        <button id="runAiBtn" class="btn btn-accent">実行</button>
+      </div>
+    </div>
+
+    <div id="motionTab" class="tab-body" hidden>
+      <div class="motion-form">
+        <label class="form-row">プリセット
+          <select id="motionPreset">
+            <option value="walk" selected>歩き</option>
+            <option value="run">走り</option>
+            <option value="attack">攻撃</option>
+            <option value="idle">待機</option>
+            <option value="jump">ジャンプ</option>
+            <option value="custom">カスタム</option>
+          </select>
+        </label>
+        <input id="motionCustomText" type="text" placeholder="自由入力（カスタム時、または補足指示）" maxlength="500">
+        <label class="form-row">フレーム数
+          <input id="motionFrames" type="number" min="2" max="12" value="4">
+        </label>
+        <label class="form-row">動きの大きさ
+          <select id="motionMagnitude">
+            <option value="small">小</option>
+            <option value="medium" selected>中</option>
+            <option value="large">大</option>
+          </select>
+        </label>
+        <label class="check-row"><input type="checkbox" id="motionBounce" checked> 上下バウンス</label>
+        <label class="form-row">向き
+          <select id="motionFacing">
+            <option value="keep" selected>そのまま</option>
+            <option value="right">横（右向き）</option>
+            <option value="left">横（左向き）</option>
+          </select>
+        </label>
+        <fieldset class="scope-fieldset">
+          <legend>生成結果の反映</legend>
+          <label class="radio-row"><input type="radio" name="motionApply" value="replace" checked> 既存フレームを置き換え（frame 0 のベース以外）</label>
+          <label class="radio-row"><input type="radio" name="motionApply" value="append"> 末尾に追記</label>
+        </fieldset>
+      </div>
+      <div class="ai-actions">
+        <button id="runMotionBtn" class="btn btn-accent">モーション生成</button>
+      </div>
+    </div>
 
     <div class="ai-actions">
-      <button id="runAiBtn" class="btn btn-accent">実行</button>
       <button id="abortAiBtn" class="btn" disabled>中断</button>
     </div>
     <div id="aiProgress" class="ai-progress" aria-live="polite"></div>

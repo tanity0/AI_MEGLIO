@@ -99,11 +99,25 @@ const SYSTEM_PROMPT = `あなたはドット絵アニメーションの精密編
 ## 画像とテキストの関係
 ユーザーメッセージには参考用のPNG画像（8倍拡大）とテキストグリッドの両方が含まれます。画像は見た目の把握のための参考情報であり、**正はテキストグリッドです**。出力する rows の文字は必ずグリッド表現の割当てに従ってください。
 
+## ベースフレーム・アンカリング（テイスト保持の最重要原則）
+リクエストに「ベースフレーム」のグリッドが含まれる場合、それが**唯一の正**です。新規フレームは白紙から描くのではなく、ベースフレームのコピーから始めて、動きに必要なピクセルだけを移動・変更してください。輪郭の太さ、シェーディングの段数、ドットの打ち方の癖を厳密に踏襲してください。使用する色はパレットindexのみで、新しい色を発明しないでください。
+
+## ロック領域
+リクエストに「ロック領域」が含まれる場合、その矩形内のセルは変更禁止です。ロック領域内のセルへの編集はサーバー側でベースの値に強制上書きされます。ロック領域を避けて編集してください。
+
+## モーション生成の定石（モーション生成モードのとき適用）
+- 歩き（4フレーム）: コンタクト→ダウン→パッシング→アップ。左右の足は前後が入れ替わる。接地（コンタクト/ダウン）フレームで体が最も低い。腕は足と逆位相に振る。
+- 走り: 歩きより前傾し歩幅・腕の振りが大きい。両足が地面から離れる滞空フレームを含める。
+- 攻撃: 予備動作（振りかぶり）→ヒット（最大リーチ）→フォロースルーの3拍。ヒットフレームが最も大きく伸びる。
+- 待機: 呼吸によるごくわずかな上下動（1〜2px）。輪郭の大部分は動かさない。
+- ジャンプ: しゃがみ込み→蹴り出し→滞空（体を伸ばす）→着地（膝を曲げる）。滞空で最高点。
+- いずれも各フレームはベースフレームのコピーを起点にし、動く部位のピクセルだけを移動する。フレーム間で色・輪郭の太さ・シルエットの密度を一定に保つ。
+
 ## 出力
 出力は指定されたJSONスキーマに厳密に従うJSONのみです。説明文やコードブロックのマークダウンは不要です。
 - edits: 既存フレームへの局所パッチ（frame, x, y, rows）
 - newFrames: 新規挿入するフレーム（insertAfter の直後に挿入。rows はフルサイズ）
-- paletteChanges: パレット色の変更（index, color は "#rrggbb" または "#rrggbbaa"）
+- paletteChanges: パレット色の変更（index, color は "#rrggbb" または "#rrggbbaa"）。モーション生成モードではサーバー側で破棄されるため、含めないでください。
 - note: 行った変更内容の一言サマリー（日本語、履歴ログに表示されます）
 
 変更が不要な項目は空配列 [] にしてください（省略はできません、必ず4つのキーすべてを含めてください）。`;
@@ -175,9 +189,13 @@ function readBody(req, maxBytes) {
 // ---------------------------------------------------------------------------
 // バリデーション
 // ---------------------------------------------------------------------------
+const MOTION_PRESETS = ["walk", "run", "attack", "idle", "jump", "custom"];
+const MOTION_MAGNITUDES = ["small", "medium", "large"];
+const MOTION_FACINGS = ["keep", "right", "left"];
+
 function validateEditRequest(body) {
   if (!body || typeof body !== "object") throw new Error("リクエストが不正です");
-  const { project, scope, frameIndex, selection, instruction, images } = body;
+  const { project, scope, frameIndex, selection, instruction, images, mode, baseFrameGrid, lockedRects, motion } = body;
   if (!project || typeof project !== "object") throw new Error("project が必要です");
   const { width, height, fps, palette, framesGrid } = project;
   if (!Number.isInteger(width) || width < 8 || width > 96) throw new Error("width が不正です");
@@ -201,6 +219,40 @@ function validateEditRequest(body) {
   }
   if (typeof instruction !== "string" || !instruction.trim()) throw new Error("instruction が必要です");
   if (instruction.length > 2000) throw new Error("instruction が長すぎます");
+
+  // --- §13.4 追加フィールド ---
+  if (mode !== undefined && !["patch", "motion"].includes(mode)) throw new Error("mode が不正です");
+  if (baseFrameGrid !== undefined && baseFrameGrid !== null) {
+    if (typeof baseFrameGrid !== "string") throw new Error("baseFrameGrid が不正です");
+    const rows = baseFrameGrid.split("\n");
+    if (rows.length !== height || !rows.every((r) => r.length === width && /^[.0-9a-v]*$/.test(r))) {
+      throw new Error("baseFrameGrid のサイズまたは文字が不正です");
+    }
+  }
+  if (lockedRects !== undefined && lockedRects !== null) {
+    if (!Array.isArray(lockedRects) || lockedRects.length > 64) throw new Error("lockedRects が不正です");
+    for (const r of lockedRects) {
+      if (!r || typeof r !== "object") throw new Error("lockedRects の要素が不正です");
+      const { x, y, w, h } = r;
+      if (![x, y, w, h].every((n) => Number.isInteger(n))) throw new Error("lockedRects の値が不正です");
+      if (x < 0 || y < 0 || w <= 0 || h <= 0 || x + w > width || y + h > height) {
+        throw new Error("lockedRects がキャンバス範囲外です");
+      }
+    }
+  }
+  if (mode === "motion") {
+    if (!baseFrameGrid) throw new Error("mode=motion では baseFrameGrid が必要です");
+    if (!motion || typeof motion !== "object") throw new Error("mode=motion では motion が必要です");
+    if (!MOTION_PRESETS.includes(motion.preset)) throw new Error("motion.preset が不正です");
+    if (motion.customText !== undefined && (typeof motion.customText !== "string" || motion.customText.length > 500)) {
+      throw new Error("motion.customText が不正です");
+    }
+    if (!Number.isInteger(motion.frames) || motion.frames < 2 || motion.frames > 12) throw new Error("motion.frames は2〜12です");
+    if (!MOTION_MAGNITUDES.includes(motion.magnitude)) throw new Error("motion.magnitude が不正です");
+    if (typeof motion.bounce !== "boolean") throw new Error("motion.bounce が不正です");
+    if (!MOTION_FACINGS.includes(motion.facing)) throw new Error("motion.facing が不正です");
+  }
+
   if (images !== undefined) {
     if (!Array.isArray(images)) throw new Error("images が不正です");
     for (const im of images) {
@@ -221,8 +273,12 @@ function extractBase64FromDataUrl(dataUrl) {
 // ---------------------------------------------------------------------------
 // プロンプト構築
 // ---------------------------------------------------------------------------
+const PRESET_LABELS = { walk: "歩き", run: "走り", attack: "攻撃", idle: "待機", jump: "ジャンプ", custom: "カスタム" };
+const MAGNITUDE_LABELS = { small: "小", medium: "中", large: "大" };
+const FACING_LABELS = { keep: "そのまま", right: "横（右向き）", left: "横（左向き）" };
+
 function buildUserContent(body) {
-  const { project, scope, frameIndex, selection, instruction, images } = body;
+  const { project, scope, frameIndex, selection, instruction, images, mode, baseFrameGrid, lockedRects, motion } = body;
   const { width, height, fps, palette, framesGrid } = project;
 
   const content = [];
@@ -258,15 +314,41 @@ function buildUserContent(body) {
     scopeText = `対象スコープ: フレーム${frameIndex} の矩形 (${selection.x}, ${selection.y}) 〜 (${selection.x + selection.w}, ${selection.y + selection.h})`;
   }
 
+  let baseSection = "";
+  if (baseFrameGrid) {
+    baseSection = `\n## ベースフレーム（テイストの唯一の正。新規フレームはこれのコピーを起点にする）\n${baseFrameGrid}\n`;
+  }
+
+  let lockedSection = "";
+  if (Array.isArray(lockedRects) && lockedRects.length > 0) {
+    const rects = lockedRects
+      .map((r) => `(${r.x}, ${r.y}) 〜 (${r.x + r.w}, ${r.y + r.h})`)
+      .join(", ");
+    lockedSection = `\n## ロック領域（変更禁止。編集してもベースの値に強制上書きされる）\n${rects}\n`;
+  }
+
+  let motionSection = "";
+  if (mode === "motion" && motion) {
+    const lines = [
+      `プリセット: ${PRESET_LABELS[motion.preset] || motion.preset}`,
+      `フレーム数: ${motion.frames}（newFrames にちょうど${motion.frames}枚のフルサイズフレームを生成する）`,
+      `動きの大きさ: ${MAGNITUDE_LABELS[motion.magnitude] || motion.magnitude}`,
+      `上下バウンス: ${motion.bounce ? "あり" : "なし"}`,
+      `向き: ${FACING_LABELS[motion.facing] || motion.facing}`,
+    ];
+    if (motion.preset === "custom" && motion.customText) lines.push(`自由指示: ${motion.customText}`);
+    motionSection = `\n## モーション生成モード\nベースフレームを基に、以下の設定でモーションの全フレームを newFrames として生成してください。edits と paletteChanges は空配列にしてください。\n${lines.join("\n")}\n`;
+  }
+
   const text = `## キャンバス
 サイズ: ${width}x${height}, fps: ${fps}
 
 ## パレット（index: 色）
 ${paletteText}
-
+${baseSection}
 ## 現在のフレーム（テキストグリッド）
 ${framesText}
-
+${lockedSection}${motionSection}
 ## ${scopeText}
 
 ## 編集指示
@@ -279,11 +361,20 @@ ${instruction}`;
 // ---------------------------------------------------------------------------
 // パッチ検証（サーバー側）
 // ---------------------------------------------------------------------------
+function cellLocked(x, y, lockedRects) {
+  for (const r of lockedRects) {
+    if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) return true;
+  }
+  return false;
+}
+
 function validateAndClampPatch(rawPatch, body) {
   const warnings = [];
-  const { project, scope, frameIndex, selection } = body;
+  const { project, scope, frameIndex, selection, mode, baseFrameGrid } = body;
   const { width, height, palette, framesGrid } = project;
   const frameCount = framesGrid.length;
+  const lockedRects = Array.isArray(body.lockedRects) ? body.lockedRects : [];
+  const baseRows = typeof baseFrameGrid === "string" ? baseFrameGrid.split("\n") : null;
 
   if (!rawPatch || typeof rawPatch !== "object") throw new Error("パッチの形式が不正です");
   const edits = Array.isArray(rawPatch.edits) ? rawPatch.edits : [];
@@ -353,6 +444,44 @@ function validateAndClampPatch(rawPatch, body) {
     cleanNewFrames.push({ insertAfter, rows });
   }
 
+  // --- ロック領域の強制上書き（§13.2-3）---
+  // ロック領域内のセルへの edits / newFrames はベースの値で強制上書きする。
+  if (lockedRects.length > 0) {
+    let overriddenCells = 0;
+    for (const e of cleanEdits) {
+      e.rows = e.rows.map((row, ry) => {
+        let out = "";
+        for (let rx = 0; rx < row.length; rx++) {
+          const ax = e.x + rx, ay = e.y + ry;
+          if (row[rx] !== "?" && cellLocked(ax, ay, lockedRects)) {
+            overriddenCells++;
+            out += baseRows ? baseRows[ay][ax] : "?";
+          } else {
+            out += row[rx];
+          }
+        }
+        return out;
+      });
+    }
+    for (const nf of cleanNewFrames) {
+      nf.rows = nf.rows.map((row, y) => {
+        let out = "";
+        for (let x = 0; x < row.length; x++) {
+          if (cellLocked(x, y, lockedRects) && baseRows) {
+            if (row[x] !== baseRows[y][x]) overriddenCells++;
+            out += baseRows[y][x];
+          } else {
+            out += row[x];
+          }
+        }
+        return out;
+      });
+    }
+    if (overriddenCells > 0) {
+      warnings.push(`ロック領域内の ${overriddenCells} セルをベースの値で強制上書きしました`);
+    }
+  }
+
   const cleanPaletteChanges = [];
   const hexRe = /^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$/;
   for (const pc of paletteChanges) {
@@ -367,6 +496,12 @@ function validateAndClampPatch(rawPatch, body) {
       continue;
     }
     cleanPaletteChanges.push({ index, color });
+  }
+
+  // --- パレットロック（§13.2-1）: モーション生成モードでは paletteChanges を破棄 ---
+  if (mode === "motion" && cleanPaletteChanges.length > 0) {
+    warnings.push(`モーション生成モードのため paletteChanges（${cleanPaletteChanges.length}件）を破棄しました`);
+    cleanPaletteChanges.length = 0;
   }
 
   return {
@@ -430,30 +565,53 @@ function sseSend(res, obj) {
 // MOCKモード: 選択範囲（なければフレーム全体の中央8x8）をパレット最後の色で塗る
 // ---------------------------------------------------------------------------
 async function runMock(body, res, aborted) {
-  const { project, scope, frameIndex, selection } = body;
+  const { project, scope, frameIndex, selection, mode, baseFrameGrid, motion } = body;
   const { width, height, palette } = project;
   const lastIdx = palette.length - 1;
   const ch = charForIndex(lastIdx) || "1";
 
-  let rx, ry, rw, rh;
-  if (scope === "selection" && selection) {
-    rx = selection.x; ry = selection.y; rw = selection.w; rh = selection.h;
+  let fakePatch;
+  if (mode === "motion" && motion && baseFrameGrid) {
+    // ベースフレームのコピーを上下にシフトした newFrames を motion.frames 枚生成
+    const baseRows = baseFrameGrid.split("\n");
+    const blankRow = ".".repeat(width);
+    const newFrames = [];
+    for (let i = 0; i < motion.frames; i++) {
+      let rows;
+      if (i % 2 === 1) {
+        rows = baseRows.slice(1).concat([blankRow]); // 1px 上へ
+      } else {
+        rows = baseRows.slice();
+      }
+      newFrames.push({ insertAfter: project.framesGrid.length - 1, rows });
+    }
+    fakePatch = {
+      edits: [],
+      newFrames,
+      paletteChanges: [{ index: 1, color: "#ff00ff" }], // モーション生成モードでの破棄を確認するためのダミー
+      note: `MOCK: ベースフレームを基に${motion.frames}枚のモーションフレームを生成しました（${motion.preset}）`,
+    };
   } else {
-    rw = Math.min(8, width);
-    rh = Math.min(8, height);
-    rx = Math.floor((width - rw) / 2);
-    ry = Math.floor((height - rh) / 2);
+    let rx, ry, rw, rh;
+    if (scope === "selection" && selection) {
+      rx = selection.x; ry = selection.y; rw = selection.w; rh = selection.h;
+    } else {
+      rw = Math.min(8, width);
+      rh = Math.min(8, height);
+      rx = Math.floor((width - rw) / 2);
+      ry = Math.floor((height - rh) / 2);
+    }
+    const targetFrame = scope === "all" ? 0 : frameIndex;
+    const rows = Array.from({ length: rh }, () => ch.repeat(rw));
+    fakePatch = {
+      edits: [{ frame: targetFrame, x: rx, y: ry, rows }],
+      newFrames: [],
+      paletteChanges: [],
+      note: "MOCK: 選択範囲（または中央8x8）を最終パレット色で塗りました",
+    };
   }
 
-  const targetFrame = scope === "all" ? 0 : frameIndex;
-  const rows = Array.from({ length: rh }, () => ch.repeat(rw));
-
-  const fakeText = JSON.stringify({
-    edits: [{ frame: targetFrame, x: rx, y: ry, rows }],
-    newFrames: [],
-    paletteChanges: [],
-    note: "MOCK: 選択範囲（または中央8x8）を最終パレット色で塗りました",
-  });
+  const fakeText = JSON.stringify(fakePatch);
 
   // 疑似ストリーミング（2秒かけて分割送出）
   const chunkCount = 8;
