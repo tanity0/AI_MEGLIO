@@ -81,6 +81,22 @@
   <aside id="aiPanel">
     <h2 class="panel-title">AI編集</h2>
 
+    <details id="styleSection">
+      <summary>トンマナ（スタイルアンカー）</summary>
+      <div class="style-body">
+        <div class="style-row">
+          <img id="styleThumb" alt="トンマナ参考画像" hidden>
+          <div class="style-row-btns">
+            <label class="btn btn-small" for="styleUploadInput">参考画像を読込<input id="styleUploadInput" type="file" accept="image/*" hidden></label>
+            <button id="styleAnalyzeBtn" class="btn btn-small btn-accent">AIで解析</button>
+          </div>
+        </div>
+        <textarea id="styleGuideText" rows="5" maxlength="4000" placeholder="スタイルガイド（AIで解析、または手書き。このテキストが正で、有効時は全AIリクエストに適用されます）"></textarea>
+        <label class="check-row"><input type="checkbox" id="styleEnabledToggle"> トンマナを全AIリクエストに適用</label>
+        <div id="styleStatus" class="ai-progress" aria-live="polite"></div>
+      </div>
+    </details>
+
     <div class="ai-tabs" role="tablist">
       <button id="tabPatchBtn" class="ai-tab is-active" role="tab" data-tab="patch">修正</button>
       <button id="tabMotionBtn" class="ai-tab" role="tab" data-tab="motion">モーション生成</button>
@@ -97,7 +113,7 @@
         <label class="radio-row"><input type="radio" name="scope" value="all" id="scopeAll"> 全フレーム</label>
       </fieldset>
 
-      <textarea id="instructionInput" placeholder="例:「腕の振りをもっと大きく」「輪郭のジャギーを滑らかに」「フレーム1と2の間に中割りを追加」「全体を夕暮れの色調に」「この範囲の剣を炎の剣にして」（Cmd/Ctrl+Enterで実行）" rows="4"></textarea>
+      <textarea id="instructionInput" placeholder="例:「腕の振りをもっと大きく」「輪郭のジャギーを滑らかに」「フレーム1と2の間に中割りを追加」「全体を夕暮れの色調に」「この範囲の剣を炎の剣にして」「このトンマナで新しい敵キャラを描いて」（Cmd/Ctrl+Enterで実行）" rows="4"></textarea>
 
       <div class="ai-actions">
         <button id="runAiBtn" class="btn btn-accent">実行</button>
@@ -234,6 +250,7 @@
 
     <div class="ai-actions">
       <button id="abortAiBtn" class="btn" disabled>中断</button>
+      <span id="styleActiveBadge" class="style-badge" hidden>トンマナ適用中</span>
     </div>
     <div id="aiProgress" class="ai-progress" aria-live="polite"></div>
 

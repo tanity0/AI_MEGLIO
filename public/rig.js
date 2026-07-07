@@ -11,6 +11,7 @@ import {
   adjustTagsOnInsert,
   adjustTagsOnDelete,
   addGeneratedTag,
+  styleRequestFields,
 } from "./app.js";
 
 // ---------------------------------------------------------------------------
@@ -468,6 +469,7 @@ export function initRig(store, toast) {
       },
       baseFrameGrid: pixelsToGridString(basePixels(p), p.width, p.height),
       lockedRects: (p.lockedRects || []).map((r) => ({ ...r })),
+      ...styleRequestFields(p, store.state.serverConfig), // §17.3
     };
   }
 

@@ -9,6 +9,7 @@ import {
   adjustTagsOnInsert,
   adjustTagsOnDelete,
   addGeneratedTag,
+  styleRequestFields,
 } from "./app.js";
 import { streamEdit } from "./api.js";
 
@@ -237,6 +238,7 @@ export function initAi(store, toast) {
     if (project.baseFrame) {
       fields.baseFrameGrid = pixelsToGridString(project.baseFrame, project.width, project.height);
     }
+    Object.assign(fields, styleRequestFields(project, store.state.serverConfig)); // §17.3
     return fields;
   }
 

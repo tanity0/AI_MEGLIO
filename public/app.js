@@ -6,6 +6,7 @@ import { encodeGif } from "./gif.js";
 import { importImageFile } from "./import.js";
 import { initRig } from "./rig.js";
 import { initGameExport, initGameView } from "./gameexport.js";
+import { initStyleRef } from "./styleref.js";
 
 // ---------------------------------------------------------------------------
 // テキストグリッド文字割当て（サーバー側 server.js と同一の規則）
@@ -238,6 +239,36 @@ export function addGeneratedTag(project, baseName, start, end) {
   return tag;
 }
 
+// §17.1: トンマナ参照 {imageDataUrl, guide, enabled}
+function cloneStyleRef(s) {
+  if (!s || typeof s !== "object") return null;
+  return {
+    imageDataUrl: typeof s.imageDataUrl === "string" ? s.imageDataUrl : "",
+    guide: typeof s.guide === "string" ? s.guide : "",
+    enabled: !!s.enabled,
+  };
+}
+function styleRefFromPlain(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const imageDataUrl = typeof raw.imageDataUrl === "string" && raw.imageDataUrl.startsWith("data:image/") ? raw.imageDataUrl : "";
+  const guide = typeof raw.guide === "string" ? raw.guide.slice(0, 4000) : "";
+  if (!imageDataUrl && !guide) return null;
+  return { imageDataUrl, guide, enabled: !!raw.enabled };
+}
+
+// §17.3: styleRef.enabled のとき全AIリクエストに付与するフィールド
+// （画像はAPIバックエンドのみ。CLIではテキストのみ）
+export function styleRequestFields(project, serverConfig) {
+  const s = project.styleRef;
+  if (!s || !s.enabled || !s.guide.trim()) return {};
+  const fields = { styleGuide: s.guide.trim() };
+  const backend = serverConfig?.backend || "api";
+  if (backend === "api" && s.imageDataUrl && s.imageDataUrl.startsWith("data:image/png;base64,")) {
+    fields.styleImage = s.imageDataUrl;
+  }
+  return fields;
+}
+
 export function cloneProject(project) {
   return {
     width: project.width,
@@ -251,6 +282,7 @@ export function cloneProject(project) {
     tags: cloneTags(project.tags),
     variants: (project.variants || []).map((v) => ({ name: v.name, palette: v.palette.slice() })),
     profile: project.profile ? JSON.parse(JSON.stringify(project.profile)) : null,
+    styleRef: cloneStyleRef(project.styleRef),
   };
 }
 export function projectToPlain(project) {
@@ -266,6 +298,7 @@ export function projectToPlain(project) {
     tags: cloneTags(project.tags),
     variants: (project.variants || []).map((v) => ({ name: v.name, palette: v.palette.slice() })),
     profile: project.profile ? JSON.parse(JSON.stringify(project.profile)) : null,
+    styleRef: cloneStyleRef(project.styleRef),
   };
 }
 function rigFromPlain(raw, width, height) {
@@ -353,6 +386,7 @@ export function projectFromPlain(o) {
     rig: rigFromPlain(o.rig, width, height),
     variants: variantsFromPlain(o.variants, palette.length),
     profile: o.profile && typeof o.profile === "object" ? o.profile : null,
+    styleRef: styleRefFromPlain(o.styleRef),
   };
   // §16.1: 既存プロジェクト（tags無し）は「all」タグを自動生成
   const tags = tagsFromPlain(o.tags, project.frames.length, fps);
@@ -414,7 +448,7 @@ export function createSampleProject() {
   ];
   // frame 0 をベースフレームとして保持（逸脱メーター・差分ビュー・アンカリング用）
   const baseFrame = Uint8Array.from(frames[0].pixels);
-  const project = { width, height, fps: 8, palette, frames, baseFrame, lockedRects: [], variants: [], profile: null };
+  const project = { width, height, fps: 8, palette, frames, baseFrame, lockedRects: [], variants: [], profile: null, styleRef: null };
   project.tags = defaultTags(project);
   return project;
 }
@@ -437,6 +471,7 @@ class Store {
       rigSelectedPart: null,
       rigAdjustMode: false,
       activeTagIndex: -1, // §16.1: 選択中タグ（-1 = 全体）
+      serverConfig: null, // /api/config の内容（§17でバックエンド判定に使用）
       zoom: 12,
       zoomAuto: true,
       timelinePlaying: false,
@@ -653,6 +688,7 @@ async function initBackendLabel() {
   try {
     const res = await fetch("/api/config");
     const cfg = await res.json();
+    store.state.serverConfig = cfg;
     const name = cfg.mock ? "MOCK" : cfg.backend === "cli" ? "Claude Code CLI" : "API";
     label.textContent = `バックエンド: ${name}`;
     label.title = cfg.mock
@@ -674,6 +710,7 @@ function main() {
   initRig(store, toast);
   initGameExport(store, toast);
   initGameView(store);
+  initStyleRef(store, toast);
   initBackendLabel();
   store.notify();
   // デバッグ/E2Eテスト用フック（UIには影響しない）

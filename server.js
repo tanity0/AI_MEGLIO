@@ -141,6 +141,17 @@ const PALETTE_SCHEMA = {
   additionalProperties: false,
 };
 
+// トンマナ解析（mode=style）用スキーマ（§17.2）
+const STYLE_SCHEMA = {
+  type: "object",
+  properties: {
+    guide: { type: "string" },
+    note: { type: "string" },
+  },
+  required: ["guide", "note"],
+  additionalProperties: false,
+};
+
 const SYSTEM_PROMPT = `あなたはドット絵アニメーションの精密編集エンジンです。
 
 ## グリッド表現
@@ -170,6 +181,12 @@ const SYSTEM_PROMPT = `あなたはドット絵アニメーションの精密編
 
 ## AI清書（cleanupモードのとき適用）
 リグ合成で生じた回転ジャギー・パーツ継ぎ目の隙間を、パレット内の色・最小差分で修正してください。変更許可セル（リクエストに含まれるマスクで '1' のセル）以外への編集はサーバー側で破棄されます。newFrames と paletteChanges は使わず、対象フレームへの edits のみを返してください。
+
+## トンマナ解析（styleモードのとき適用）
+与えられた参考画像（またはテキストグリッド）のスタイルを分析し、guide に以下の観点を1行ずつ日本語で記述してください: 頭身・デフォルメ度 / 輪郭線の有無・太さ・色 / シェーディング段数とディザの有無 / ハイライトの入れ方 / 彩度・明度の傾向 / 代表色 / ピクセルの打ち方の癖（角の丸め方、1pxディテールの密度）。guide は後続のすべての編集の基準として使われるため、具体的かつ簡潔に書いてください。
+
+## トンマナ基準（与えられた場合）
+リクエストに「トンマナ基準」が含まれる場合、それを厳守してください。ベースフレームのテイストとトンマナ基準が矛盾するときは、編集対象の絵を**トンマナ基準へ寄せる方向**で修正します。ただし指示が明示的に求めない限り、一度の編集で全面的に描き直さず、指示された範囲内でのみ寄せてください。
 
 ## パレットスワップ（paletteモードのとき適用）
 指示に従ってパレットの色だけを変更してください。ドットの形状には一切触れません。出力は paletteChanges と note のみです。index 0（透明）は変更しないでください。元のパレットの明暗関係（輪郭が最も暗い等）を保ったまま色相・彩度を変えると、キャラの読みやすさが維持されます。
@@ -290,7 +307,7 @@ function validateEditRequest(body) {
   if (instruction.length > 2000) throw new Error("instruction が長すぎます");
 
   // --- §13.4 / §14.6 追加フィールド ---
-  if (mode !== undefined && !["patch", "motion", "segment", "cleanup", "palette"].includes(mode)) throw new Error("mode が不正です");
+  if (mode !== undefined && !["patch", "motion", "segment", "cleanup", "palette", "style"].includes(mode)) throw new Error("mode が不正です");
   if (baseFrameGrid !== undefined && baseFrameGrid !== null) {
     if (typeof baseFrameGrid !== "string") throw new Error("baseFrameGrid が不正です");
     const rows = baseFrameGrid.split("\n");
@@ -314,6 +331,35 @@ function validateEditRequest(body) {
   }
   if (mode === "palette") {
     if (!baseFrameGrid) throw new Error("mode=palette では baseFrameGrid が必要です");
+  }
+  // --- §17 追加フィールド ---
+  if (body.styleGuide !== undefined && body.styleGuide !== null) {
+    if (typeof body.styleGuide !== "string" || body.styleGuide.length > 4000) throw new Error("styleGuide が不正です");
+  }
+  if (body.styleImage !== undefined && body.styleImage !== null) {
+    if (typeof body.styleImage !== "string" || !body.styleImage.startsWith("data:image/png;base64,")) {
+      throw new Error("styleImage は PNG data URL である必要があります");
+    }
+  }
+  if (body.styleGrid !== undefined && body.styleGrid !== null) {
+    if (typeof body.styleGrid !== "string") throw new Error("styleGrid が不正です");
+    const rows = body.styleGrid.split("\n");
+    if (rows.length < 1 || rows.length > 96 || !rows.every((r) => r.length >= 1 && r.length <= 96 && r.length === rows[0].length && /^[.0-9a-v]*$/.test(r))) {
+      throw new Error("styleGrid のサイズまたは文字が不正です");
+    }
+  }
+  if (body.stylePalette !== undefined && body.stylePalette !== null) {
+    if (!Array.isArray(body.stylePalette) || body.stylePalette.length < 1 || body.stylePalette.length > 32 ||
+        !body.stylePalette.every((c) => typeof c === "string")) {
+      throw new Error("stylePalette が不正です");
+    }
+  }
+  if (mode === "style") {
+    const hasImage = Array.isArray(images) && images.length > 0;
+    const hasGrid = typeof body.styleGrid === "string" && Array.isArray(body.stylePalette);
+    if (!hasImage && !hasGrid) {
+      throw new Error("mode=style では参考画像（images）またはテキストグリッド（styleGrid + stylePalette）が必要です");
+    }
   }
   if (mode === "cleanup") {
     if (!Number.isInteger(frameIndex) || frameIndex < 0 || frameIndex >= framesGrid.length) {
@@ -367,10 +413,29 @@ function buildUserText(body) {
   const { project, scope, frameIndex, selection, instruction, mode, baseFrameGrid, lockedRects, motion, allowedMask } = body;
   const { width, height, fps, palette, framesGrid } = project;
 
+  // §17: トンマナ基準（style モード以外の全モードに追記）
+  const styleSection = mode !== "style" && typeof body.styleGuide === "string" && body.styleGuide.trim()
+    ? `## トンマナ基準（厳守）\n${body.styleGuide.trim()}\n\n`
+    : "";
+
+  // §17.2: styleモードは参考画像（またはグリッド）の解析のみ
+  if (mode === "style") {
+    let gridSection = "";
+    if (typeof body.styleGrid === "string" && Array.isArray(body.stylePalette)) {
+      const palText = body.stylePalette.map((color, i) => `${charForIndex(i)}: ${color}`).join(", ");
+      gridSection = `\n## 参考画像のテキストグリッド\nパレット: ${palText}\n${body.styleGrid}\n`;
+    }
+    return `## トンマナ解析モード
+添付の参考画像（またはテキストグリッド）のドット絵スタイルを分析し、スキーマに従って guide と note を返してください。
+${gridSection}
+## 指示
+${instruction}`;
+  }
+
   // §16.2: paletteモードはパレット+ベースフレーム1枚のみの軽量プロンプト
   if (mode === "palette") {
     const palText = palette.map((color, i) => `${charForIndex(i)}: ${color}`).join(", ");
-    return `## パレットスワップモード
+    return `${styleSection}## パレットスワップモード
 サイズ: ${width}x${height}
 
 ## 現在のパレット（index: 色）
@@ -436,7 +501,7 @@ ${instruction}`;
     motionSection = `\n## モーション生成モード\nベースフレームを基に、以下の設定でモーションの全フレームを newFrames として生成してください。edits と paletteChanges は空配列にしてください。\n${lines.join("\n")}\n`;
   }
 
-  return `## キャンバス
+  return `${styleSection}## キャンバス
 サイズ: ${width}x${height}, fps: ${fps}
 
 ## パレット（index: 色）
@@ -453,8 +518,15 @@ ${instruction}`;
 
 // リクエストから画像（base64）を正規化して取り出す
 function buildImages(body) {
-  if (!Array.isArray(body.images)) return [];
-  return body.images.map((im) => ({ frame: im.frame, data: extractBase64FromDataUrl(im.dataUrl) }));
+  const out = [];
+  // §17.3: トンマナ参考画像（APIバックエンドのみ。CLIでは includeImages=false で落ちる）
+  if (typeof body.styleImage === "string" && body.mode !== "style") {
+    out.push({ frame: "style", data: extractBase64FromDataUrl(body.styleImage), caption: "↑ トンマナ基準の参考画像" });
+  }
+  if (Array.isArray(body.images)) {
+    for (const im of body.images) out.push({ frame: im.frame, data: extractBase64FromDataUrl(im.dataUrl) });
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -643,6 +715,16 @@ function validateAndClampPatch(rawPatch, body) {
 }
 
 // ---------------------------------------------------------------------------
+// style レスポンスの検証（§17.2）
+// ---------------------------------------------------------------------------
+function validateStyleResult(raw) {
+  if (!raw || typeof raw !== "object") throw new Error("style結果の形式が不正です");
+  const guide = typeof raw.guide === "string" ? raw.guide.trim().slice(0, 4000) : "";
+  if (!guide) throw new Error("guide が空です");
+  return { guide, note: typeof raw.note === "string" ? raw.note : "", warnings: [] };
+}
+
+// ---------------------------------------------------------------------------
 // palette レスポンスの検証（§16.2）
 // ---------------------------------------------------------------------------
 function validatePaletteResult(raw, body) {
@@ -776,7 +858,12 @@ async function runMock(body, res, aborted) {
   const ch = charForIndex(lastIdx) || "1";
 
   let fakePatch;
-  if (mode === "palette") {
+  if (mode === "style") {
+    fakePatch = {
+      guide: "頭身: 2頭身デフォルメ\n輪郭: 黒(#1a1c2c)1pxを常時使用\nシェーディング: 2段・ディザなし\nハイライト: 左上光源で上端に1px\n彩度・明度: 中彩度・やや暗め\n代表色: #1a1c2c, #5d275d, #b13e53\n打ち方: 角は1px面取り、1pxディテールは控えめ",
+      note: "MOCK: 固定のスタイルガイドを返しました",
+    };
+  } else if (mode === "palette") {
     // 固定の paletteChanges（緑基調・§16.7）
     const greens = ["#1a3d1a", "#2e7d32", "#57a05a", "#7fc383", "#a5d6a7"];
     const paletteChanges = [];
@@ -882,6 +969,9 @@ async function runMock(body, res, aborted) {
     } else if (mode === "palette") {
       const palette = validatePaletteResult(JSON.parse(fakeText), body);
       sseSend(res, { type: "result", palette, usage: { mock: true } });
+    } else if (mode === "style") {
+      const style = validateStyleResult(JSON.parse(fakeText));
+      sseSend(res, { type: "result", style, usage: { mock: true } });
     } else {
       const patch = validateAndClampPatch(JSON.parse(fakeText), body);
       sseSend(res, { type: "result", patch, usage: { mock: true } });
@@ -914,7 +1004,7 @@ async function callBackendApi({ systemText, userText, images, schema, onDelta, r
   const content = [];
   for (const im of images) {
     content.push({ type: "image", source: { type: "base64", media_type: "image/png", data: im.data } });
-    content.push({ type: "text", text: `↑ フレーム${im.frame} の参考画像（8倍拡大PNG）` });
+    content.push({ type: "text", text: im.caption || `↑ フレーム${im.frame} の参考画像（8倍拡大PNG）` });
   }
   content.push({ type: "text", text: userText });
 
@@ -1098,7 +1188,7 @@ async function runReal(body, res, aborted) {
   ) {
     return runRealSplitAllFrames(body, res, aborted);
   }
-  const schema = body.mode === "segment" ? SEGMENT_SCHEMA : body.mode === "palette" ? PALETTE_SCHEMA : PATCH_SCHEMA;
+  const schema = body.mode === "segment" ? SEGMENT_SCHEMA : body.mode === "palette" ? PALETTE_SCHEMA : body.mode === "style" ? STYLE_SCHEMA : PATCH_SCHEMA;
   const includeImages = BACKEND !== "cli"; // §15.2: CLIモードは画像を渡さない
   const images = includeImages ? buildImages(body) : [];
   const userText = buildUserText(body);
@@ -1138,6 +1228,9 @@ async function runReal(body, res, aborted) {
       } else if (body.mode === "palette") {
         const palette = validatePaletteResult(raw, body);
         sseSend(res, { type: "result", palette, usage });
+      } else if (body.mode === "style") {
+        const style = validateStyleResult(raw);
+        sseSend(res, { type: "result", style, usage });
       } else {
         const patch = validateAndClampPatch(raw, body);
         sseSend(res, { type: "result", patch, usage });

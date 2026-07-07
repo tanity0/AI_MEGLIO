@@ -663,3 +663,51 @@ aside, #canvasPanel {
   border: 1px solid var(--border);
   background: #202020;
 }
+
+/* ---------- トンマナ（§17） ---------- */
+#styleSection {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-2);
+  padding: 6px 10px;
+}
+#styleSection summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-1);
+  user-select: none;
+}
+#styleSection[open] summary { color: var(--accent); }
+.style-body { display: flex; flex-direction: column; gap: 8px; padding-top: 8px; }
+.style-row { display: flex; gap: 10px; align-items: flex-start; }
+.style-row-btns { display: flex; flex-direction: column; gap: 6px; }
+#styleThumb {
+  width: 72px;
+  height: 72px;
+  object-fit: contain;
+  image-rendering: pixelated;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #202020;
+}
+#styleGuideText {
+  width: 100%;
+  resize: vertical;
+  background: var(--bg-1);
+  color: var(--text-0);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px;
+  font-size: 12px;
+  font-family: inherit;
+}
+.style-badge {
+  align-self: center;
+  flex: 0 0 auto;
+  font-size: 10px;
+  background: var(--accent-dark);
+  color: #0b1410;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-weight: 700;
+}
