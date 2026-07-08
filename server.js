@@ -2172,7 +2172,9 @@ async function handleExchangeKit(req, res) {
     `- コマ数: ${total}（左から第1〜第${total}コマ、等間隔に並べる）`,
     `- キャラの大きさと足元の位置は全コマで固定する`,
     `- 背景は単色（発光・フチ・影・グラデーションは付けない）`,
-    `- 画風・頭身・配色・輪郭の太さ・ドット感は参照画像と完全に同じにする（別キャラにしない）`,
+    `- **最優先はポーズ**: 下記の各コマのポーズ指示を正確に表現することを何よりも優先する`,
+    `- ドットの細かさ・質感・線の描き味は参照画像と違って構わない（こちらのツールで変換してパレットを統一するため）`,
+    `- 守ってほしいのは次だけ（別キャラにしない）: **頭身と手足の長さ（体の比率）は参照画像を厳守**（走りやジャンプでも脚や腕を長く描かない）、シルエット、おおまかな配色、装飾の有無`,
   ];
   if (preset === "custom" && customText) lines.push(`- 動きの内容: ${customText}`);
   lines.push("", "各コマのポーズ:");
@@ -2180,7 +2182,7 @@ async function handleExchangeKit(req, res) {
     lines.push(`- 第${i + 1}コマ: ${motionframePhaseHint(preset, i, total)}`);
   }
   if (styleGuide) {
-    lines.push("", "スタイルガイド（厳守）:", styleGuide);
+    lines.push("", "スタイルの参考（ポーズより優先しない）:", styleGuide);
   }
   const promptText = lines.join("\n");
   try {
