@@ -379,6 +379,14 @@
         <button id="studioCancelBtn" class="btn btn-small">キャンセル</button>
       </div>
     </div>
+    <div id="studioSplitRow" class="studio-split" hidden>
+      <span class="hint"><span id="studioSplitCount">0</span>体を検出:</span>
+      <label class="radio-row" data-help="studio.split.single"><input type="radio" name="studioSplit" value="single"> 1枚として変換</label>
+      <label class="radio-row" data-help="studio.split.components"><input type="radio" name="studioSplit" value="components" checked> N体をフレームとして変換</label>
+      <label class="radio-row" data-help="studio.split.grid"><input type="radio" name="studioSplit" value="grid"> 均等分割</label>
+      <span class="split-grid-inputs">横<input id="studioGridCols" type="number" min="1" max="12" value="3">×縦<input id="studioGridRows" type="number" min="1" max="12" value="1"></span>
+      <label class="check-row inline" data-help="studio.split.align"><input type="checkbox" id="studioAlignCenter"> 中央合わせ（既定: 下端中央）</label>
+    </div>
     <div id="studioGallery" class="studio-gallery"></div>
     <div class="studio-compare">
       <div class="studio-viewport"><span class="hint">元画像</span><canvas id="studioSrcCanvas"></canvas></div>

@@ -774,3 +774,24 @@ aside, #canvasPanel {
   padding: 6px 8px;
   color: var(--warn);
 }
+
+/* ---------- マルチポーズ分割（§20） ---------- */
+.studio-split {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  border: 1px solid var(--accent-dark);
+  border-radius: var(--radius);
+  padding: 6px 10px;
+  background: var(--bg-2);
+  font-size: 12px;
+}
+.split-grid-inputs input {
+  width: 44px;
+  background: var(--bg-1);
+  color: var(--text-0);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 4px;
+}

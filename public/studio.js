@@ -1,6 +1,6 @@
 // studio.js — §18.2 変換スタジオ（インポートウィザードv2）UI
 // 候補ギャラリー → つまみでリアルタイム再変換 → 元画像との同期ズーム比較 → 確定
-import { removeBackground, estimateGrid, convertImage, extractMainPalette } from "./convert.js";
+import { removeBackground, estimateGrid, convertImage, convertSheetImage, detectComponents, extractMainPalette } from "./convert.js";
 import { hexToRgba, defaultTags } from "./app.js";
 
 let store = null;
@@ -15,6 +15,8 @@ let result = null; // convertImage の結果
 let view = { zoom: 1, panX: 0, panY: 0 };
 let convertGen = 0;
 let knobs = null;
+// §20: マルチポーズ分割
+let split = { mode: "single", boxes: [], align: "bottom", gridCols: 3, gridRows: 1 };
 
 const $ = (id) => document.getElementById(id);
 
@@ -59,8 +61,57 @@ async function ensureBg() {
       glowWidth: knobs.glowWidth,
     });
     grid = null; // 背景が変わればグリッドも再推定
+    detectSplit(); // §20.1: 連結成分の再検出
   }
   return bgCache;
+}
+
+// §20.1: 連結成分検出 → 2体以上なら分割UIを表示
+function detectSplit() {
+  const comps = detectComponents(bgCache, srcData.w, srcData.h);
+  const row = $("studioSplitRow");
+  if (split.mode !== "grid") {
+    split.boxes = comps;
+    if (comps.length >= 2 && split.mode === "single" && !split.userChose) {
+      split.mode = "components"; // 既定はフレームとして変換（§20.1）
+    }
+    if (comps.length < 2 && split.mode === "components") split.mode = "single";
+  }
+  row.hidden = !(comps.length >= 2 || split.mode === "grid");
+  $("studioSplitCount").textContent = String(comps.length);
+  syncSplitUi();
+}
+
+function syncSplitUi() {
+  const radios = document.querySelectorAll('input[name="studioSplit"]');
+  radios.forEach((r) => { r.checked = r.value === split.mode; });
+  $("studioAlignCenter").checked = split.align === "center";
+  $("studioGridCols").value = String(split.gridCols);
+  $("studioGridRows").value = String(split.gridRows);
+}
+
+// 手動「横N×縦M均等分割」のbox生成（§20.1）
+function gridBoxes(cols, rows) {
+  const out = [];
+  const cw = srcData.w / cols, ch = srcData.h / rows;
+  for (let ry = 0; ry < rows; ry++) {
+    for (let rx = 0; rx < cols; rx++) {
+      const x0 = Math.round(rx * cw), x1 = Math.round((rx + 1) * cw) - 1;
+      const y0 = Math.round(ry * ch), y1 = Math.round((ry + 1) * ch) - 1;
+      // 各区画内の不透明bboxに詰める（下端アラインを正確に）
+      let bx0 = x1 + 1, by0 = y1 + 1, bx1 = -1, by1 = -1;
+      for (let y = y0; y <= y1; y++) {
+        for (let x = x0; x <= x1; x++) {
+          if (bgCache[(y * srcData.w + x) * 4 + 3] >= 128) {
+            if (x < bx0) bx0 = x; if (x > bx1) bx1 = x;
+            if (y < by0) by0 = y; if (y > by1) by1 = y;
+          }
+        }
+      }
+      if (bx1 >= 0) out.push({ x0: bx0, y0: by0, x1: bx1, y1: by1, area: 0 });
+    }
+  }
+  return out;
 }
 
 async function ensureGrid() {
@@ -83,6 +134,15 @@ function scheduleConvert() {
   convertTimer = setTimeout(runConvert, 150);
 }
 
+// §20: 分割モードに応じて単体/シート変換を実行
+function doConvertWith(params) {
+  if (split.mode !== "single" && split.boxes.length >= 2) {
+    const boxes = split.mode === "grid" ? gridBoxes(split.gridCols, split.gridRows) : split.boxes;
+    if (boxes.length >= 2) return convertSheetImage(bgCache, srcData.w, srcData.h, params, boxes, split.align);
+  }
+  return convertImage(bgCache, srcData.w, srcData.h, params);
+}
+
 async function runConvert() {
   const gen = ++convertGen;
   try {
@@ -90,10 +150,13 @@ async function runConvert() {
     if (gen !== convertGen) return;
     $("studioStatus").textContent = "変換中…";
     await new Promise((r) => setTimeout(r, 0));
-    const res = convertImage(bgCache, srcData.w, srcData.h, knobsToParams());
+    const res = doConvertWith(knobsToParams());
     if (gen !== convertGen) return;
     result = res;
-    $("studioStatus").textContent = `出力: ${res.width}×${res.height}・${res.palette.length - 1}色（+透明）`;
+    const nf = res.framesPixels ? res.framesPixels.length : 1;
+    $("studioStatus").textContent =
+      `出力: ${res.width}×${res.height}・${res.palette.length - 1}色（+透明）` +
+      (nf > 1 ? `・${nf}フレーム（プレビューは1体目）` : "");
     renderCompare();
   } catch (err) {
     if (gen !== convertGen) return;
@@ -244,7 +307,7 @@ async function generateCandidates() {
       let conv = null;
       let convErr = null;
       try {
-        conv = convertImage(bgCache, srcData.w, srcData.h, params);
+        conv = doConvertWith(params);
       } catch (e) {
         convErr = e;
         console.error("候補の変換に失敗:", res.label, style.label, e);
@@ -341,11 +404,40 @@ function attachKnobs() {
     scheduleConvert();
   });
   $("studioGalleryBtn").addEventListener("click", generateCandidates);
+
+  // §20: 分割UI
+  document.querySelectorAll('input[name="studioSplit"]').forEach((r) => {
+    r.addEventListener("change", () => {
+      split.mode = r.value;
+      split.userChose = true;
+      if (split.mode !== "grid") detectSplit();
+      scheduleConvert();
+    });
+  });
+  $("studioAlignCenter").addEventListener("change", () => {
+    split.align = $("studioAlignCenter").checked ? "center" : "bottom";
+    scheduleConvert();
+  });
+  const gridChange = () => {
+    split.gridCols = Math.max(1, Math.min(12, Number($("studioGridCols").value) || 1));
+    split.gridRows = Math.max(1, Math.min(12, Number($("studioGridRows").value) || 1));
+    if (split.mode === "grid") scheduleConvert();
+  };
+  $("studioGridCols").addEventListener("input", gridChange);
+  $("studioGridRows").addEventListener("input", gridChange);
 }
 
 // ---------------------------------------------------------------------------
 // 確定（§18.2-7）: プロジェクト化 + メインパレット抽出 + sourceImage/conversionParams 保存
 // ---------------------------------------------------------------------------
+function padPixels(srcPx, sw, sh, dw, dh) {
+  if (sw === dw && sh === dh) return Uint8Array.from(srcPx);
+  const out = new Uint8Array(dw * dh);
+  const ox = Math.floor((dw - sw) / 2), oy = Math.floor((dh - sh) / 2);
+  for (let y = 0; y < sh; y++) for (let x = 0; x < sw; x++) out[(oy + y) * dw + (ox + x)] = srcPx[y * sw + x];
+  return out;
+}
+
 function confirmStudio() {
   if (!result) {
     toast("変換結果がありません", "error");
@@ -371,14 +463,22 @@ function confirmStudio() {
   const sctx = sc.getContext("2d");
   sctx.drawImage(srcBitmapCanvas, 0, 0, sc.width, sc.height);
 
+  // §20.2: 複数フレーム（シート分割）対応
+  const allFrames = res.framesPixels && res.framesPixels.length > 1
+    ? res.framesPixels.map((px) => ({ pixels: padPixels(px, res.width, res.height, W, H) }))
+    : [{ pixels }];
   const project = {
     width: W, height: H, fps: 8,
     palette: res.palette,
-    frames: [{ pixels }],
-    baseFrame: Uint8Array.from(pixels),
+    frames: allFrames,
+    baseFrame: Uint8Array.from(allFrames[0].pixels),
     lockedRects: [], variants: [], profile: null, styleRef: null,
     sourceImage: sc.toDataURL("image/png"),
-    conversionParams: { ...knobs, grid: { ...grid } },
+    conversionParams: {
+      ...knobs,
+      grid: { ...grid },
+      split: { mode: split.mode, align: split.align, gridCols: split.gridCols, gridRows: split.gridRows, boxes: split.boxes.map((b) => ({ ...b })) },
+    },
   };
   project.tags = defaultTags(project);
   // §18.3: メインパレット抽出を自動実行（33色以上のとき）
@@ -389,7 +489,8 @@ function confirmStudio() {
   }
   store.resetProject(project);
   $("studioPanel").hidden = true;
-  toast(`変換を確定しました（${W}×${H}・${res.palette.length - 1}色）。ペン/消しゴム/スポイトでそのまま仕上げられます`);
+  const nFrames = project.frames.length;
+  toast(`変換を確定しました（${W}×${H}・${res.palette.length - 1}色${nFrames > 1 ? `・${nFrames}フレーム` : ""}）。ペン/消しゴム/スポイトでそのまま仕上げられます`);
 }
 
 // ---------------------------------------------------------------------------
@@ -410,10 +511,15 @@ export async function openStudio(dataUrl, savedParams = null) {
   bgCache = null;
   grid = null;
   result = null;
+  split = { mode: "single", boxes: [], align: "bottom", gridCols: 3, gridRows: 1, userChose: false };
   knobs = defaultKnobs();
   if (savedParams) {
-    Object.assign(knobs, savedParams);
-    if (savedParams.grid) grid = { ...savedParams.grid };
+    const { grid: g, split: sp, ...rest } = savedParams;
+    Object.assign(knobs, rest);
+    if (g) grid = { ...g };
+    if (sp) {
+      split = { ...split, ...sp, boxes: Array.isArray(sp.boxes) ? sp.boxes : [], userChose: true };
+    }
   }
   $("studioPanel").hidden = false;
   $("studioGallery").innerHTML = "";

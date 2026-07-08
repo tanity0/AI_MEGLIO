@@ -255,41 +255,8 @@ export async function estimateGrid(data, w, h, onProgress) {
 // params: { s, ox, oy, targetH(0=1:1), colors, domBlend, centerWeight,
 //           edgeProtect, satProtect }
 // ---------------------------------------------------------------------------
-export function convertImage(data, w, h, params) {
-  const { s, ox, oy, targetH = 0, colors = 64, domBlend = 0.15, centerWeight = 0.5, edgeProtect = 0.3, satProtect = 0.5 } = params;
-
-  // 非透明のバウンディングボックス
-  let x0 = w, y0 = h, x1 = -1, y1 = -1;
-  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-    if (data[(y * w + x) * 4 + 3] >= 128) {
-      if (x < x0) x0 = x; if (x > x1) x1 = x;
-      if (y < y0) y0 = y; if (y > y1) y1 = y;
-    }
-  }
-  if (x1 < 0) throw new Error("不透明ピクセルがありません（背景除去の閾値を下げてください）");
-
-  // セルサイズと開始位相
-  let cs, gx0, gy0;
-  if (targetH > 0) {
-    cs = (y1 - y0 + 1) / targetH;
-    gx0 = x0; gy0 = y0;
-  } else {
-    cs = s;
-    gx0 = x0 - (((x0 - ox) % s) + s) % s;
-    gy0 = y0 - (((y0 - oy) % s) + s) % s;
-  }
-  // 横長素材対策: 高さ指定モードでは幅も128に収まるようセルサイズを自動クランプ
-  if (targetH > 0) {
-    const minCsForWidth = (x1 + 1 - gx0) / 127.5;
-    if (cs < minCsForWidth) cs = minCsForWidth;
-  }
-  const cols = Math.ceil((x1 + 1 - gx0) / cs);
-  const rows = Math.ceil((y1 + 1 - gy0) / cs);
-  if (cols > 128 || rows > 128) {
-    throw new Error(`出力が128pxを超えます（${cols}×${rows}）。解像度を下げてください`);
-  }
-
-  // セルごとの代表色
+// セル代表色サンプリング（共通ヘルパー・§18.2-3,6 / §20.2 で共用）
+function sampleCellsRegion(data, w, h, { cs, gx0, gy0, cols, rows, domBlend, centerWeight, edgeProtect }) {
   const cellColors = new Array(cols * rows).fill(null);
   for (let cy = 0; cy < rows; cy++) {
     const py0 = Math.max(0, Math.round(gy0 + cy * cs));
@@ -325,11 +292,9 @@ export function convertImage(data, w, h, params) {
       let bestB = null;
       for (const e of buckets.values()) if (!bestB || e.w > bestB.w) bestB = e;
       let r = bestB.r / bestB.w, g = bestB.g / bestB.w, b = bestB.b / bestB.w;
-      // 支配色⇔平均ブレンド
       r = r * (1 - domBlend) + (mr / mw) * domBlend;
       g = g * (1 - domBlend) + (mg / mw) * domBlend;
       b = b * (1 - domBlend) + (mb / mw) * domBlend;
-      // 輪郭保護: 暗い輪郭色が一定割合あれば優先
       if (edgeProtect > 0 && darkW / mw >= Math.max(0.12, 0.5 - 0.38 * edgeProtect)) {
         const lum = 0.299 * r + 0.587 * g + 0.114 * b;
         if (lum >= 90) { r = dr / darkW; g = dg / darkW; b = db / darkW; }
@@ -337,10 +302,13 @@ export function convertImage(data, w, h, params) {
       cellColors[cy * cols + cx] = [r, g, b];
     }
   }
+  return cellColors;
+}
 
-  // 減色: 頻度加重 k-means（++シード + 孤立色相保護）
+// 減色（共通ヘルパー）: セル色配列（複数リージョン分の連結でよい）→ 重心
+function quantizeCellColors(allCellColors, colors, satProtect) {
   const uniq = new Map();
-  for (const c of cellColors) {
+  for (const c of allCellColors) {
     if (!c) continue;
     const key = `${Math.round(c[0])},${Math.round(c[1])},${Math.round(c[2])}`;
     const e = uniq.get(key) || { c: [Math.round(c[0]), Math.round(c[1]), Math.round(c[2])], n: 0 };
@@ -371,6 +339,45 @@ export function convertImage(data, w, h, params) {
       if (moved < 1) break;
     }
   }
+  return centroids;
+}
+
+export function convertImage(data, w, h, params) {
+  const { s, ox, oy, targetH = 0, colors = 64, domBlend = 0.15, centerWeight = 0.5, edgeProtect = 0.3, satProtect = 0.5 } = params;
+
+  // 非透明のバウンディングボックス
+  let x0 = w, y0 = h, x1 = -1, y1 = -1;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    if (data[(y * w + x) * 4 + 3] >= 128) {
+      if (x < x0) x0 = x; if (x > x1) x1 = x;
+      if (y < y0) y0 = y; if (y > y1) y1 = y;
+    }
+  }
+  if (x1 < 0) throw new Error("不透明ピクセルがありません（背景除去の閾値を下げてください）");
+
+  // セルサイズと開始位相
+  let cs, gx0, gy0;
+  if (targetH > 0) {
+    cs = (y1 - y0 + 1) / targetH;
+    gx0 = x0; gy0 = y0;
+  } else {
+    cs = s;
+    gx0 = x0 - (((x0 - ox) % s) + s) % s;
+    gy0 = y0 - (((y0 - oy) % s) + s) % s;
+  }
+  // 横長素材対策: 高さ指定モードでは幅も128に収まるようセルサイズを自動クランプ
+  if (targetH > 0) {
+    const minCsForWidth = (x1 + 1 - gx0) / 127.5;
+    if (cs < minCsForWidth) cs = minCsForWidth;
+  }
+  const cols = Math.ceil((x1 + 1 - gx0) / cs);
+  const rows = Math.ceil((y1 + 1 - gy0) / cs);
+  if (cols > 128 || rows > 128) {
+    throw new Error(`出力が128pxを超えます（${cols}×${rows}）。解像度を下げてください`);
+  }
+
+  const cellColors = sampleCellsRegion(data, w, h, { cs, gx0, gy0, cols, rows, domBlend, centerWeight, edgeProtect });
+  const centroids = quantizeCellColors(cellColors, colors, satProtect);
 
   const palette = ["#00000000", ...centroids.map((c) => rgbToHex(c[0], c[1], c[2]))];
   const pixels = new Uint8Array(cols * rows);
@@ -383,6 +390,143 @@ export function convertImage(data, w, h, params) {
     counts[idx]++;
   }
   return { width: cols, height: rows, pixels, palette, counts, originX: gx0, originY: gy0, srcCellSize: cs };
+}
+
+// ---------------------------------------------------------------------------
+// §20.1: 連結成分検出（8近傍・面積が最大成分の5%未満は無視）
+// 行クラスタ（y重なり）→ 行内x順で並べて返す
+// ---------------------------------------------------------------------------
+export function detectComponents(data, w, h) {
+  const labels = new Int32Array(w * h).fill(-1);
+  const boxes = [];
+  const stack = new Int32Array(w * h);
+  for (let start = 0; start < w * h; start++) {
+    if (labels[start] !== -1 || data[start * 4 + 3] < 128) continue;
+    const label = boxes.length;
+    let sp = 0;
+    stack[sp++] = start;
+    labels[start] = label;
+    let x0 = w, y0 = h, x1 = -1, y1 = -1, area = 0;
+    while (sp > 0) {
+      const idx = stack[--sp];
+      const x = idx % w, y = (idx / w) | 0;
+      area++;
+      if (x < x0) x0 = x; if (x > x1) x1 = x;
+      if (y < y0) y0 = y; if (y > y1) y1 = y;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const nx = x + dx, ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+          const ni = ny * w + nx;
+          if (labels[ni] === -1 && data[ni * 4 + 3] >= 128) {
+            labels[ni] = label;
+            stack[sp++] = ni;
+          }
+        }
+      }
+    }
+    boxes.push({ x0, y0, x1, y1, area });
+  }
+  if (!boxes.length) return [];
+  const maxArea = Math.max(...boxes.map((b) => b.area));
+  const kept = boxes.filter((b) => b.area >= maxArea * 0.05);
+  // 行クラスタリング: y範囲が重なるものを同じ行に
+  kept.sort((a, b) => a.y0 - b.y0);
+  const rows = [];
+  for (const b of kept) {
+    const cy = (b.y0 + b.y1) / 2;
+    let row = rows.find((r) => cy <= r.maxY1);
+    if (!row) {
+      row = { boxes: [], maxY1: b.y1 };
+      rows.push(row);
+    }
+    row.boxes.push(b);
+    row.maxY1 = Math.max(row.maxY1, b.y1);
+  }
+  const ordered = [];
+  for (const row of rows) {
+    row.boxes.sort((a, b) => a.x0 - b.x0);
+    ordered.push(...row.boxes);
+  }
+  return ordered;
+}
+
+// ---------------------------------------------------------------------------
+// §20.2: マルチポーズシート → Nフレーム変換
+// 共通キャンバス（最大box+パディング・128クランプ）、下端中央 or 中央アライン、
+// 共通パレット（全ポーズ一括k-means）、共通セルサイズ
+// ---------------------------------------------------------------------------
+export function convertSheetImage(data, w, h, params, boxes, align = "bottom") {
+  const { s, targetH = 0, colors = 64, domBlend = 0.15, centerWeight = 0.5, edgeProtect = 0.3, satProtect = 0.5 } = params;
+  if (!boxes || boxes.length < 1) throw new Error("分割対象がありません");
+
+  const maxBoxW = Math.max(...boxes.map((b) => b.x1 - b.x0 + 1));
+  const maxBoxH = Math.max(...boxes.map((b) => b.y1 - b.y0 + 1));
+
+  // 共通セルサイズ（最大ポーズ基準）
+  let cs = targetH > 0 ? maxBoxH / targetH : s;
+  // モーション用パディング: 左右2セル・上2セル・下0（接地）
+  const PAD_X = 2, PAD_TOP = 2, PAD_BOTTOM = 0;
+  // 128クランプ（§18.1）
+  cs = Math.max(cs, maxBoxW / (128 - PAD_X * 2), maxBoxH / (128 - PAD_TOP - PAD_BOTTOM));
+  const poseColsMax = Math.ceil(maxBoxW / cs);
+  const poseRowsMax = Math.ceil(maxBoxH / cs);
+  const outW = Math.min(128, poseColsMax + PAD_X * 2);
+  const outH = Math.min(128, poseRowsMax + PAD_TOP + PAD_BOTTOM);
+
+  // 各ポーズのセル色をサンプリング（グリッドはポーズboxの下端に揃える）
+  const poseCells = [];
+  for (const b of boxes) {
+    const bw = b.x1 - b.x0 + 1;
+    const bh = b.y1 - b.y0 + 1;
+    const cols = Math.min(poseColsMax, Math.ceil(bw / cs));
+    const rows = Math.min(poseRowsMax, Math.ceil(bh / cs));
+    // 下端揃え・中央x（ポーズ内サンプリング原点）
+    const gy0 = b.y1 + 1 - rows * cs;
+    const gx0 = (b.x0 + b.x1 + 1) / 2 - (cols * cs) / 2;
+    const cells = sampleCellsRegion(data, w, h, { cs, gx0, gy0, cols, rows, domBlend, centerWeight, edgeProtect });
+    poseCells.push({ cells, cols, rows });
+  }
+
+  // 共通パレット: 全ポーズのセル色を一括k-means（§20.2）
+  const allColors = [];
+  for (const p of poseCells) for (const c of p.cells) if (c) allColors.push(c);
+  if (!allColors.length) throw new Error("不透明ピクセルがありません（背景除去の閾値を下げてください）");
+  const centroids = quantizeCellColors(allColors, colors, satProtect);
+  const palette = ["#00000000", ...centroids.map((c) => rgbToHex(c[0], c[1], c[2]))];
+  const counts = new Uint32Array(palette.length);
+
+  // 共通キャンバスへ配置（下端中央 / 中央）
+  const framesPixels = [];
+  for (const p of poseCells) {
+    const pixels = new Uint8Array(outW * outH);
+    const offX = Math.floor((outW - p.cols) / 2);
+    const offY = align === "center" ? Math.floor((outH - p.rows) / 2) : outH - PAD_BOTTOM - p.rows;
+    for (let y = 0; y < p.rows; y++) {
+      for (let x = 0; x < p.cols; x++) {
+        const c = p.cells[y * p.cols + x];
+        if (!c) continue;
+        const tx = offX + x, ty = offY + y;
+        if (tx < 0 || ty < 0 || tx >= outW || ty >= outH) continue;
+        const idx = nearestIdx(centroids, c) + 1;
+        pixels[ty * outW + tx] = idx;
+        counts[idx]++;
+      }
+    }
+    framesPixels.push(pixels);
+  }
+  return {
+    width: outW,
+    height: outH,
+    pixels: framesPixels[0],
+    framesPixels,
+    palette,
+    counts,
+    originX: boxes[0].x0,
+    originY: boxes[0].y0,
+    srcCellSize: cs,
+  };
 }
 
 function nearestIdx(centroids, c) {
