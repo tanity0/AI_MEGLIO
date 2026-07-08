@@ -61,6 +61,27 @@ BACKEND=cli npm start
 - 「全フレーム」スコープの修正は、サーバー側で自動的にフレームごとの呼び出しに分割され（並列2）、進捗が「フレーム 2/5 完了」のように表示されます。この分割モードではフレーム追加（中割り等）は行えないため、中割りは「現在のフレーム」スコープで指示してください。
 - 現在のバックエンドはキャンバス下部に表示されます（「バックエンド: API / Claude Code CLI / MOCK」）。
 
+### Codex CLI モード（ChatGPTサブスクでGPTモデルを使う）
+
+OpenAI Codex CLI（`codex`）のChatGPTサブスク認証で、GPT系モデルを推論に使えます（APIキー不要）。
+
+```bash
+# 1. Codex CLI をインストール（未インストールの場合）
+npm i -g @openai/codex
+
+# 2. ログイン（ChatGPT Plus/Pro アカウント）
+codex login
+
+# 3. Codexバックエンドで起動
+BACKEND=codex npm start
+```
+
+注意:
+
+- プロンプト・タイムアウト（`CLI_TIMEOUT`）・同時実行数（`CLI_CONCURRENCY`）・全フレーム分割は Claude Code CLI モードと共通です。画像は渡されません。
+- モデルは `CODEX_MODEL` で指定できます（未指定なら codex 側の既定モデル）。`codex` の実体パスが解決できない場合は `CODEX_PATH` を設定してください。
+- **モデルの得手不得手により、ドット絵パッチの品質・所要時間は Claude バックエンドと異なる場合があります。まずは1セル修正など小さな指示で試してください。**
+
 ### MOCKモード（APIキー無しで動作確認）
 
 ```bash
@@ -75,11 +96,15 @@ APIを呼ばず、選択範囲（選択が無ければフレーム全体の中�
 |---|---|---|
 | `PORT` | `8787` | サーバーのリッスンポート |
 | `EXPORT_ROOT` | 未設定 | ゲームリポジトリのパス。設定すると「ゲーム書き出し」からこの配下に直接書き出せる（未設定時は /api/export 無効） |
-| `BACKEND` | `api` | `api` = Anthropic API / `cli` = ローカルの Claude Code CLI |
+| `BACKEND` | `api` | `api` = Anthropic API / `cli` = ローカルの Claude Code CLI / `codex` = OpenAI Codex CLI |
 | `MODEL` | `claude-opus-4-8` | 使用するClaudeモデル（BACKEND=api） |
 | `CLI_MODEL` | `sonnet` | 使用するモデル（BACKEND=cli）。遅い場合は `haiku` を推奨 |
-| `CLI_TIMEOUT` | `300` | CLI呼び出しのタイムアウト秒数（BACKEND=cli） |
+| `CLI_TIMEOUT` | `300` | CLI呼び出しのタイムアウト秒数（BACKEND=cli / codex 共通） |
+| `CLI_CONCURRENCY` | `2` | CLI呼び出しの同時実行数（BACKEND=cli / codex 共通） |
 | `CLI_PATH` | `claude` | claude CLI 実行ファイルのフルパス。**Windowsで無言タイムアウトする場合は必ず指定**（`Get-Command claude` の Source の値。Node の spawn が PowerShell と異なる実体に解決することがあるため） |
+| `CODEX_PATH` | `codex` | codex CLI 実行ファイルのフルパス（BACKEND=codex。CLI_PATH と同じ動機） |
+| `CODEX_MODEL` | 未設定 | 使用するモデル（BACKEND=codex）。未指定なら codex 側の既定モデル |
+| `CLI_DEBUG` | 未設定 | `1` でCLI呼び出しごとにプロンプト+生stdout/stderrを `./cli-logs/` に保存（cli / codex 共通・空応答などの診断用） |
 | `EFFORT` | `medium` | 構造化出力の `output_config.effort`（BACKEND=api） |
 | `MOCK` | 未設定 | `1` を指定するとAPIを呼ばずモック応答を返す（BACKENDより優先） |
 | `ANTHROPIC_API_KEY` | — | Anthropic APIキー（BACKEND=api のとき必要。MOCK=1 / BACKEND=cli では不要） |

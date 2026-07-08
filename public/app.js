@@ -767,13 +767,15 @@ async function initBackendLabel() {
     const res = await fetch("/api/config");
     const cfg = await res.json();
     store.state.serverConfig = cfg;
-    const name = cfg.mock ? "MOCK" : cfg.backend === "cli" ? "Claude Code CLI" : "API";
+    const name = cfg.mock ? "MOCK" : cfg.backend === "cli" ? "Claude Code CLI" : cfg.backend === "codex" ? "Codex CLI" : "API";
     label.textContent = `バックエンド: ${name}`;
     label.title = cfg.mock
       ? "MOCKモード（APIを呼びません）"
       : cfg.backend === "cli"
         ? `Claude Code CLI（モデル: ${cfg.cliModel}。画像は送信されません）`
-        : `Anthropic API（モデル: ${cfg.model}, effort: ${cfg.effort}）`;
+        : cfg.backend === "codex"
+          ? `Codex CLI（モデル: ${cfg.codexModel}。画像は送信されません）`
+          : `Anthropic API（モデル: ${cfg.model}, effort: ${cfg.effort}）`;
   } catch {
     label.textContent = "バックエンド: 不明";
   }

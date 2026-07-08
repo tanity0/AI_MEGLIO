@@ -7,6 +7,7 @@ import fssync from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import os from "node:os";
 import Anthropic from "@anthropic-ai/sdk";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -16,12 +17,14 @@ const PORT = Number(process.env.PORT || 8787);
 const MODEL = process.env.MODEL || "claude-opus-4-8";
 const EFFORT = process.env.EFFORT || "medium";
 const MOCK = process.env.MOCK === "1";
-const BACKEND = process.env.BACKEND === "cli" ? "cli" : "api"; // §15.1: api（既定）| cli
+const BACKEND = process.env.BACKEND === "cli" ? "cli" : process.env.BACKEND === "codex" ? "codex" : "api"; // §15.1/§23: api（既定）| cli | codex
 const CLI_MODEL = process.env.CLI_MODEL || "sonnet";
 const CLI_CMD = process.env.CLI_PATH || "claude"; // Windowsで解決先が紛らわしい場合にフルパス指定可
+const CODEX_CMD = process.env.CODEX_PATH || "codex"; // §23.1: Codex CLI の実体パス（CLI_PATH と同じ動機）
+const CODEX_MODEL = process.env.CODEX_MODEL || ""; // §23.1: 空 = codex 側の既定モデル
 const CLI_TIMEOUT_SEC = Number(process.env.CLI_TIMEOUT) > 0 ? Number(process.env.CLI_TIMEOUT) : 300; // §15.5-1: 既定300秒、CLI_TIMEOUT（秒）で上書き
 const CLI_TIMEOUT_MS = CLI_TIMEOUT_SEC * 1000;
-const CLI_CONCURRENCY = Number(process.env.CLI_CONCURRENCY) > 0 ? Number(process.env.CLI_CONCURRENCY) : 2; // §15.2: 同時実行キュー（環境変数 CLI_CONCURRENCY で上書き可）
+const CLI_CONCURRENCY = Number(process.env.CLI_CONCURRENCY) > 0 ? Number(process.env.CLI_CONCURRENCY) : 2; // §15.2: 同時実行キュー（cli/codex共用。環境変数 CLI_CONCURRENCY で上書き可）
 const CLI_DEBUG = process.env.CLI_DEBUG === "1"; // §22.5-5: プロンプト+生出力を ./cli-logs/ に保存
 const EXPORT_ROOT = process.env.EXPORT_ROOT || ""; // §16.4: 未設定なら /api/export は無効
 
@@ -1344,6 +1347,7 @@ function userError(msg) {
 
 async function callBackend(opts) {
   if (BACKEND === "cli") return callBackendCli(opts);
+  if (BACKEND === "codex") return callBackendCodex(opts); // §23
   return callBackendApi(opts);
 }
 
@@ -1492,7 +1496,7 @@ function spawnClaudeCli(prompt, { registerCancel, mode }) {
   });
 }
 
-// 構造化出力APIは使えないため、スキーマをプロンプト末尾に埋め込む（§15.2。CLI系共通）
+// 構造化出力APIは使えないため、スキーマをプロンプト末尾に埋め込む（§15.2。cli/codex共通）
 function buildCliPrompt(systemText, userText, schema) {
   return `${systemText}
 
@@ -1503,7 +1507,7 @@ ${userText}
 ${JSON.stringify(schema)}`;
 }
 
-// CLI系バックエンド共通のランナー: キュー・ハートビート・フェンス除去・パース失敗時1回リトライ（§15.2）
+// cli / codex 共通のランナー: キュー・ハートビート・フェンス除去・パース失敗時1回リトライ（§15.2/§23.1）
 async function runCliLikeBackend({ label, fetchText, usage }, { systemText, userText, schema, onDelta }) {
   const basePrompt = buildCliPrompt(systemText, userText, schema);
   await acquireCliSlot();
@@ -1552,6 +1556,85 @@ async function callBackendCli({ systemText, userText, schema, onDelta, registerC
   };
   return runCliLikeBackend(
     { label: "Claude Code CLI", fetchText, usage: { backend: "cli", model: CLI_MODEL } },
+    { systemText, userText, schema, onDelta }
+  );
+}
+
+// --- BACKEND=codex: OpenAI Codex CLI を spawn（§23.1）---
+// `codex exec --sandbox read-only --skip-git-repo-check --output-last-message <tmp> -`
+// stdin からプロンプトを読み、最終メッセージを一時ファイル経由で受け取る。
+function spawnCodexCli(prompt, { registerCancel, mode }) {
+  return new Promise((resolve, reject) => {
+    const outFile = path.join(os.tmpdir(), `ai-meglio-codex-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.txt`);
+    const args = ["exec", "--sandbox", "read-only", "--skip-git-repo-check", "--output-last-message", outFile];
+    if (CODEX_MODEL) args.push("-m", CODEX_MODEL);
+    args.push("-"); // stdin からプロンプトを読む
+    let child;
+    try {
+      child = spawn(CODEX_CMD, args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    } catch (err) {
+      reject(err);
+      return;
+    }
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const settle = (fn, arg) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      cliDebugLog("codex", mode, prompt, stdout, stderr); // §22.5-5/§23.1
+      try { fssync.unlinkSync(outFile); } catch {}
+      fn(arg);
+    };
+    const timer = setTimeout(() => {
+      try { child.kill("SIGKILL"); } catch {}
+      const peek = `${stderr}\n${stdout}`.trim().replace(/\s+/g, " ").slice(0, 300);
+      const diag = peek ? `\nCLIの出力（診断用）: ${peek}` : "";
+      console.error(`[codex-timeout] ${CLI_TIMEOUT_SEC}s, stdout=${stdout.length}B stderr=${stderr.length}B: ${peek}`);
+      settle(reject, userError(`Codex CLI がタイムアウトしました（${CLI_TIMEOUT_SEC}秒）。対処: (1) 矩形選択で範囲を狭めて指示する、(2) 環境変数 CLI_TIMEOUT でタイムアウト秒数を延ばす、(3) CODEX_MODEL で軽いモデルを試す。${diag}`));
+    }, CLI_TIMEOUT_MS);
+
+    registerCancel(() => {
+      try { child.kill("SIGKILL"); } catch {}
+      const e = new Error("リクエストが中断されました。");
+      e.name = "AbortError";
+      settle(reject, e);
+    });
+
+    child.on("error", (err) => {
+      if (err && err.code === "ENOENT") {
+        settle(reject, userError("codex が見つかりません。`npm i -g @openai/codex` でインストールし、`codex login` でログインしてください。パスが解決できない場合は環境変数 CODEX_PATH に実体のフルパスを設定してください。"));
+      } else {
+        settle(reject, userError(`Codex CLI の起動に失敗しました: ${err.message}`));
+      }
+    });
+    child.stdout.on("data", (d) => { stdout += d; });
+    child.stderr.on("data", (d) => { stderr += d; });
+    child.on("close", (code) => {
+      if (code !== 0) {
+        settle(reject, userError(`Codex CLI がエラー終了しました (code ${code}): ${(stderr || stdout).slice(0, 200)}`));
+        return;
+      }
+      let last = "";
+      try { last = fssync.readFileSync(outFile, "utf8"); } catch {}
+      if (!last.trim()) {
+        settle(reject, userError("Codex CLI の応答が空でした（--output-last-message のファイルにメッセージがありません）。"));
+        return;
+      }
+      settle(resolve, last);
+    });
+
+    console.log(`[codex] spawn ${CODEX_CMD} exec (model=${CODEX_MODEL || "default"}) prompt=${prompt.length}B`);
+    child.stdin.write(prompt);
+    child.stdin.end();
+  });
+}
+
+async function callBackendCodex({ systemText, userText, schema, onDelta, registerCancel, mode }) {
+  const fetchText = (prompt) => spawnCodexCli(prompt, { registerCancel, mode });
+  return runCliLikeBackend(
+    { label: "Codex CLI", fetchText, usage: { backend: "codex", model: CODEX_MODEL || "default" } },
     { systemText, userText, schema, onDelta }
   );
 }
@@ -1715,7 +1798,7 @@ async function runRealSplitAllFrames(body, res, aborted) {
   try {
     const patch = validateAndClampPatch(mergedRaw, body);
     patch.warnings.push(...splitWarnings);
-    sseSend(res, { type: "result", patch, usage: { backend: BACKEND, model: CLI_MODEL, split: frameCount } });
+    sseSend(res, { type: "result", patch, usage: { backend: BACKEND, model: BACKEND === "codex" ? (CODEX_MODEL || "default") : CLI_MODEL, split: frameCount } });
   } catch (err) {
     sseSend(res, { type: "error", message: `結果の検証に失敗しました: ${err.message}` });
   }
@@ -1763,6 +1846,7 @@ async function handleApiConfig(req, res) {
     mock: MOCK,
     backend: BACKEND,
     cliModel: CLI_MODEL,
+    codexModel: CODEX_MODEL || "default", // §23.2
     exportEnabled: !!EXPORT_ROOT,
     exportRoot: EXPORT_ROOT || null,
   });
