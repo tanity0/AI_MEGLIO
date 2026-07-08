@@ -4,7 +4,7 @@ import { initTimeline } from "./timeline.js";
 import { initAi } from "./ai.js";
 import { encodeGif } from "./gif.js";
 import { importImageFile, probeImage } from "./import.js";
-import { initRig } from "./rig.js";
+import { initRig, PART_ROLES } from "./rig.js";
 import { initGameExport, initGameView } from "./gameexport.js";
 import { initStyleRef } from "./styleref.js";
 import { initStudio, openStudio } from "./studio.js";
@@ -173,6 +173,8 @@ function cloneRig(rig, toPlain) {
       parent: p.parent || "",
       visible: p.visible !== false,
       fixed: p.fixed === true,
+      // §22.7: 役割は任意フィールド（未設定なら含めない。undo/保存の双方で透過維持）
+      ...(typeof p.role === "string" && p.role ? { role: p.role } : {}),
     })),
     keyframes: (rig.keyframes || []).map((kf) => {
       const out = {};
@@ -371,6 +373,8 @@ function rigFromPlain(raw, width, height) {
         parent: typeof p.parent === "string" ? p.parent : "",
         visible: p.visible !== false,
         fixed: p.fixed === true,
+        // §22.7: 役割の読込（未知の値は無視 = 名前推定へフォールバック）
+        ...(PART_ROLES.includes(p.role) ? { role: p.role } : {}),
       });
       seen.add(p.id);
     }

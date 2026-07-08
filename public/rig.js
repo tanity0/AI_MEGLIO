@@ -38,6 +38,18 @@ function roleOf(part) {
   return "torso"; // 未分類は胴と同じ動き（バウンスのみ）
 }
 
+// §22.7: パーツの「役割」— 明示的な part.role が名前推定より常に優先。
+// "other" は胴と同じ扱い（バウンスのみ）だが、名前推定に戻らない明示的な選択。
+export const PART_ROLES = ["head", "torso", "arm_r", "arm_l", "leg_r", "leg_l", "weapon", "other"];
+export const PART_ROLE_LABELS = {
+  head: "頭", torso: "胴", arm_r: "右腕", arm_l: "左腕",
+  leg_r: "右脚", leg_l: "左脚", weapon: "武器", other: "その他",
+};
+export function effectiveRole(part) {
+  // 未知の値は無視して名前推定へフォールバック（§22.7-4）
+  return part.role && PART_ROLES.includes(part.role) ? part.role : roleOf(part);
+}
+
 // ---------------------------------------------------------------------------
 // モーションプリセットのキーフレームテーブル（§14.3・ハードコード）
 // 値: ロール → {dx, dy, rot}（rotは度、正=時計回り）。
@@ -110,8 +122,10 @@ export function buildKeyframes(preset, nFrames, magnitude, bounce, parts) {
     const f = t - Math.floor(t);
     const kf = {};
     for (const part of parts) {
-      // §22.2 固定: ロール変換を適用せず、胴と同じ変換のみ（バウンス追従）
-      const role = part.fixed ? "torso" : roleOf(part);
+      // 優先順位: §22.2 固定（最優先・胴と同じ変換のみ）> §22.7 明示 role > 名前推定。
+      // "other" はテーブル参照上は胴と同じ（バウンスのみ）。
+      const eff = part.fixed ? "torso" : effectiveRole(part);
+      const role = eff === "other" ? "torso" : eff;
       const ea = entryOf(table[a], role);
       const eb = entryOf(table[b], role);
       let dx = (ea.dx + (eb.dx - ea.dx) * f) * magnitude;
@@ -532,6 +546,21 @@ export function initRig(store, toast) {
       fixLabel.appendChild(fix);
       fixLabel.appendChild(document.createTextNode("固定"));
       li.appendChild(fixLabel);
+
+      // §22.7 役割セレクト: 初期値は role ?? 名前推定。変更で role として保存（以降は選択が正）
+      const roleSel = document.createElement("select");
+      roleSel.className = "part-role";
+      roleSel.title = "役割（プリセットモーションでの動き方）";
+      roleSel.dataset.helpHover = "rig.partRole";
+      const curRole = effectiveRole(part);
+      roleSel.innerHTML = PART_ROLES
+        .map((r) => `<option value="${r}"${r === curRole ? " selected" : ""}>${PART_ROLE_LABELS[r]}</option>`).join("");
+      roleSel.addEventListener("change", () => {
+        part.role = roleSel.value;
+        store.notify();
+        toast(`「${part.name}」の役割を「${PART_ROLE_LABELS[part.role]}」にしました（次のフレーム生成から反映されます）`);
+      });
+      li.appendChild(roleSel);
 
       const z = document.createElement("input");
       z.type = "number";

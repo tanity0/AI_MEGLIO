@@ -303,6 +303,7 @@ aside, #canvasPanel {
 .part-item.is-selected .part-name { color: var(--accent); font-weight: 700; }
 .part-item .part-z { width: 44px; }
 .part-item .part-parent { max-width: 90px; }
+.part-item .part-role { max-width: 64px; }
 .part-item .part-fixed {
   display: inline-flex;
   align-items: center;
