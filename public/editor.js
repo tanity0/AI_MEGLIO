@@ -517,6 +517,39 @@ export function initEditor(store, toast) {
       ctx.restore();
     }
 
+    // リグパーツの境界オーバーレイ（リグタブ表示中のみ。§14 分割位置の可視化）
+    const rigTabEl = document.getElementById("rigTab");
+    if (rigTabEl && !rigTabEl.hidden && p.rig && p.rig.parts && p.rig.parts.length) {
+      const hues = [180, 45, 300, 120, 10, 220, 270, 90];
+      ctx.save();
+      p.rig.parts.forEach((part, i) => {
+        const isSel = store.state.rigSelectedPart === part.id;
+        const col = `hsl(${hues[i % hues.length]}, 85%, ${isSel ? 70 : 55}%)`;
+        const r = part.patch;
+        ctx.strokeStyle = col;
+        ctx.lineWidth = isSel ? 2.5 : 1.5;
+        ctx.setLineDash(part.visible === false ? [3, 3] : []);
+        ctx.strokeRect(r.x * cellSize + 0.5, r.y * cellSize + 0.5, r.w * cellSize - 1, r.h * cellSize - 1);
+        // 支点（＋マーク）
+        const px = (r.x + part.pivot.x + 0.5) * cellSize;
+        const py = (r.y + part.pivot.y + 0.5) * cellSize;
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.moveTo(px - 5, py); ctx.lineTo(px + 5, py);
+        ctx.moveTo(px, py - 5); ctx.lineTo(px, py + 5);
+        ctx.stroke();
+        // 名前ラベル（枠の左上）
+        ctx.font = "bold 11px sans-serif";
+        ctx.fillStyle = col;
+        ctx.strokeStyle = "rgba(0,0,0,0.8)";
+        ctx.lineWidth = 3;
+        const lx = r.x * cellSize + 3, ly = Math.max(11, r.y * cellSize + 12);
+        ctx.strokeText(part.name, lx, ly);
+        ctx.fillText(part.name, lx, ly);
+      });
+      ctx.restore();
+    }
+
     renderPalette();
     canvasSizeLabel.textContent = `${p.width} x ${p.height}`;
     lockCountEl.textContent = String((p.lockedRects || []).length);
@@ -525,6 +558,10 @@ export function initEditor(store, toast) {
     zoomRange.value = String(store.state.zoom);
     zoomLabel.textContent = `${store.state.zoom}x`;
     toolButtons.forEach((btn) => btn.classList.toggle("is-active", btn.dataset.tool === store.state.tool));
+  }
+
+  for (const id of ["tabPatchBtn", "tabMotionBtn", "tabRigBtn"]) {
+    document.getElementById(id)?.addEventListener("click", () => setTimeout(render, 0));
   }
 
   window.addEventListener("resize", () => {
