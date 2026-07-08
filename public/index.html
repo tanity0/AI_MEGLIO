@@ -114,8 +114,8 @@
 
     <div class="ai-tabs" role="tablist">
       <button id="tabPatchBtn" class="ai-tab is-active" role="tab" data-tab="patch">修正</button>
-      <button id="tabMotionBtn" class="ai-tab" role="tab" data-tab="motion">モーション生成</button>
-      <button id="tabRigBtn" class="ai-tab" role="tab" data-tab="rig">リグ</button>
+      <button id="tabMotionBtn" class="ai-tab" role="tab" data-tab="motion">モーション</button>
+      <button id="tabRigBtn" class="ai-tab" role="tab" data-tab="rig">パーツ</button>
     </div>
 
     <div id="patchTab" class="tab-body">
@@ -156,62 +156,68 @@
     </div>
 
     <div id="motionTab" class="tab-body" hidden>
+      <div class="hint">推奨: 候補を生成 → ギャラリーで選別・部位取り込み → 確定</div>
       <div id="rigRecommendBanner" class="hint hires-hint" hidden>この解像度ではリグ（パーツ分割+キーフレーム合成）の使用を推奨します</div>
-      <div class="motion-form">
-        <label class="form-row">プリセット
-          <select id="motionPreset">
-            <option value="walk" selected>歩き</option>
-            <option value="run">走り</option>
-            <option value="attack">攻撃</option>
-            <option value="idle">待機</option>
-            <option value="jump">ジャンプ</option>
-            <option value="custom">カスタム</option>
-          </select>
-        </label>
-        <input id="motionCustomText" type="text" placeholder="自由入力（カスタム時、または補足指示）" maxlength="500">
-        <label class="form-row">フレーム数
-          <input id="motionFrames" type="number" min="2" max="12" value="4">
-        </label>
-        <label class="form-row">動きの大きさ
-          <select id="motionMagnitude">
-            <option value="small">小</option>
-            <option value="medium" selected>中</option>
-            <option value="large">大</option>
-          </select>
-        </label>
-        <label class="check-row"><input type="checkbox" id="motionBounce" checked> 上下バウンス</label>
-        <label class="form-row">向き
-          <select id="motionFacing">
-            <option value="keep" selected>そのまま</option>
-            <option value="right">横（右向き）</option>
-            <option value="left">横（左向き）</option>
-          </select>
-        </label>
-        <fieldset class="scope-fieldset">
-          <legend>生成結果の反映</legend>
-          <label class="radio-row"><input type="radio" name="motionApply" value="replace" checked> 既存フレームを置き換え（frame 0 のベース以外）</label>
-          <label class="radio-row"><input type="radio" name="motionApply" value="append"> 末尾に追記</label>
-        </fieldset>
-      </div>
       <fieldset class="scope-fieldset">
-        <legend data-help="motion.candidates">候補スタジオ（§25・推奨）</legend>
-        <label class="form-row">候補数/フレーム
-          <select id="mcCandCount">
-            <option value="1">1</option>
-            <option value="2">2</option>
-            <option value="3" selected>3</option>
-            <option value="4">4</option>
-          </select>
-        </label>
+        <legend data-help="motion.candidates">候補スタジオ（推奨）</legend>
+        <div class="motion-form">
+          <label class="form-row">プリセット
+            <select id="motionPreset">
+              <option value="walk" selected>歩き</option>
+              <option value="run">走り</option>
+              <option value="attack">攻撃</option>
+              <option value="idle">待機</option>
+              <option value="jump">ジャンプ</option>
+              <option value="custom">カスタム</option>
+            </select>
+          </label>
+          <input id="motionCustomText" type="text" placeholder="自由入力（カスタム時、または補足指示）" maxlength="500">
+          <label class="form-row">フレーム数
+            <input id="motionFrames" type="number" min="2" max="12" value="4">
+          </label>
+          <label class="form-row">候補数/フレーム
+            <select id="mcCandCount">
+              <option value="1">1</option>
+              <option value="2">2</option>
+              <option value="3" selected>3</option>
+              <option value="4">4</option>
+            </select>
+          </label>
+        </div>
         <div class="ai-actions">
           <button id="mcGenerateBtn" class="btn btn-accent">候補を生成（ギャラリー）</button>
           <span id="mcInboxBadge" class="mc-inbox-badge" hidden></span>
         </div>
-        <div class="hint">フレームごとにK個の候補を並列生成し、ギャラリーで選別→確定します。候補生成は codex バックエンド推奨</div>
+        <div class="hint">画像から候補追加・GPT依頼キットはギャラリー内から。候補生成は codex バックエンド推奨</div>
       </fieldset>
-      <div class="ai-actions">
-        <button id="runMotionBtn" class="btn">一括モーション生成（旧方式）</button>
-      </div>
+      <details class="adv-collapse" data-collapse-key="motionLegacy">
+        <summary>旧方式: 一括生成（上級）</summary>
+        <div class="motion-form">
+          <label class="form-row">動きの大きさ
+            <select id="motionMagnitude">
+              <option value="small">小</option>
+              <option value="medium" selected>中</option>
+              <option value="large">大</option>
+            </select>
+          </label>
+          <label class="check-row"><input type="checkbox" id="motionBounce" checked> 上下バウンス</label>
+          <label class="form-row">向き
+            <select id="motionFacing">
+              <option value="keep" selected>そのまま</option>
+              <option value="right">横（右向き）</option>
+              <option value="left">横（左向き）</option>
+            </select>
+          </label>
+          <fieldset class="scope-fieldset">
+            <legend>生成結果の反映</legend>
+            <label class="radio-row"><input type="radio" name="motionApply" value="replace" checked> 既存フレームを置き換え（frame 0 のベース以外）</label>
+            <label class="radio-row"><input type="radio" name="motionApply" value="append"> 末尾に追記</label>
+          </fieldset>
+          <div class="ai-actions">
+            <button id="runMotionBtn" class="btn">一括モーション生成</button>
+          </div>
+        </div>
+      </details>
     </div>
 
     <div id="rigTab" class="tab-body" hidden>
@@ -220,6 +226,7 @@
         <button id="segmentBtn" class="btn btn-small" title="AIがベースフレームをパーツ矩形に自動分割（下書き）">AI自動分割</button>
         <button id="heuristicSegmentBtn" class="btn btn-small" title="人型ヒューリスティックで即時にパーツ下書きを生成（AI不要・オフライン可）">簡易分割（AIなし）</button>
       </div>
+      <div class="hint">パーツ矩形は部位取り込み（ギャラリー）のテンプレートとしても使われます</div>
 
       <div id="partForm" class="part-form" hidden>
         <label class="form-row">名前 <input id="partNameInput" type="text" maxlength="32"></label>
@@ -237,50 +244,64 @@
 
       <ul id="partList" class="part-list"></ul>
 
-      <div class="motion-form">
-        <label class="form-row">プリセット
-          <select id="rigPreset">
-            <option value="walk" selected>歩き (4f)</option>
-            <option value="run">走り (6f)</option>
-            <option value="attack">攻撃 (3f)</option>
-            <option value="idle">待機 (2f)</option>
-            <option value="jump">ジャンプ (4f)</option>
-          </select>
-        </label>
-        <label class="form-row">振り幅
-          <select id="rigMagnitude">
-            <option value="0.5">0.5×</option>
-            <option value="1" selected>1.0×</option>
-            <option value="1.5">1.5×</option>
-          </select>
-        </label>
-        <label class="check-row"><input type="checkbox" id="rigBounce" checked> バウンス（胴体の上下動）</label>
-        <label class="form-row">フレーム数
-          <input id="rigFrames" type="number" min="2" max="12" value="4">
-        </label>
-        <fieldset class="scope-fieldset">
-          <legend>生成結果の反映</legend>
-          <label class="radio-row"><input type="radio" name="rigApply" value="replace" checked> 既存フレームを置き換え（frame 0 以外）</label>
-          <label class="radio-row"><input type="radio" name="rigApply" value="append"> 末尾に追記</label>
-        </fieldset>
-        <div class="ai-actions">
-          <button id="rigGenerateBtn" class="btn btn-accent">フレーム生成</button>
-          <button id="rigRedrawBtn" class="btn" title="リグ出力を設計図に、AIがベースのテイストで動いた部位を描き直す（§22）">AI描き直し（ポーズガイド）</button>
-          <button id="rigCleanupBtn" class="btn" title="合成で変化したセルの周囲2pxだけをAIが清書">AI清書（継ぎ目±2px）</button>
-          <button id="rigAbortBtn" class="btn" disabled>中断</button>
+      <details class="adv-collapse" data-collapse-key="rigAnim">
+        <summary>リグアニメ生成（機械合成・上級）</summary>
+        <div class="motion-form">
+          <label class="form-row">プリセット
+            <select id="rigPreset">
+              <option value="walk" selected>歩き (4f)</option>
+              <option value="run">走り (6f)</option>
+              <option value="attack">攻撃 (3f)</option>
+              <option value="idle">待機 (2f)</option>
+              <option value="jump">ジャンプ (4f)</option>
+            </select>
+          </label>
+          <label class="form-row">振り幅
+            <select id="rigMagnitude">
+              <option value="0.5">0.5×</option>
+              <option value="1" selected>1.0×</option>
+              <option value="1.5">1.5×</option>
+            </select>
+          </label>
+          <label class="check-row"><input type="checkbox" id="rigBounce" checked> バウンス（胴体の上下動）</label>
+          <label class="form-row">フレーム数
+            <input id="rigFrames" type="number" min="2" max="12" value="4">
+          </label>
+          <fieldset class="scope-fieldset">
+            <legend>生成結果の反映</legend>
+            <label class="radio-row"><input type="radio" name="rigApply" value="replace" checked> 既存フレームを置き換え（frame 0 以外）</label>
+            <label class="radio-row"><input type="radio" name="rigApply" value="append"> 末尾に追記</label>
+          </fieldset>
+          <div class="ai-actions">
+            <button id="rigGenerateBtn" class="btn btn-accent">フレーム生成</button>
+          </div>
         </div>
-        <div class="redraw-opts">
-          <label class="radio-row inline" data-help="rig.redrawRotated"><input type="radio" name="redrawArea" value="rotated" checked> 回転した部位のみ</label>
-          <label class="radio-row inline" data-help="rig.redrawMoved"><input type="radio" name="redrawArea" value="moved"> 動いた部位すべて</label>
-          <label class="radio-row inline" data-help="rig.redrawFull"><input type="radio" name="redrawArea" value="full"> 全身</label>
-          <label class="check-row inline" data-help="rig.redrawAllFrames"><input type="checkbox" id="redrawAllFrames"> 生成タグの全フレームに適用</label>
+      </details>
+
+      <details class="adv-collapse" data-collapse-key="rigAiFinish">
+        <summary>AI描き直し・清書（上級）</summary>
+        <div class="motion-form">
+          <div class="ai-actions">
+            <button id="rigRedrawBtn" class="btn" title="リグ出力を設計図に、AIがベースのテイストで動いた部位を描き直す（§22）">AI描き直し（ポーズガイド）</button>
+            <button id="rigCleanupBtn" class="btn" title="合成で変化したセルの周囲2pxだけをAIが清書">AI清書（継ぎ目±2px）</button>
+          </div>
+          <div class="redraw-opts">
+            <label class="radio-row inline" data-help="rig.redrawRotated"><input type="radio" name="redrawArea" value="rotated" checked> 回転した部位のみ</label>
+            <label class="radio-row inline" data-help="rig.redrawMoved"><input type="radio" name="redrawArea" value="moved"> 動いた部位すべて</label>
+            <label class="radio-row inline" data-help="rig.redrawFull"><input type="radio" name="redrawArea" value="full"> 全身</label>
+            <label class="check-row inline" data-help="rig.redrawAllFrames"><input type="checkbox" id="redrawAllFrames"> 生成タグの全フレームに適用</label>
+          </div>
+          <details class="redraw-lab" data-collapse-key="redrawLab">
+            <summary><span data-help="rig.redrawPromptExtra">プロンプト補足（上級者向け）</span></summary>
+            <textarea id="redrawPromptExtra" rows="3" placeholder="描き直しプロンプトの末尾に「追加の指示」として付加されます（例: 脚は必ず膝で曲げる）"></textarea>
+          </details>
         </div>
-        <details class="redraw-lab">
-          <summary><span data-help="rig.redrawPromptExtra">プロンプト補足（上級者向け）</span></summary>
-          <textarea id="redrawPromptExtra" rows="3" placeholder="描き直しプロンプトの末尾に「追加の指示」として付加されます（例: 脚は必ず膝で曲げる）"></textarea>
-        </details>
-        <div id="rigProgress" class="ai-progress" aria-live="polite"></div>
+      </details>
+
+      <div class="ai-actions">
+        <button id="rigAbortBtn" class="btn btn-small" disabled>中断</button>
       </div>
+      <div id="rigProgress" class="ai-progress" aria-live="polite"></div>
 
       <div class="rig-adjust">
         <div class="hint">微調整（選択パーツ・現在フレーム）
@@ -311,7 +332,7 @@
     <div class="preview-row">
       <canvas id="previewCanvas"></canvas>
       <div class="preview-controls">
-        <label class="check-row"><input type="checkbox" id="previewPlayToggle" checked> ループ再生</label>
+        <button id="previewPlayBtn" class="btn btn-small" title="プレビューの再生/停止（ループ挙動は下部バーの再生モードに従います）">■ 停止</button>
         <label class="check-row"><input type="checkbox" id="previewSmoothToggle"> 滲み表示</label>
       </div>
     </div>

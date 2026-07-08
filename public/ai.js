@@ -30,7 +30,14 @@ export function initAi(store, toast) {
   const progressEl = document.getElementById("aiProgress");
   const historyLog = document.getElementById("historyLog");
   const previewCanvas = document.getElementById("previewCanvas");
-  const previewPlayToggle = document.getElementById("previewPlayToggle");
+  const previewPlayBtn = document.getElementById("previewPlayBtn");
+  let previewPlaying = true;
+  if (previewPlayBtn) {
+    previewPlayBtn.addEventListener("click", () => {
+      previewPlaying = !previewPlaying;
+      previewPlayBtn.textContent = previewPlaying ? "■ 停止" : "▶ 再生";
+    });
+  }
 
   // タブ・モーション生成UI
   const tabPatchBtn = document.getElementById("tabPatchBtn");
@@ -787,7 +794,7 @@ export function initAi(store, toast) {
 
   function previewTick(ts) {
     requestAnimationFrame(previewTick);
-    if (!previewPlayToggle.checked) { lastTs = ts; return; }
+    if (!previewPlaying) { lastTs = ts; return; }
     const p = store.state.project;
     if (!p.frames.length) return;
     if (lastTs === null) lastTs = ts;
@@ -812,6 +819,7 @@ export function initAi(store, toast) {
       }
     }
     if (previewFrame < start || previewFrame > end) { previewFrame = start; previewDir = 1; }
+    previewCanvas.dataset.frame = String(previewFrame); // E2Eテスト用（UIには影響しない）
     const ctx = previewCanvas.getContext("2d");
     const smoothToggle = document.getElementById("previewSmoothToggle");
     if (smoothToggle && smoothToggle.checked) {

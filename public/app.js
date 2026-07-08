@@ -794,9 +794,25 @@ async function initBackendLabel() {
   }
 }
 
+// §27 折りたたみ（<details data-collapse-key>）の開閉状態を localStorage に記憶
+function initCollapsePersistence() {
+  document.querySelectorAll("details[data-collapse-key]").forEach((det) => {
+    const key = "aiMeglio.collapse." + det.dataset.collapseKey;
+    try {
+      const saved = localStorage.getItem(key);
+      if (saved === "1") det.open = true;
+      else if (saved === "0") det.open = false;
+    } catch {}
+    det.addEventListener("toggle", () => {
+      try { localStorage.setItem(key, det.open ? "1" : "0"); } catch {}
+    });
+  });
+}
+
 function main() {
   initHeader();
   initGlobalShortcuts();
+  initCollapsePersistence();
   initEditor(store, toast);
   initTimeline(store, toast);
   initAi(store, toast);

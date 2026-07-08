@@ -63,6 +63,7 @@ button {
   padding: 6px 12px;
   cursor: pointer;
   transition: background 0.12s, border-color 0.12s;
+  white-space: nowrap; /* §27.3 縦一文字折り返し防止 */
 }
 .btn:hover { background: var(--bg-3); border-color: var(--accent-dark); }
 .btn:active { transform: translateY(1px); }
@@ -360,7 +361,7 @@ aside, #canvasPanel {
 }
 #instructionInput:focus { outline: none; border-color: var(--accent-dark); }
 
-.ai-actions { display: flex; gap: 8px; }
+.ai-actions { display: flex; gap: 8px; flex-wrap: wrap; /* §27.3 nowrap化に伴いはみ出す場合は折返す */ }
 .ai-actions .btn { flex: 1; justify-content: center; }
 .ai-progress { min-height: 18px; font-size: 12px; color: var(--text-2); }
 .ai-progress.is-busy::before {
@@ -889,3 +890,27 @@ aside, #canvasPanel {
 .mc-merge-canvas-wrap { overflow: auto; max-height: 60vh; }
 .mc-merge-canvas-wrap canvas { image-rendering: pixelated; cursor: crosshair; }
 .mc-chip-partial { border-style: dashed; color: var(--accent); }
+
+/* ---------- §27 上級者向け折りたたみ ---------- */
+.adv-collapse {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-1);
+  margin: 8px 0;
+}
+.adv-collapse > summary {
+  cursor: pointer;
+  padding: 7px 10px;
+  font-size: 12px;
+  color: var(--text-1);
+  user-select: none;
+  list-style: revert;
+}
+.adv-collapse > summary:hover { color: var(--text-0); }
+.adv-collapse[open] > summary {
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 8px;
+  color: var(--text-0);
+}
+.adv-collapse[open] { padding-bottom: 8px; }
+.adv-collapse > *:not(summary) { margin-left: 10px; margin-right: 10px; }
