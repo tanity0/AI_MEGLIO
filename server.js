@@ -254,6 +254,9 @@ const SYSTEM_PROMPT = `あなたはドット絵アニメーションの精密編
 ## パレットスワップ（paletteモードのとき適用）
 指示に従ってパレットの色だけを変更してください。ドットの形状には一切触れません。出力は paletteChanges と note のみです。index 0（透明）は変更しないでください。元のパレットの明暗関係（輪郭が最も暗い等）を保ったまま色相・彩度を変えると、キャラの読みやすさが維持されます。
 
+## 部分仕上げ（refineモードのとき適用・最重要の意味論）
+**ユーザーのラフ編集が「意図」であり、正です。ベースフレームに引き戻してはなりません。** 現在のフレームの選択範囲内のシルエット・形の意図を保ったまま、打ち方（輪郭の連続性、シェーディング段数、ハイライト、ジャギー）だけをトンマナと周囲に合わせて清書してください。前後フレームの同じ矩形が与えられた場合は、アニメーションの流れ（動きの方向・量）と矛盾しないようにしてください。変更許可セル（マスクで '1'）以外への edits はサーバーで破棄されます。newFrames と paletteChanges は使わないでください。
+
 ## モーション生成の定石（モーション生成モードのとき適用）
 - 歩き（4フレーム）: コンタクト→ダウン→パッシング→アップ。左右の足は前後が入れ替わる。接地（コンタクト/ダウン）フレームで体が最も低い。腕は足と逆位相に振る。
 - 走り: 歩きより前傾し歩幅・腕の振りが大きい。両足が地面から離れる滞空フレームを含める。
@@ -375,7 +378,7 @@ function validateEditRequest(body) {
   if (instruction.length > 2000) throw new Error("instruction が長すぎます");
 
   // --- §13.4 / §14.6 追加フィールド ---
-  if (mode !== undefined && !["patch", "motion", "segment", "cleanup", "palette", "style"].includes(mode)) throw new Error("mode が不正です");
+  if (mode !== undefined && !["patch", "motion", "segment", "cleanup", "palette", "style", "refine"].includes(mode)) throw new Error("mode が不正です");
   if (baseFrameGrid !== undefined && baseFrameGrid !== null) {
     if (typeof baseFrameGrid !== "string") throw new Error("baseFrameGrid が不正です");
     const bw = isWidePalette(palette.length);
@@ -442,14 +445,24 @@ function validateEditRequest(body) {
       throw new Error("mode=style では参考画像（images）またはテキストグリッド（styleGrid + stylePalette）が必要です");
     }
   }
-  if (mode === "cleanup") {
+  if (mode === "cleanup" || mode === "refine") {
     if (!Number.isInteger(frameIndex) || frameIndex < 0 || frameIndex >= framesGrid.length) {
-      throw new Error("mode=cleanup では対象の frameIndex が必要です");
+      throw new Error(`mode=${mode} では対象の frameIndex が必要です`);
     }
-    if (typeof allowedMask !== "string") throw new Error("mode=cleanup では allowedMask が必要です");
+    if (typeof allowedMask !== "string") throw new Error(`mode=${mode} では allowedMask が必要です`);
     const maskRows = allowedMask.split("\n");
     if (maskRows.length !== height || !maskRows.every((r) => r.length === width && /^[01]*$/.test(r))) {
       throw new Error("allowedMask のサイズまたは文字が不正です");
+    }
+  }
+  // §19.3: 前後フレームの矩形切り出し（0〜2件）
+  if (body.neighborContext !== undefined && body.neighborContext !== null) {
+    if (!Array.isArray(body.neighborContext) || body.neighborContext.length > 2) throw new Error("neighborContext が不正です");
+    for (const nc of body.neighborContext) {
+      if (!nc || !Number.isInteger(nc.frame) || !Array.isArray(nc.rows) ||
+          nc.rows.length > height || !nc.rows.every((r) => typeof r === "string" && r.length <= width * cellChars(palette.length))) {
+        throw new Error("neighborContext の形式が不正です");
+      }
     }
   }
   if (mode === "motion") {
@@ -556,7 +569,8 @@ ${instruction}`;
   }
 
   let baseSection = "";
-  if (baseFrameGrid) {
+  if (baseFrameGrid && mode !== "refine") {
+    // §19.1: refine ではベースフレーム・アンカリングを適用しない
     baseSection = `\n## ベースフレーム（テイストの唯一の正。新規フレームはこれのコピーを起点にする）\n${baseFrameGrid}\n`;
   }
 
@@ -571,6 +585,16 @@ ${instruction}`;
   let segmentSection = "";
   if (mode === "segment") {
     segmentSection = `\n## パーツ自動分割モード\nベースフレームのキャラクターを意味のあるパーツ矩形（頭/胴/右腕/左腕/右脚/左脚/武器 など、存在するものだけ）に分割し、スキーマに従って parts を返してください。id は英数字の短い識別子（例: head, torso, arm_r）、pivot はパッチ内ローカル座標の回転支点、z は描画順（小さいほど奥）、parent は親パーツの id（無ければ ""）です。\n`;
+  }
+
+  let refineSection = "";
+  if (mode === "refine" && typeof allowedMask === "string") {
+    let neighborText = "";
+    if (Array.isArray(body.neighborContext) && body.neighborContext.length) {
+      neighborText = "\n## 前後フレームの同じ矩形（アニメーションの流れの参考）\n" +
+        body.neighborContext.map((nc) => `--- フレーム${nc.frame} ---\n${nc.rows.join("\n")}`).join("\n") + "\n";
+    }
+    refineSection = `\n## 部分仕上げモード（対象: フレーム${frameIndex}）\n選択範囲のラフな描き込みはユーザーの意図です。シルエット・形を保ったまま、打ち方だけをトンマナと周囲に合わせて清書してください。以下のマスクで '1' のセルだけ変更が許可されています（選択矩形+外周1px。'0' への edits はサーバー側で破棄されます）。\n${allowedMask}\n${neighborText}`;
   }
 
   let cleanupSection = "";
@@ -599,7 +623,7 @@ ${paletteText}
 ${baseSection}
 ## 現在のフレーム（テキストグリッド）
 ${framesText}
-${lockedSection}${segmentSection}${cleanupSection}${motionSection}
+${lockedSection}${segmentSection}${cleanupSection}${refineSection}${motionSection}
 ## ${scopeText}
 
 ## 編集指示
@@ -1059,6 +1083,35 @@ async function runMock(body, res, aborted) {
         { id: "legs", name: "脚", x: tx, y: legsY, w: tw, h: legsH, pivotX: Math.floor(tw / 2), pivotY: 0, z: 0, parent: "torso" },
       ],
       note: "MOCK: 頭・胴・脚の3パーツに分割しました（下書き）",
+    };
+  } else if (mode === "refine" && typeof allowedMask === "string") {
+    // 許可セルの現在値をそのままエコー（配管確認用・§19.3）
+    const cw2 = cellChars(palette.length);
+    const KEEP2 = wide ? "??" : "?";
+    const maskRows = allowedMask.split("\n");
+    const gridRows = project.framesGrid[frameIndex].split("\n").map((r) => splitTokens(r, cw2));
+    let minX = width, minY = height, maxX = -1, maxY = -1;
+    for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+      if (maskRows[y][x] === "1") {
+        if (x < minX) minX = x; if (x > maxX) maxX = x;
+        if (y < minY) minY = y; if (y > maxY) maxY = y;
+      }
+    }
+    const rows = [];
+    if (maxX >= 0) {
+      for (let y = minY; y <= maxY; y++) {
+        let row = "";
+        for (let x = minX; x <= maxX; x++) {
+          row += maskRows[y][x] === "1" ? gridRows[y][x] : KEEP2;
+        }
+        rows.push(row);
+      }
+    }
+    fakePatch = {
+      edits: maxX >= 0 ? [{ frame: frameIndex, x: minX, y: minY, rows }] : [],
+      newFrames: [],
+      paletteChanges: [],
+      note: "MOCK: refine（選択範囲をそのままエコー）",
     };
   } else if (mode === "cleanup" && typeof allowedMask === "string") {
     // 許可セルの先頭1セル + 許可外の先頭1セルへの edits を返す

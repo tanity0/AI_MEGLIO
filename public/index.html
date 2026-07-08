@@ -128,6 +128,10 @@
       <div id="hiResHint" class="hint hires-hint" hidden>大きな素材では矩形選択での指示が高速です（フレーム全体のAI編集はトークン・時間を大きく消費します）</div>
       <div class="ai-actions">
         <button id="runAiBtn" class="btn btn-accent">実行</button>
+        <button id="refineBtn" class="btn btn-accent" disabled title="範囲を選択してください">整える</button>
+      </div>
+      <label class="check-row"><input type="checkbox" id="refineAllTag"> 「整える」を現在のタグの全フレームに適用（同じ矩形）</label>
+      <div class="ai-actions">
         <button id="paletteSwapBtn" class="btn" title="パレットの色だけをAIで変更（配色バリエーション・§16.2）">配色バリエーション</button>
         <button id="outlineRefineBtn" class="btn" title="変換で甘くなった輪郭を透明境界±2pxだけAI清書（§18.2）">AI輪郭リファイン</button>
       </div>

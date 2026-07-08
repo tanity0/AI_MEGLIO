@@ -581,6 +581,145 @@ export function initAi(store, toast) {
     await executeEdit(body, "[輪郭リファイン]", (patch) => applyPatch(patch));
   });
 
+  // -------------------------------------------------------------------
+  // §19 部分仕上げ（mode:"refine"）: 選択範囲のラフ編集をトンマナに合わせて清書
+  // -------------------------------------------------------------------
+  const refineBtn = document.getElementById("refineBtn");
+  const refineAllTag = document.getElementById("refineAllTag");
+  const REFINE_DEFAULT_INSTRUCTION = "選択範囲の輪郭とシェーディングを整えてください（シルエット・形の意図は保持）";
+
+  store.subscribe(() => {
+    const sel = store.state.selection;
+    refineBtn.disabled = !sel || store.state.aiBusy;
+    refineBtn.title = sel ? "選択範囲のラフ編集を綺麗なドットに清書（§19）" : "範囲を選択してください";
+  });
+
+  // 選択矩形+外周1px の許可マスク（§19.1）
+  function buildSelectionMask(project, sel) {
+    const rows = [];
+    for (let y = 0; y < project.height; y++) {
+      let row = "";
+      for (let x = 0; x < project.width; x++) {
+        row += x >= sel.x - 1 && x < sel.x + sel.w + 1 && y >= sel.y - 1 && y < sel.y + sel.h + 1 ? "1" : "0";
+      }
+      rows.push(row);
+    }
+    return rows.join("\n");
+  }
+
+  // 前後フレームの同じ矩形の切り出し（存在するフレームのみ・§19.1）
+  function buildNeighborContext(project, frameIndex, sel) {
+    const cw = cellChars(project.palette.length);
+    const out = [];
+    for (const nf of [frameIndex - 1, frameIndex + 1]) {
+      if (nf < 0 || nf >= project.frames.length) continue;
+      const gridRows = frameToGridString(project, nf).split("\n");
+      const rows = [];
+      for (let y = sel.y; y < sel.y + sel.h; y++) {
+        rows.push(gridRows[y].slice(sel.x * cw, (sel.x + sel.w) * cw));
+      }
+      out.push({ frame: nf, rows });
+    }
+    return out.slice(0, 2);
+  }
+
+  async function runRefine() {
+    const sel = store.state.selection;
+    if (!sel) {
+      toast("範囲を選択してください", "error");
+      return;
+    }
+    const project = store.state.project;
+    const instruction = instructionInput.value.trim() || REFINE_DEFAULT_INSTRUCTION;
+    const rect = { x: sel.x, y: sel.y, w: sel.w, h: sel.h };
+    const allTag = refineAllTag.checked;
+
+    let frameIndexes = [sel.frameIndex];
+    if (allTag) {
+      const ti = store.state.activeTagIndex;
+      const tag = ti >= 0 && project.tags[ti] ? project.tags[ti] : null;
+      if (!tag) {
+        toast("タグが選択されていないため、このフレームのみに適用します");
+      } else {
+        frameIndexes = [];
+        for (let f = tag.start; f <= Math.min(tag.end, project.frames.length - 1); f++) frameIndexes.push(f);
+      }
+    }
+
+    const common = baseRequestFields();
+    const mask = buildSelectionMask(project, rect);
+    const makeBody = (fi) => ({
+      ...common,
+      mode: "refine",
+      scope: "frame",
+      frameIndex: fi,
+      allowedMask: mask,
+      neighborContext: buildNeighborContext(project, fi, rect),
+      instruction,
+      images: [{ frame: fi, dataUrl: frameToPngDataUrl(project, fi, project.width > 64 ? 4 : 8) }],
+    });
+
+    if (frameIndexes.length === 1) {
+      await executeEdit(makeBody(frameIndexes[0]), `[整える] ${instruction}`, (patch) => applyPatch(patch));
+      return;
+    }
+
+    // タグ全フレーム: 並列リクエスト（部分失敗は警告・§19.2）
+    abortController = new AbortController();
+    store.state.aiBusy = true;
+    runBtn.disabled = true;
+    refineBtn.disabled = true;
+    abortBtn.disabled = false;
+    progressEl.classList.add("is-busy");
+    let done = 0;
+    progressEl.textContent = `整え中… 0/${frameIndexes.length}`;
+    const results = await Promise.allSettled(
+      frameIndexes.map((fi) =>
+        streamEdit(makeBody(fi), { signal: abortController.signal }).then((evt) => {
+          done++;
+          progressEl.textContent = `整え中… ${done}/${frameIndexes.length}`;
+          return { fi, evt };
+        })
+      )
+    );
+    abortController = null;
+    const ok = results.filter((r) => r.status === "fulfilled").map((r) => r.value);
+    const failed = results.filter((r) => r.status === "rejected").map((r) => r.reason?.message || String(r.reason));
+    if (ok.length) {
+      store.pushUndo();
+      let cells = 0;
+      const warnings = [];
+      for (const { evt } of ok) {
+        const { changedCells } = applyPatch(evt.patch);
+        cells += changedCells.length;
+        flashChangedCells(changedCells);
+        if (evt.patch.warnings?.length) warnings.push(...evt.patch.warnings);
+      }
+      store.notify();
+      if (failed.length) warnings.push(`${failed.length}フレームの整えに失敗: ${failed[0]}`);
+      addHistoryEntry({
+        instruction: `[整える×${frameIndexes.length}] ${instruction}`,
+        note: ok[0].evt.patch.note,
+        editedCells: cells,
+        warnings: [...new Set(warnings)],
+      });
+      progressEl.textContent = `整え完了: ${ok.length}/${frameIndexes.length}フレーム（適用セル数 ${cells}）`;
+    } else {
+      const aborted = failed.some((e) => /abort/i.test(e));
+      progressEl.textContent = aborted ? "中断しました" : `エラー: ${failed[0]}`;
+      if (!aborted) {
+        toast(failed[0], "error");
+        addHistoryEntry({ instruction: `[整える] ${instruction}`, error: failed[0] });
+      }
+    }
+    store.state.aiBusy = false;
+    runBtn.disabled = false;
+    refineBtn.disabled = !store.state.selection;
+    abortBtn.disabled = true;
+    progressEl.classList.remove("is-busy");
+  }
+  refineBtn.addEventListener("click", runRefine);
+
   paletteSwapBtn.addEventListener("click", runPaletteSwap);
   paletteApplyBtn.addEventListener("click", () => {
     if (!candidatePalette) return;
