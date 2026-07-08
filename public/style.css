@@ -833,3 +833,6 @@ aside, #canvasPanel {
   box-shadow: 0 6px 24px rgba(0,0,0,0.5);
 }
 .deviation[data-help-hover] { cursor: help; text-decoration: underline dotted; }
+
+.undo-row { display: flex; gap: 4px; }
+.undo-row .btn { flex: 1; }

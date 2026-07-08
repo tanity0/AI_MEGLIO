@@ -69,12 +69,14 @@ export const HELP = {
   // 表示系
   "view.onion": "前のフレームを半透明で重ねて表示します。アニメの動き幅を確認しながら描くときにオンにしてください。",
   "view.diff": "ベースフレームから変わったセルだけをマゼンタ枠で表示します。AIがどこを触ったかを即確認できます。",
+  "edit.undo": "直前の操作を取り消します（Ctrl+Z）。ペンの1ストローク、AI編集、フレーム操作などが1回分です。履歴は50回まで。",
   "preview.smooth": "プレビューの拡大方法を切り替えます。OFF=補間なし（ドットがカクカク立つ、ゲーム側でnearest指定した時の見え方）、ON=バイリニア補間（多少滲む、Pixi等のデフォルトの見え方）。実機の描画設定に合わせて確認できます。",
   "meter.deviation": "ベースフレームと異なるセルの割合です。手足が動く程度なら小さく、全面書き換え（テイスト崩れ）だと大きくなります。40%超は警告色になります。",
 };
 
 // data-help を自動付与するセレクタ → キーの対応（辞書と同じファイルに集約）
 const SELECTOR_MAP = [
+  ['#undoBtn', "edit.undo"],
   ['label:has(#previewSmoothToggle)', "preview.smooth"],
   // 変換スタジオ
   ['label:has(#studioTargetH)', "studio.targetH"],

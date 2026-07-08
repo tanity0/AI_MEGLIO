@@ -58,6 +58,10 @@
         <input type="range" id="zoomRange" min="2" max="32" step="1" value="12">
         <span id="zoomLabel">12x</span>
       </div>
+      <div class="undo-row">
+        <button id="undoBtn" class="btn btn-small" title="元に戻す (Ctrl+Z)">↩ 戻す</button>
+        <button id="redoBtn" class="btn btn-small" title="やり直し (Ctrl+Shift+Z)">↪ やり直し</button>
+      </div>
       <button id="clearSelectionBtn" class="btn btn-small">選択解除</button>
       <button id="lockSelectionBtn" class="btn btn-small" title="選択中の矩形を変更禁止のロック領域にする">この範囲をロック</button>
       <button id="clearLocksBtn" class="btn btn-small" title="すべてのロック領域を解除">全ロック解除 (<span id="lockCount">0</span>)</button>

@@ -731,6 +731,12 @@ function initHeader() {
 // グローバル Undo/Redo ショートカット
 // ---------------------------------------------------------------------------
 function initGlobalShortcuts() {
+  document.getElementById("undoBtn")?.addEventListener("click", () => {
+    if (!store.undo()) toast("これ以上元に戻せません");
+  });
+  document.getElementById("redoBtn")?.addEventListener("click", () => {
+    if (!store.redo()) toast("これ以上やり直せません");
+  });
   window.addEventListener("keydown", (ev) => {
     const tag = document.activeElement?.tagName;
     const inText = tag === "TEXTAREA" || tag === "INPUT";
