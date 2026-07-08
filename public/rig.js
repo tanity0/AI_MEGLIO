@@ -2,8 +2,10 @@
 // パーツ切り出し・AI自動分割(mode:segment)・キーフレームテーブルによるモーション生成・
 // z順/pivot回転合成・AI清書(mode:cleanup)・フレーム単位の微調整
 import { streamEdit } from "./api.js";
+import { extractMainPalette } from "./convert.js";
 import {
   frameToGridString,
+  charForIndex,
   frameToPngDataUrl,
   pixelsToGridString,
   pixelsToPngDataUrl,
@@ -489,43 +491,167 @@ export function initRig(store, toast) {
   // -------------------------------------------------------------------
   // AI自動分割（mode:"segment"・§14.2）
   // -------------------------------------------------------------------
+  // §14.5.5: 分割専用の軽量グリッド（高さ≤48・最大8色・1文字表現）を生成
+  function buildSegmentGrid(p) {
+    const base = basePixels(p);
+    const scale = Math.max(1, p.height / 48); // 元解像度 / 縮小解像度
+    const segH = Math.max(8, Math.round(p.height / scale));
+    const segW = Math.max(4, Math.round(p.width / scale));
+    // 使用色を集計 → 最大8色に量子化（extractMainPaletteの重み付きk-meansを再利用）
+    const counts = new Uint32Array(p.palette.length);
+    for (const v of base) counts[v]++;
+    let groups = null;
+    let segPalette;
+    const usedColors = [];
+    for (let i = 1; i < p.palette.length; i++) if (counts[i] > 0) usedColors.push(i);
+    if (usedColors.length <= 8) {
+      // 8色以下: そのまま詰めて割当て
+      groups = new Array(p.palette.length).fill(-1);
+      usedColors.forEach((full, gi) => { groups[full] = gi; });
+      segPalette = ["#00000000", ...usedColors.map((i) => p.palette[i])];
+    } else {
+      const mp = extractMainPalette(p.palette, counts, 8);
+      groups = mp.groups;
+      segPalette = ["#00000000", ...mp.colors];
+    }
+    const rows = [];
+    for (let y = 0; y < segH; y++) {
+      const sy = Math.min(p.height - 1, Math.floor((y + 0.5) * scale));
+      let row = "";
+      for (let x = 0; x < segW; x++) {
+        const sx = Math.min(p.width - 1, Math.floor((x + 0.5) * scale));
+        const idx = base[sy * p.width + sx];
+        row += idx === 0 || groups[idx] < 0 ? "." : charForIndex(groups[idx] + 1);
+      }
+      rows.push(row);
+    }
+    return { grid: rows.join("\n"), scale, palette: segPalette, segW, segH };
+  }
+
   segmentBtn.addEventListener("click", async () => {
     const p = project();
     abortController = new AbortController();
     setBusy(true, "AI自動分割中…");
     try {
+      const seg = buildSegmentGrid(p);
       const body = {
         ...baseRequestFields(),
         mode: "segment",
         scope: "all",
+        segmentGrid: seg.grid,
+        segmentScale: seg.scale,
+        segmentPalette: seg.palette,
         instruction: "ベースフレームのキャラクターをパーツ（頭/胴/右腕/左腕/右脚/左脚/武器など）に分割してください",
         images: [{ frame: 0, dataUrl: pixelsToPngDataUrl(basePixels(p), p.width, p.height, p.palette, 8) }],
       };
       const evt = await streamEdit(body, { signal: abortController.signal });
-      const seg = evt.segment;
-      if (!seg || !seg.parts.length) throw new Error("パーツが返されませんでした");
+      const result = evt.segment;
+      if (!result || !result.parts.length) throw new Error("パーツが返されませんでした");
       store.pushUndo();
       const rig = ensureRig(p);
       const base = basePixels(p);
-      rig.parts = seg.parts.map((sp) => ({
-        id: sp.id,
-        name: sp.name,
-        patch: { x: sp.x, y: sp.y, w: sp.w, h: sp.h, pixels: cutPatch(base, p.width, sp) },
-        pivot: { x: sp.pivotX, y: sp.pivotY },
-        z: sp.z,
-        parent: sp.parent || "",
-        visible: true,
-      }));
+      // §14.5.5: 縮小グリッド座標 → 元解像度へスケール（矩形は外接方向へ丸め、pivotは比率維持）
+      const sc = seg.scale;
+      rig.parts = result.parts.map((sp) => {
+        const x0 = Math.max(0, Math.floor(sp.x * sc));
+        const y0 = Math.max(0, Math.floor(sp.y * sc));
+        const x1 = Math.min(p.width, Math.ceil((sp.x + sp.w) * sc));
+        const y1 = Math.min(p.height, Math.ceil((sp.y + sp.h) * sc));
+        const w = Math.max(1, x1 - x0);
+        const h = Math.max(1, y1 - y0);
+        const rect = { x: x0, y: y0, w, h };
+        return {
+          id: sp.id,
+          name: sp.name,
+          patch: { ...rect, pixels: cutPatch(base, p.width, rect) },
+          pivot: {
+            x: Math.max(0, Math.min(w - 1, Math.round(((sp.pivotX + 0.5) / sp.w) * w))),
+            y: Math.max(0, Math.min(h - 1, Math.round(((sp.pivotY + 0.5) / sp.h) * h))),
+          },
+          z: sp.z,
+          parent: sp.parent || "",
+          visible: true,
+        };
+      });
       store.state.rigSelectedPart = null;
       store.notify();
-      const warn = seg.warnings?.length ? `（警告: ${seg.warnings.join(" / ")}）` : "";
+      const warn = result.warnings?.length ? `（警告: ${result.warnings.join(" / ")}）` : "";
       setBusy(false, `分割完了: ${rig.parts.length}パーツ ${warn}`);
-      toast(`${seg.note}（下書き。一覧で調整できます）`);
+      toast(`${result.note}（下書き。一覧で調整できます）`);
     } catch (err) {
-      setBusy(false, err.name === "AbortError" ? "中断しました" : `エラー: ${err.message}`);
-      if (err.name !== "AbortError") toast(err.message, "error");
+      // §14.5.5-3: 失敗時は簡易分割を案内
+      const hint = "。簡易分割（AIなし）をお試しください";
+      setBusy(false, err.name === "AbortError" ? "中断しました" : `エラー: ${err.message}${hint}`);
+      if (err.name !== "AbortError") toast(`${err.message}${hint}`, "error");
     } finally {
       abortController = null;
+    }
+  });
+
+  // -------------------------------------------------------------------
+  // §14.5.5-2: 簡易分割（AIなし）— 人型ヒューリスティックで即時下書き
+  // -------------------------------------------------------------------
+  function heuristicSegment(p) {
+    const base = basePixels(p);
+    // 非透明bbox
+    let x0 = p.width, y0 = p.height, x1 = -1, y1 = -1;
+    for (let y = 0; y < p.height; y++) for (let x = 0; x < p.width; x++) {
+      if (base[y * p.width + x] !== 0) {
+        if (x < x0) x0 = x; if (x > x1) x1 = x;
+        if (y < y0) y0 = y; if (y > y1) y1 = y;
+      }
+    }
+    if (x1 < 0) throw new Error("ベースフレームに不透明ピクセルがありません");
+    const W = x1 - x0 + 1, H = y1 - y0 + 1;
+    const yHead = y0 + Math.round(H * 0.25);   // 頭=上25%
+    const yTorso = y0 + Math.round(H * 0.65);  // 胴=中央40%（25〜65%）、脚=下35%
+    const xTorsoL = x0 + Math.round(W * 0.25); // 胴の中央帯（幅50%）
+    const xTorsoR = x0 + Math.round(W * 0.75);
+    const xMid = x0 + Math.round(W / 2);
+    const defs = [
+      // 定石: 脚z0 → 腕z0 → 胴z1 → 頭z2。pivot=首元/肩/股関節
+      { id: "torso", name: "胴", x: xTorsoL, y: yHead, x2: xTorsoR, y2: yTorso, z: 1, parent: "", pivot: "center" },
+      { id: "head", name: "頭", x: x0, y: y0, x2: x1 + 1, y2: yHead, z: 2, parent: "torso", pivot: "bottom-center" },
+      { id: "arm_r", name: "右腕", x: x0, y: yHead, x2: xTorsoL, y2: yTorso, z: 0, parent: "torso", pivot: "top-right" },
+      { id: "arm_l", name: "左腕", x: xTorsoR, y: yHead, x2: x1 + 1, y2: yTorso, z: 0, parent: "torso", pivot: "top-left" },
+      { id: "leg_r", name: "右脚", x: x0, y: yTorso, x2: xMid, y2: y1 + 1, z: 0, parent: "torso", pivot: "top-center" },
+      { id: "leg_l", name: "左脚", x: xMid, y: yTorso, x2: x1 + 1, y2: y1 + 1, z: 0, parent: "torso", pivot: "top-center" },
+    ];
+    const parts = [];
+    for (const d of defs) {
+      const w = d.x2 - d.x, h = d.y2 - d.y;
+      if (w < 1 || h < 1) continue;
+      const rect = { x: d.x, y: d.y, w, h };
+      const pixels = cutPatch(base, p.width, rect);
+      if (!pixels.some((v) => v !== 0)) continue; // 空パーツはスキップ
+      let pivot;
+      if (d.pivot === "bottom-center") pivot = { x: Math.floor(w / 2), y: h - 1 };
+      else if (d.pivot === "top-center") pivot = { x: Math.floor(w / 2), y: 0 };
+      else if (d.pivot === "top-left") pivot = { x: 0, y: 0 };
+      else if (d.pivot === "top-right") pivot = { x: w - 1, y: 0 };
+      else pivot = { x: Math.floor(w / 2), y: Math.floor(h / 2) };
+      parts.push({ id: d.id, name: d.name, patch: { ...rect, pixels }, pivot, z: d.z, parent: d.parent, visible: true });
+    }
+    // torso が無ければ parent を解除
+    if (!parts.some((pt) => pt.id === "torso")) for (const pt of parts) pt.parent = "";
+    return parts;
+  }
+
+  const heuristicSegmentBtn = document.getElementById("heuristicSegmentBtn");
+  heuristicSegmentBtn.addEventListener("click", () => {
+    const p = project();
+    try {
+      const parts = heuristicSegment(p);
+      if (!parts.length) throw new Error("パーツを生成できませんでした");
+      store.pushUndo();
+      const rig = ensureRig(p);
+      rig.parts = parts;
+      store.state.rigSelectedPart = null;
+      store.notify();
+      setBusy(false, `簡易分割完了: ${parts.length}パーツ（人型ヒューリスティック・下書き）`);
+      toast("簡易分割で下書きを生成しました。一覧で調整できます");
+    } catch (err) {
+      toast(err.message, "error");
     }
   });
 

@@ -402,7 +402,27 @@ function validateEditRequest(body) {
     }
   }
   if (mode === "segment") {
-    if (!baseFrameGrid) throw new Error("mode=segment では baseFrameGrid が必要です");
+    if (!baseFrameGrid && !body.segmentGrid) throw new Error("mode=segment では baseFrameGrid または segmentGrid が必要です");
+  }
+  // §14.5.5: 分割専用の軽量グリッド（高さ≤48・最大8色の1文字表現）
+  if (body.segmentGrid !== undefined && body.segmentGrid !== null) {
+    if (typeof body.segmentGrid !== "string") throw new Error("segmentGrid が不正です");
+    const rows = body.segmentGrid.split("\n");
+    if (rows.length < 1 || rows.length > 64 ||
+        !rows.every((r) => r.length >= 1 && r.length <= 128 && r.length === rows[0].length && /^[.0-9a-v]*$/.test(r))) {
+      throw new Error("segmentGrid のサイズまたは文字が不正です");
+    }
+  }
+  if (body.segmentScale !== undefined && body.segmentScale !== null) {
+    if (typeof body.segmentScale !== "number" || !(body.segmentScale >= 1) || body.segmentScale > 32) {
+      throw new Error("segmentScale が不正です");
+    }
+  }
+  if (body.segmentPalette !== undefined && body.segmentPalette !== null) {
+    if (!Array.isArray(body.segmentPalette) || body.segmentPalette.length < 1 || body.segmentPalette.length > 9 ||
+        !body.segmentPalette.every((c) => typeof c === "string")) {
+      throw new Error("segmentPalette が不正です");
+    }
   }
   if (mode === "palette") {
     if (!baseFrameGrid) throw new Error("mode=palette では baseFrameGrid が必要です");
@@ -524,6 +544,25 @@ function buildUserText(body) {
 ${gridSection}
 ## 指示
 ${instruction}`;
+  }
+
+  // §14.5.5: segmentモードで軽量グリッドがあれば、それだけの縮小プロンプト
+  if (mode === "segment" && typeof body.segmentGrid === "string") {
+    const segRows = body.segmentGrid.split("\n");
+    const segW = segRows[0].length, segH = segRows.length;
+    const scale = typeof body.segmentScale === "number" ? body.segmentScale : 1;
+    const palText = Array.isArray(body.segmentPalette)
+      ? `\n## 縮小グリッドのパレット（index: 色）\n${body.segmentPalette.map((c, i) => `${charForIndex(i)}: ${c}`).join(", ")}\n`
+      : "";
+    return `## パーツ自動分割モード（縮小グリッド）
+以下はベースフレームを元解像度の1/${scale.toFixed(2)}に間引き・最大8色に量子化した ${segW}x${segH} のグリッドです。**座標はこの縮小グリッドの座標系で返してください**（クライアント側で元解像度へ拡大されます）。
+${palText}
+## 縮小グリッド
+${body.segmentGrid}
+
+## 指示
+${instruction}
+キャラクターを意味のあるパーツ矩形（頭/胴/右腕/左腕/右脚/左脚/武器 など、存在するものだけ）に分割し、スキーマに従って parts を返してください。id は英数字の短い識別子（例: head, torso, arm_r）、pivot はパッチ内ローカル座標の回転支点、z は描画順（小さいほど奥）、parent は親パーツの id（無ければ ""）です。`;
   }
 
   // §16.2: paletteモードはパレット+ベースフレーム1枚のみの軽量プロンプト
@@ -941,7 +980,13 @@ function validatePaletteResult(raw, body) {
 // ---------------------------------------------------------------------------
 function validateSegment(rawSegment, body) {
   const warnings = [];
-  const { width, height } = body.project;
+  // §14.5.5: 縮小グリッド使用時は、その座標系の寸法で検証する
+  let { width, height } = body.project;
+  if (typeof body.segmentGrid === "string") {
+    const rows = body.segmentGrid.split("\n");
+    width = rows[0].length;
+    height = rows.length;
+  }
   if (!rawSegment || typeof rawSegment !== "object") throw new Error("segment結果の形式が不正です");
   const rawParts = Array.isArray(rawSegment.parts) ? rawSegment.parts : [];
   const note = typeof rawSegment.note === "string" ? rawSegment.note : "";
@@ -1044,7 +1089,27 @@ async function runMock(body, res, aborted) {
   const ch = tokenForIndex(lastIdx, wide) || (wide ? "01" : "1");
 
   let fakePatch;
-  if (mode === "style") {
+  if (mode === "segment" && typeof body.segmentGrid === "string") {
+    // §14.5.5: 縮小グリッドの座標系で固定3パーツを返す（クライアントが拡大）
+    const segRows = body.segmentGrid.split("\n");
+    const sw = segRows[0].length, sh = segRows.length;
+    const tw = Math.max(2, Math.floor(sw * 0.4));
+    const tx = Math.floor((sw - tw) / 2);
+    const headH = Math.max(2, Math.floor(sh * 0.25));
+    const torsoH = Math.max(2, Math.floor(sh * 0.3));
+    const legsH = Math.max(2, Math.floor(sh * 0.2));
+    const headY = Math.max(0, Math.floor(sh * 0.1));
+    const torsoY = Math.min(sh - torsoH, headY + headH);
+    const legsY = Math.min(sh - legsH, torsoY + torsoH);
+    fakePatch = {
+      parts: [
+        { id: "torso", name: "胴", x: tx, y: torsoY, w: tw, h: torsoH, pivotX: Math.floor(tw / 2), pivotY: Math.floor(torsoH / 2), z: 1, parent: "" },
+        { id: "head", name: "頭", x: tx, y: headY, w: tw, h: headH, pivotX: Math.floor(tw / 2), pivotY: headH - 1, z: 2, parent: "torso" },
+        { id: "legs", name: "脚", x: tx, y: legsY, w: tw, h: legsH, pivotX: Math.floor(tw / 2), pivotY: 0, z: 0, parent: "torso" },
+      ],
+      note: "MOCK: 縮小グリッドで頭・胴・脚に分割しました（下書き）",
+    };
+  } else if (mode === "style") {
     fakePatch = {
       guide: "頭身: 2頭身デフォルメ\n輪郭: 黒(#1a1c2c)1pxを常時使用\nシェーディング: 2段・ディザなし\nハイライト: 左上光源で上端に1px\n彩度・明度: 中彩度・やや暗め\n代表色: #1a1c2c, #5d275d, #b13e53\n打ち方: 角は1px面取り、1pxディテールは控えめ",
       note: "MOCK: 固定のスタイルガイドを返しました",
