@@ -141,6 +141,8 @@ aside, #canvasPanel {
   display: grid;
   grid-template-columns: repeat(6, 1fr);
   gap: 4px;
+  max-height: 30vh;
+  overflow-y: auto;
 }
 .swatch {
   position: relative;

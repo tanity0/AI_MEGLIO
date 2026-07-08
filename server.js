@@ -40,6 +40,47 @@ function indexForChar(c) {
 }
 
 // ---------------------------------------------------------------------------
+// §18.1: グリッド表現の両対応
+// 32色以下 = 1文字（'.'=透明、1-9a-v、'?'=変更しない）
+// 33色以上 = 2文字hex（'..'=透明、'01'〜'ff'、'??'=変更しない）
+// ---------------------------------------------------------------------------
+function isWidePalette(paletteLen) { return paletteLen > 32; }
+function cellChars(paletteLen) { return isWidePalette(paletteLen) ? 2 : 1; }
+function tokenForIndex(i, wide) {
+  if (wide) return i === 0 ? ".." : i.toString(16).padStart(2, "0");
+  return charForIndex(i);
+}
+// 戻り値: 0..255 = index、-1 = 変更しない('?'/'??')、-2 = 不正
+function indexForToken(tok, wide) {
+  if (wide) {
+    if (tok === "..") return 0;
+    if (tok === "??") return -1;
+    if (/^[0-9a-f]{2}$/.test(tok)) return parseInt(tok, 16);
+    return -2;
+  }
+  if (tok === ".") return 0;
+  if (tok === "?") return -1;
+  if (!/^[0-9a-v]$/.test(tok)) return -2;
+  return CHARSET.indexOf(tok);
+}
+// 行文字列をトークン配列に分割（wide時に奇数長なら null）
+function splitTokens(row, cw) {
+  if (cw === 1) return row.split("");
+  if (row.length % 2 !== 0) return null;
+  const out = [];
+  for (let i = 0; i < row.length; i += 2) out.push(row.slice(i, i + 2));
+  return out;
+}
+function tokensValid(tokens, wide, allowKeep) {
+  for (const t of tokens) {
+    const v = indexForToken(t, wide);
+    if (v === -2) return false;
+    if (v === -1 && !allowKeep) return false;
+  }
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // パッチのJSON Schema（構造化出力用）
 // ---------------------------------------------------------------------------
 const PATCH_SCHEMA = {
@@ -152,13 +193,23 @@ const STYLE_SCHEMA = {
   additionalProperties: false,
 };
 
-const SYSTEM_PROMPT = `あなたはドット絵アニメーションの精密編集エンジンです。
-
-## グリッド表現
+const GRID_SECTION_NARROW = `## グリッド表現
 各フレームは文字グリッドで表現されます。1文字が1ピクセルです。
 - \`.\` = 透明（パレットindex 0）
 - \`1\`-\`9\`, \`a\`-\`v\` = パレットindex 1〜31（36進数的割当て。数字の次に小文字アルファベット）
-- パッチの \`rows\` の中でのみ \`?\` が使えます。\`?\` は「このセルは変更しない」という意味です。
+- パッチの \`rows\` の中でのみ \`?\` が使えます。\`?\` は「このセルは変更しない」という意味です。`;
+
+// §18.1: 33色以上のプロジェクト用（1ピクセル=2文字の16進表現）
+const GRID_SECTION_WIDE = `## グリッド表現（16進2桁モード）
+各フレームは文字グリッドで表現されます。**2文字で1ピクセル**です（このプロジェクトはパレットが33色以上のため）。
+- \`..\` = 透明（パレットindex 0）
+- \`01\`〜\`ff\` = パレットindex 1〜255（16進数2桁・小文字）
+- パッチの \`rows\` の中でのみ \`??\` が使えます。\`??\` は「このセルは変更しない」という意味です。
+- 行の文字数は必ず偶数（セル数×2）にしてください。`;
+
+const SYSTEM_PROMPT = `あなたはドット絵アニメーションの精密編集エンジンです。
+
+{{GRID_SECTION}}
 
 ## 最小差分の原則
 指示を実現するために変更が必要なセルだけを edits に含めてください。無関係なセルは書き換えず、パッチの rows 内では \`?\` にしてください（矩形全体を再送する必要はありません。変更箇所を囲む小さな矩形で十分です）。
@@ -207,6 +258,11 @@ const SYSTEM_PROMPT = `あなたはドット絵アニメーションの精密編
 - note: 行った変更内容の一言サマリー（日本語、履歴ログに表示されます）
 
 変更が不要な項目は空配列 [] にしてください（省略はできません、必ず4つのキーすべてを含めてください）。`;
+
+// §18.1: パレット色数に応じてグリッド表現の説明を差し替える
+function systemPromptFor(paletteLen) {
+  return SYSTEM_PROMPT.replace("{{GRID_SECTION}}", isWidePalette(paletteLen) ? GRID_SECTION_WIDE : GRID_SECTION_NARROW);
+}
 
 // ---------------------------------------------------------------------------
 // 静的ファイル配信
@@ -284,10 +340,10 @@ function validateEditRequest(body) {
   const { project, scope, frameIndex, selection, instruction, images, mode, baseFrameGrid, lockedRects, motion, allowedMask } = body;
   if (!project || typeof project !== "object") throw new Error("project が必要です");
   const { width, height, fps, palette, framesGrid } = project;
-  if (!Number.isInteger(width) || width < 8 || width > 96) throw new Error("width が不正です");
-  if (!Number.isInteger(height) || height < 8 || height > 96) throw new Error("height が不正です");
+  if (!Number.isInteger(width) || width < 8 || width > 128) throw new Error("width が不正です");
+  if (!Number.isInteger(height) || height < 8 || height > 128) throw new Error("height が不正です");
   if (!Number.isInteger(fps) || fps < 1 || fps > 24) throw new Error("fps が不正です");
-  if (!Array.isArray(palette) || palette.length < 1 || palette.length > 32) throw new Error("palette が不正です");
+  if (!Array.isArray(palette) || palette.length < 1 || palette.length > 256) throw new Error("palette が不正です");
   if (!Array.isArray(framesGrid) || framesGrid.length < 1) throw new Error("framesGrid が不正です");
   if (!["selection", "frame", "all"].includes(scope)) throw new Error("scope が不正です");
   if (scope !== "all") {
@@ -310,10 +366,14 @@ function validateEditRequest(body) {
   if (mode !== undefined && !["patch", "motion", "segment", "cleanup", "palette", "style"].includes(mode)) throw new Error("mode が不正です");
   if (baseFrameGrid !== undefined && baseFrameGrid !== null) {
     if (typeof baseFrameGrid !== "string") throw new Error("baseFrameGrid が不正です");
+    const bw = isWidePalette(palette.length);
+    const bcw = cellChars(palette.length);
     const rows = baseFrameGrid.split("\n");
-    if (rows.length !== height || !rows.every((r) => r.length === width && /^[.0-9a-v]*$/.test(r))) {
-      throw new Error("baseFrameGrid のサイズまたは文字が不正です");
-    }
+    const ok = rows.length === height && rows.every((r) => {
+      const toks = splitTokens(r, bcw);
+      return toks && toks.length === width && tokensValid(toks, bw, false);
+    });
+    if (!ok) throw new Error("baseFrameGrid のサイズまたは文字が不正です");
   }
   if (lockedRects !== undefined && lockedRects !== null) {
     if (!Array.isArray(lockedRects) || lockedRects.length > 64) throw new Error("lockedRects が不正です");
@@ -434,7 +494,7 @@ ${instruction}`;
 
   // §16.2: paletteモードはパレット+ベースフレーム1枚のみの軽量プロンプト
   if (mode === "palette") {
-    const palText = palette.map((color, i) => `${charForIndex(i)}: ${color}`).join(", ");
+    const palText = palette.map((color, i) => `${tokenForIndex(i, isWidePalette(palette.length))}: ${color}`).join(", ");
     return `${styleSection}## パレットスワップモード
 サイズ: ${width}x${height}
 
@@ -448,9 +508,15 @@ ${baseFrameGrid}
 ${instruction}`;
   }
 
-  const paletteText = palette
-    .map((color, i) => `${charForIndex(i)}: ${color}`)
-    .join(", ");
+  const wide = isWidePalette(palette.length);
+  let paletteText;
+  if (wide && body.mainPalette && Array.isArray(body.mainPalette.colors)) {
+    // §18.3: 33色以上はメインパレット要約でトークンを節約
+    const mains = body.mainPalette.colors.map((c, i) => `M${i}: ${c}`).join(", ");
+    paletteText = `総色数: ${palette.length}（グリッドは16進2桁表現）\nメインパレット（トンマナの主役色。各フルカラーはいずれかのメイングループに属する）:\n${mains}`;
+  } else {
+    paletteText = palette.map((color, i) => `${tokenForIndex(i, wide)}: ${color}`).join(", ");
+  }
 
   const framesText = framesGrid
     .map((grid, i) => `--- フレーム${i} ---\n${grid}`)
@@ -545,7 +611,12 @@ function validateAndClampPatch(rawPatch, body) {
   const { width, height, palette, framesGrid } = project;
   const frameCount = framesGrid.length;
   const lockedRects = Array.isArray(body.lockedRects) ? body.lockedRects : [];
-  const baseRows = typeof baseFrameGrid === "string" ? baseFrameGrid.split("\n") : null;
+  const wide = isWidePalette(palette.length);
+  const cw = cellChars(palette.length);
+  const KEEP = wide ? "??" : "?";
+  const baseTokRows = typeof baseFrameGrid === "string"
+    ? baseFrameGrid.split("\n").map((r) => splitTokens(r, cw))
+    : null;
 
   if (!rawPatch || typeof rawPatch !== "object") throw new Error("パッチの形式が不正です");
   const edits = Array.isArray(rawPatch.edits) ? rawPatch.edits : [];
@@ -553,6 +624,7 @@ function validateAndClampPatch(rawPatch, body) {
   const paletteChanges = Array.isArray(rawPatch.paletteChanges) ? rawPatch.paletteChanges : [];
   const note = typeof rawPatch.note === "string" ? rawPatch.note : "";
 
+  // 内部ではトークン配列（1セル=1要素）で処理し、最後に文字列へ戻す
   const cleanEdits = [];
   for (const e of edits) {
     if (!e || typeof e !== "object") continue;
@@ -565,7 +637,8 @@ function validateAndClampPatch(rawPatch, body) {
       warnings.push("edits の座標/rows が不正なため無視しました");
       continue;
     }
-    if (!rows.every((r) => typeof r === "string" && GRID_CHAR_RE.test(r))) {
+    const tokRows = rows.map((r) => (typeof r === "string" ? splitTokens(r, cw) : null));
+    if (tokRows.some((tr) => !tr || !tokensValid(tr, wide, true))) {
       warnings.push("edits に不正な文字が含まれるため無視しました");
       continue;
     }
@@ -574,14 +647,13 @@ function validateAndClampPatch(rawPatch, body) {
       continue;
     }
     // scope=selection のときは選択矩形外への edits を切り捨てる
-    let ex = x, ey = y, erows = rows;
+    let ex = x, ey = y, erows = tokRows;
     if (scope === "selection" && selection) {
       if (frame !== frameIndex) {
         warnings.push(`フレーム${frame}への編集は選択範囲外（対象フレーム外）のため無視しました`);
         continue;
       }
-      const sel = selection;
-      const clipped = clipRowsToRect(x, y, rows, sel.x, sel.y, sel.w, sel.h);
+      const clipped = clipTokRowsToRect(x, y, tokRows, selection.x, selection.y, selection.w, selection.h, KEEP);
       if (!clipped) {
         warnings.push("選択範囲外の edits を切り捨てました");
         continue;
@@ -593,9 +665,9 @@ function validateAndClampPatch(rawPatch, body) {
       warnings.push(`フレーム${frame}への編集は対象外のため無視しました`);
       continue;
     }
-    // 行の幅がキャンバスをはみ出す場合は切り詰め
+    // 行の幅がキャンバスをはみ出す場合は切り詰め（セル単位）
     const maxW = width - ex;
-    const trimmedRows = erows.map((r) => r.slice(0, Math.max(0, maxW)));
+    const trimmedRows = erows.map((tr) => tr.slice(0, Math.max(0, maxW)));
     const trimmedRowCount = Math.min(trimmedRows.length, height - ey);
     cleanEdits.push({ frame, x: ex, y: ey, rows: trimmedRows.slice(0, trimmedRowCount) });
   }
@@ -608,45 +680,36 @@ function validateAndClampPatch(rawPatch, body) {
       warnings.push("newFrames の insertAfter が不正なため無視しました");
       continue;
     }
-    if (!Array.isArray(rows) || rows.length !== height || !rows.every((r) => typeof r === "string" && r.length === width && GRID_CHAR_RE.test(r) && !r.includes("?"))) {
+    const tokRows = Array.isArray(rows) ? rows.map((r) => (typeof r === "string" ? splitTokens(r, cw) : null)) : null;
+    if (!tokRows || tokRows.length !== height ||
+        tokRows.some((tr) => !tr || tr.length !== width || !tokensValid(tr, wide, false))) {
       warnings.push("newFrames の rows がフレームサイズと一致しないため無視しました（?は使用不可）");
       continue;
     }
-    cleanNewFrames.push({ insertAfter, rows });
+    cleanNewFrames.push({ insertAfter, rows: tokRows });
   }
 
   // --- ロック領域の強制上書き（§13.2-3）---
-  // ロック領域内のセルへの edits / newFrames はベースの値で強制上書きする。
   if (lockedRects.length > 0) {
     let overriddenCells = 0;
     for (const e of cleanEdits) {
-      e.rows = e.rows.map((row, ry) => {
-        let out = "";
-        for (let rx = 0; rx < row.length; rx++) {
-          const ax = e.x + rx, ay = e.y + ry;
-          if (row[rx] !== "?" && cellLocked(ax, ay, lockedRects)) {
-            overriddenCells++;
-            out += baseRows ? baseRows[ay][ax] : "?";
-          } else {
-            out += row[rx];
-          }
+      e.rows = e.rows.map((tr, ry) => tr.map((tok, rx) => {
+        const ax = e.x + rx, ay = e.y + ry;
+        if (tok !== KEEP && cellLocked(ax, ay, lockedRects)) {
+          overriddenCells++;
+          return baseTokRows ? baseTokRows[ay][ax] : KEEP;
         }
-        return out;
-      });
+        return tok;
+      }));
     }
     for (const nf of cleanNewFrames) {
-      nf.rows = nf.rows.map((row, y) => {
-        let out = "";
-        for (let x = 0; x < row.length; x++) {
-          if (cellLocked(x, y, lockedRects) && baseRows) {
-            if (row[x] !== baseRows[y][x]) overriddenCells++;
-            out += baseRows[y][x];
-          } else {
-            out += row[x];
-          }
+      nf.rows = nf.rows.map((tr, y) => tr.map((tok, x) => {
+        if (cellLocked(x, y, lockedRects) && baseTokRows) {
+          if (tok !== baseTokRows[y][x]) overriddenCells++;
+          return baseTokRows[y][x];
         }
-        return out;
-      });
+        return tok;
+      }));
     }
     if (overriddenCells > 0) {
       warnings.push(`ロック領域内の ${overriddenCells} セルをベースの値で強制上書きしました`);
@@ -658,7 +721,7 @@ function validateAndClampPatch(rawPatch, body) {
   for (const pc of paletteChanges) {
     if (!pc || typeof pc !== "object") continue;
     const { index, color } = pc;
-    if (!Number.isInteger(index) || index < 0 || index >= 32) {
+    if (!Number.isInteger(index) || index < 0 || index >= 256) {
       warnings.push("paletteChanges の index が不正なため無視しました");
       continue;
     }
@@ -675,39 +738,35 @@ function validateAndClampPatch(rawPatch, body) {
     cleanPaletteChanges.length = 0;
   }
 
-  // --- AI清書（§14.4-2）: 許可セル（allowedMask='1'）外の edits を破棄 ---
-  if (mode === "cleanup" && typeof body.allowedMask === "string") {
+  // --- AI清書/部分仕上げ（§14.4-2/§19）: 許可セル（allowedMask='1'）外の edits を破棄 ---
+  if ((mode === "cleanup" || mode === "refine") && typeof body.allowedMask === "string") {
     const maskRows = body.allowedMask.split("\n");
     let discarded = 0;
     for (const e of cleanEdits) {
-      e.rows = e.rows.map((row, ry) => {
-        let out = "";
-        for (let rx = 0; rx < row.length; rx++) {
-          const ax = e.x + rx, ay = e.y + ry;
-          if (row[rx] !== "?" && maskRows[ay][ax] !== "1") {
-            discarded++;
-            out += "?";
-          } else {
-            out += row[rx];
-          }
+      e.rows = e.rows.map((tr, ry) => tr.map((tok, rx) => {
+        const ax = e.x + rx, ay = e.y + ry;
+        if (tok !== KEEP && maskRows[ay][ax] !== "1") {
+          discarded++;
+          return KEEP;
         }
-        return out;
-      });
+        return tok;
+      }));
     }
     if (discarded > 0) warnings.push(`許可セル外の ${discarded} セルの編集を破棄しました`);
+    const modeName = mode === "refine" ? "部分仕上げ" : "清書";
     if (cleanNewFrames.length > 0) {
-      warnings.push(`清書モードのため newFrames（${cleanNewFrames.length}件）を破棄しました`);
+      warnings.push(`${modeName}モードのため newFrames（${cleanNewFrames.length}件）を破棄しました`);
       cleanNewFrames.length = 0;
     }
     if (cleanPaletteChanges.length > 0) {
-      warnings.push(`清書モードのため paletteChanges（${cleanPaletteChanges.length}件）を破棄しました`);
+      warnings.push(`${modeName}モードのため paletteChanges（${cleanPaletteChanges.length}件）を破棄しました`);
       cleanPaletteChanges.length = 0;
     }
   }
 
   return {
-    edits: cleanEdits,
-    newFrames: cleanNewFrames,
+    edits: cleanEdits.map((e) => ({ ...e, rows: e.rows.map((tr) => tr.join("")) })),
+    newFrames: cleanNewFrames.map((nf) => ({ ...nf, rows: nf.rows.map((tr) => tr.join("")) })),
     paletteChanges: cleanPaletteChanges,
     note,
     warnings,
@@ -800,37 +859,38 @@ function validateSegment(rawSegment, body) {
   return { parts, note, warnings };
 }
 
-// 矩形(sx,sy,sw,sh)にrows(x,yから始まる)をクリップする
-function clipRowsToRect(x, y, rows, sx, sy, sw, sh) {
+// 矩形(sx,sy,sw,sh)にトークン行列(x,yから始まる)をクリップする（§18.1: セル単位）
+function clipTokRowsToRect(x, y, tokRows, sx, sy, sw, sh, KEEP) {
   const sxEnd = sx + sw;
   const syEnd = sy + sh;
   let clipped = false;
   const outRows = [];
   let outY = null;
-  for (let ry = 0; ry < rows.length; ry++) {
+  for (let ry = 0; ry < tokRows.length; ry++) {
     const absY = y + ry;
     if (absY < sy || absY >= syEnd) { clipped = true; continue; }
     if (outY === null) outY = absY;
-    const row = rows[ry];
-    let outRow = "";
+    const tr = tokRows[ry];
+    const outRow = [];
     let outX = null;
-    for (let rx = 0; rx < row.length; rx++) {
+    for (let rx = 0; rx < tr.length; rx++) {
       const absX = x + rx;
       if (absX < sx || absX >= sxEnd) { clipped = true; continue; }
       if (outX === null) outX = absX;
-      outRow += row[rx];
+      outRow.push(tr[rx]);
     }
-    if (outRow.length > 0) {
-      outRows.push({ x: outX, row: outRow });
-    }
+    if (outRow.length > 0) outRows.push({ x: outX, row: outRow });
   }
   if (outRows.length === 0 || outY === null) return null;
-  // 全行が同じxオフセットになるよう正規化（矩形選択なので通常は揃う）
   const minX = Math.min(...outRows.map((r) => r.x));
-  const normalized = outRows.map((r) => "?".repeat(r.x - minX) + r.row);
-  const maxLen = Math.max(...normalized.map((r) => r.length));
-  const padded = normalized.map((r) => r.padEnd(maxLen, "?"));
-  return { x: minX, y: outY, rows: padded, clipped };
+  const maxLen = Math.max(...outRows.map((r) => r.x - minX + r.row.length));
+  const normalized = outRows.map((r) => {
+    const pad = new Array(r.x - minX).fill(KEEP);
+    const out = pad.concat(r.row);
+    while (out.length < maxLen) out.push(KEEP);
+    return out;
+  });
+  return { x: minX, y: outY, rows: normalized, clipped };
 }
 
 // ---------------------------------------------------------------------------
@@ -855,7 +915,8 @@ async function runMock(body, res, aborted) {
   const { project, scope, frameIndex, selection, mode, baseFrameGrid, motion, allowedMask } = body;
   const { width, height, palette } = project;
   const lastIdx = palette.length - 1;
-  const ch = charForIndex(lastIdx) || "1";
+  const wide = isWidePalette(palette.length);
+  const ch = tokenForIndex(lastIdx, wide) || (wide ? "01" : "1");
 
   let fakePatch;
   if (mode === "style") {
@@ -912,7 +973,7 @@ async function runMock(body, res, aborted) {
   } else if (mode === "motion" && motion && baseFrameGrid) {
     // ベースフレームのコピーを上下にシフトした newFrames を motion.frames 枚生成
     const baseRows = baseFrameGrid.split("\n");
-    const blankRow = ".".repeat(width);
+    const blankRow = (wide ? ".." : ".").repeat(width);
     const newFrames = [];
     for (let i = 0; i < motion.frames; i++) {
       let rows;
@@ -1202,7 +1263,7 @@ async function runReal(body, res, aborted) {
 
   try {
     const { text, usage } = await callBackend({
-      systemText: SYSTEM_PROMPT,
+      systemText: systemPromptFor(body.project.palette.length),
       userText,
       images,
       schema,
@@ -1272,7 +1333,7 @@ async function runRealSplitAllFrames(body, res, aborted) {
     const userText = buildUserText(subBody);
     tasks.push(
       callBackend({
-        systemText: SYSTEM_PROMPT,
+        systemText: systemPromptFor(body.project.palette.length),
         userText,
         images: [], // 分割はCLIモードのみ = 画像なし
         schema: PATCH_SCHEMA,

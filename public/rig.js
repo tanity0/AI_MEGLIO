@@ -8,6 +8,9 @@ import {
   pixelsToGridString,
   pixelsToPngDataUrl,
   drawFrameToContext,
+  indexForToken,
+  splitTokens,
+  cellChars,
   adjustTagsOnInsert,
   adjustTagsOnDelete,
   addGeneratedTag,
@@ -467,7 +470,7 @@ export function initRig(store, toast) {
         palette: p.palette,
         framesGrid: p.frames.map((_, i) => frameToGridString(p, i)),
       },
-      baseFrameGrid: pixelsToGridString(basePixels(p), p.width, p.height),
+      baseFrameGrid: pixelsToGridString(basePixels(p), p.width, p.height, p.palette.length),
       lockedRects: (p.lockedRects || []).map((r) => ({ ...r })),
       ...styleRequestFields(p, store.state.serverConfig), // §17.3
     };
@@ -637,20 +640,20 @@ export function initRig(store, toast) {
 
   function applyEditsToFrames(p, edits) {
     let cells = 0;
+    const cw = cellChars(p.palette.length);
+    const wide = cw === 2;
     for (const e of edits) {
       const frame = p.frames[e.frame];
       if (!frame) continue;
       for (let ry = 0; ry < e.rows.length; ry++) {
-        const row = e.rows[ry];
+        const tokens = splitTokens(e.rows[ry], cw);
         const py = e.y + ry;
         if (py < 0 || py >= p.height) continue;
-        for (let rx = 0; rx < row.length; rx++) {
-          const ch = row[rx];
-          if (ch === "?") continue;
+        for (let rx = 0; rx < tokens.length; rx++) {
+          const idx = indexForToken(tokens[rx], wide);
+          if (idx < 0 || idx >= p.palette.length) continue;
           const px = e.x + rx;
           if (px < 0 || px >= p.width) continue;
-          const idx = ch === "." ? 0 : parseInt(ch, 36);
-          if (Number.isNaN(idx) || idx < 0 || idx >= p.palette.length) continue;
           frame.pixels[py * p.width + px] = idx;
           cells++;
         }

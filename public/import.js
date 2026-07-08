@@ -2,7 +2,7 @@
 // PNG/GIF(1枚目)/WebP を読み込み、拡大率の自動検出・パレット抽出を行い、
 // frame 0 = ベースフレームのプロジェクトを返す。
 
-const MAX_SIZE = 96;
+const MAX_SIZE = 128;
 const MAX_COLORS = 32; // index 0 = 透明を含む
 
 function gcd(a, b) {

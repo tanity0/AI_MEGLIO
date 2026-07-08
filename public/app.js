@@ -25,13 +25,41 @@ export function indexForChar(c) {
   return -1;
 }
 
+// §18.1: 33色以上は1ピクセル=2文字hex表現
+export function isWidePalette(paletteLen) { return paletteLen > 32; }
+export function cellChars(paletteLen) { return isWidePalette(paletteLen) ? 2 : 1; }
+export function tokenForIndex(i, wide) {
+  if (wide) return i === 0 ? ".." : i.toString(16).padStart(2, "0");
+  return charForIndex(i) ?? ".";
+}
+// 0..255 = index / -1 = 変更しない / -2 = 不正
+export function indexForToken(tok, wide) {
+  if (wide) {
+    if (tok === "..") return 0;
+    if (tok === "??") return -1;
+    if (/^[0-9a-f]{2}$/.test(tok)) return parseInt(tok, 16);
+    return -2;
+  }
+  if (tok === ".") return 0;
+  if (tok === "?") return -1;
+  const i = indexForChar(tok);
+  return i >= 0 ? i : -2;
+}
+export function splitTokens(row, cw) {
+  if (cw === 1) return row.split("");
+  const out = [];
+  for (let i = 0; i < row.length; i += 2) out.push(row.slice(i, i + 2));
+  return out;
+}
+
 export function frameToGridRows(project, frameIndex) {
   const { width, height, frames } = project;
+  const wide = isWidePalette(project.palette.length);
   const pixels = frames[frameIndex].pixels;
   const rows = [];
   for (let y = 0; y < height; y++) {
     let row = "";
-    for (let x = 0; x < width; x++) row += charForIndex(pixels[y * width + x]) ?? ".";
+    for (let x = 0; x < width; x++) row += tokenForIndex(pixels[y * width + x], wide);
     rows.push(row);
   }
   return rows;
@@ -41,11 +69,12 @@ export function frameToGridString(project, frameIndex) {
 }
 
 // 任意のピクセル配列（Uint8Array）をグリッド文字列に変換（ベースフレーム用）
-export function pixelsToGridString(pixels, width, height) {
+export function pixelsToGridString(pixels, width, height, paletteLen = 32) {
+  const wide = isWidePalette(paletteLen);
   const rows = [];
   for (let y = 0; y < height; y++) {
     let row = "";
-    for (let x = 0; x < width; x++) row += charForIndex(pixels[y * width + x]) ?? ".";
+    for (let x = 0; x < width; x++) row += tokenForIndex(pixels[y * width + x], wide);
     rows.push(row);
   }
   return rows.join("\n");
@@ -355,10 +384,10 @@ function rigFromPlain(raw, width, height) {
 export function projectFromPlain(o) {
   if (!o || typeof o !== "object") throw new Error("不正なプロジェクトファイルです");
   const { width, height, fps, palette, frames, baseFrame, lockedRects } = o;
-  if (!Number.isInteger(width) || width < 8 || width > 96) throw new Error("width が不正です");
-  if (!Number.isInteger(height) || height < 8 || height > 96) throw new Error("height が不正です");
+  if (!Number.isInteger(width) || width < 8 || width > 128) throw new Error("width が不正です");
+  if (!Number.isInteger(height) || height < 8 || height > 128) throw new Error("height が不正です");
   if (!Number.isInteger(fps) || fps < 1 || fps > 24) throw new Error("fps が不正です");
-  if (!Array.isArray(palette) || palette.length < 1 || palette.length > 32) throw new Error("palette が不正です");
+  if (!Array.isArray(palette) || palette.length < 1 || palette.length > 256) throw new Error("palette が不正です");
   if (!Array.isArray(frames) || frames.length < 1) throw new Error("frames が不正です");
   let base = null;
   if (Array.isArray(baseFrame)) {

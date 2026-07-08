@@ -5,6 +5,9 @@ import {
   pixelsToGridString,
   pixelsToPngDataUrl,
   indexForChar,
+  indexForToken,
+  splitTokens,
+  cellChars,
   drawFrameToContext,
   adjustTagsOnInsert,
   adjustTagsOnDelete,
@@ -141,20 +144,21 @@ export function initAi(store, toast) {
     const project = store.state.project;
     const changedCells = [];
 
+    const cw = cellChars(project.palette.length);
+    const wide = cw === 2;
     for (const e of patch.edits) {
       const frame = project.frames[e.frame];
       if (!frame) continue;
       for (let ry = 0; ry < e.rows.length; ry++) {
-        const row = e.rows[ry];
+        const tokens = splitTokens(e.rows[ry], cw);
         const py = e.y + ry;
         if (py < 0 || py >= project.height) continue;
-        for (let rx = 0; rx < row.length; rx++) {
-          const ch = row[rx];
-          if (ch === "?") continue;
+        for (let rx = 0; rx < tokens.length; rx++) {
+          const idx = indexForToken(tokens[rx], wide);
+          if (idx < 0) continue; // '?'/不正はスキップ
           const px = e.x + rx;
           if (px < 0 || px >= project.width) continue;
-          const idx = indexForChar(ch);
-          if (idx < 0 || idx >= project.palette.length) continue;
+          if (idx >= project.palette.length) continue;
           frame.pixels[py * project.width + px] = idx;
           changedCells.push({ frame: e.frame, x: px, y: py });
         }
@@ -166,10 +170,10 @@ export function initAi(store, toast) {
     for (const nf of sortedNewFrames) {
       const pixels = new Uint8Array(project.width * project.height);
       for (let y = 0; y < nf.rows.length && y < project.height; y++) {
-        const row = nf.rows[y];
-        for (let x = 0; x < row.length && x < project.width; x++) {
-          const idx = indexForChar(row[x]);
-          pixels[y * project.width + x] = idx >= 0 ? idx : 0;
+        const tokens = splitTokens(nf.rows[y], cw);
+        for (let x = 0; x < tokens.length && x < project.width; x++) {
+          const idx = indexForToken(tokens[x], wide);
+          pixels[y * project.width + x] = idx >= 0 && idx < project.palette.length ? idx : 0;
         }
       }
       const insertIdx = Math.min(Math.max(nf.insertAfter + 1, 0), project.frames.length);
@@ -236,7 +240,7 @@ export function initAi(store, toast) {
       lockedRects: (project.lockedRects || []).map((r) => ({ ...r })),
     };
     if (project.baseFrame) {
-      fields.baseFrameGrid = pixelsToGridString(project.baseFrame, project.width, project.height);
+      fields.baseFrameGrid = pixelsToGridString(project.baseFrame, project.width, project.height, project.palette.length);
     }
     Object.assign(fields, styleRequestFields(project, store.state.serverConfig)); // §17.3
     return fields;
@@ -338,12 +342,14 @@ export function initAi(store, toast) {
   // モーション生成結果の適用: newFrames を置き換え/追記で反映（結果は新タグ化・§16.1）
   function applyMotionPatch(patch, applyMode, presetName = "motion") {
     const project = store.state.project;
+    const mcw = cellChars(project.palette.length);
+    const mwide = mcw === 2;
     const framesPixels = patch.newFrames.map((nf) => {
       const pixels = new Uint8Array(project.width * project.height);
       for (let y = 0; y < nf.rows.length && y < project.height; y++) {
-        const row = nf.rows[y];
-        for (let x = 0; x < row.length && x < project.width; x++) {
-          const idx = indexForChar(row[x]);
+        const tokens = splitTokens(nf.rows[y], mcw);
+        for (let x = 0; x < tokens.length && x < project.width; x++) {
+          const idx = indexForToken(tokens[x], mwide);
           pixels[y * project.width + x] = idx >= 0 && idx < project.palette.length ? idx : 0;
         }
       }
@@ -480,7 +486,7 @@ export function initAi(store, toast) {
       images: [],
     };
     if (!body.baseFrameGrid) {
-      body.baseFrameGrid = pixelsToGridString(base, project.width, project.height);
+      body.baseFrameGrid = pixelsToGridString(base, project.width, project.height, project.palette.length);
     }
 
     abortController = new AbortController();

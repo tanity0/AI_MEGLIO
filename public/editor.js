@@ -284,8 +284,8 @@ export function initEditor(store, toast) {
   }
   paletteAddBtn.addEventListener("click", () => {
     const p = project();
-    if (p.palette.length >= 32) {
-      toast("パレットは最大32色です", "error");
+    if (p.palette.length >= 256) {
+      toast("パレットは最大256色です", "error");
       return;
     }
     store.pushUndo();
