@@ -6,12 +6,23 @@ import fs from "node:fs/promises";
 import fssync from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawn } from "node:child_process";
+import { spawn, execSync } from "node:child_process";
 import os from "node:os";
 import Anthropic from "@anthropic-ai/sdk";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, "public");
+
+// ツールバージョン（package.json）と起動時点のコミットID（フッター表示用。git不在なら省略）
+const APP_VERSION = (() => {
+  try { return JSON.parse(fssync.readFileSync(path.join(__dirname, "package.json"), "utf-8")).version || ""; }
+  catch { return ""; }
+})();
+const APP_COMMIT = (() => {
+  try {
+    return execSync("git rev-parse --short HEAD", { cwd: __dirname, stdio: ["ignore", "pipe", "ignore"], timeout: 3000 }).toString().trim();
+  } catch { return ""; }
+})();
 
 const PORT = Number(process.env.PORT || 8787);
 const MODEL = process.env.MODEL || "claude-opus-4-8";
@@ -1901,6 +1912,8 @@ async function handleApiConfig(req, res) {
     redrawMaxCells: REDRAW_MAX_CELLS, // §22.6-3
     exportEnabled: !!EXPORT_ROOT,
     exportRoot: EXPORT_ROOT || null,
+    version: APP_VERSION, // §24: フッター表示用
+    commit: APP_COMMIT || null,
   });
   res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Content-Length": Buffer.byteLength(body) });
   res.end(body);

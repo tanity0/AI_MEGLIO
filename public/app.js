@@ -772,7 +772,8 @@ async function initBackendLabel() {
     const cfg = await res.json();
     store.state.serverConfig = cfg;
     const name = cfg.mock ? "MOCK" : cfg.backend === "cli" ? "Claude Code CLI" : cfg.backend === "codex" ? "Codex CLI" : "API";
-    label.textContent = `バックエンド: ${name}`;
+    const ver = cfg.version ? ` · v${cfg.version}${cfg.commit ? ` (${cfg.commit})` : ""}` : "";
+    label.textContent = `バックエンド: ${name}${ver}`;
     label.title = cfg.mock
       ? "MOCKモード（APIを呼びません）"
       : cfg.backend === "cli"
@@ -780,6 +781,7 @@ async function initBackendLabel() {
         : cfg.backend === "codex"
           ? `Codex CLI（モデル: ${cfg.codexModel}。画像は送信されません）`
           : `Anthropic API（モデル: ${cfg.model}, effort: ${cfg.effort}）`;
+    if (cfg.version) label.title += `\nバージョン: v${cfg.version}${cfg.commit ? ` / コミット: ${cfg.commit}` : ""}（git pull 後はサーバー再起動+ブラウザ再読込で更新）`;
   } catch {
     label.textContent = "バックエンド: 不明";
   }

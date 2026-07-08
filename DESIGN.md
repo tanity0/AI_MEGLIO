@@ -823,6 +823,10 @@ Windows実機で BACKEND=codex 実行時に「spawn EPERM」。原因: npm グ�
 
 検証: ダミー .cmd シム（`fake-codex.cmd` → node スクリプトを呼ぶ）を CODEX_PATH に指定して Linux では検証できないため、シム判定と cmd.exe 引数組み立てを単体関数に切り出して**引数組み立ての文字列をユニットテスト**（スペース入りパス・二重引用符の位置）。EPERM を人工的に投げるダミーで新ガイダンス文言。非 Windows 経路の退行なし。
 
+## 24. フッターのバージョン表示
+
+「git pull が反映されたか分からない」問題の解消用。package.json の version と起動時点の git コミットID（`git rev-parse --short HEAD`。git 不在なら省略）をサーバー起動時に取得し、`/api/config` の `version` / `commit` で公開。フッターのバックエンド表示に「 · v1.8.0 (9a3cb9c)」の形で併記し、title に「git pull 後はサーバー再起動+ブラウザ再読込で更新」の注記。version は機能追加のたびに手で上げる（設計の【vN】と揃える運用: §22系=1.8.x）。
+
 ## 将来メモ（未設計・アイデア置き場）
 
 - **ChatGPT Apps（Apps SDK）への埋め込み**: ChatGPT のサブスクリプション内で GPT-5.5 系モデルを推論に使う案。実現には (a) 本ツールを公開 MCP サーバーとしてホスティングし OpenAI の審査を通す、(b) AI 操作をチャットターン駆動に作り替える（現行の SSE リアルタイム編集ループと相性が悪い）、(c) ローカル EXPORT_ROOT 連携（zombie リポジトリの public/sprites への直接書き出し）を放棄する、という大きなアーキテクチャ変更が必要。**当面は §23（Codex CLI バックエンド、`codex exec` 経由で ChatGPT サブスク認証のまま GPT モデルを使う）を優先**し、本案は Apps SDK のローカル実行・私的配布が緩和されたら再検討する。
