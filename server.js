@@ -1377,7 +1377,11 @@ function spawnClaudeCli(prompt, { registerCancel }) {
     };
     const timer = setTimeout(() => {
       try { child.kill("SIGKILL"); } catch {}
-      settle(reject, userError(`Claude Code CLI がタイムアウトしました（${CLI_TIMEOUT_SEC}秒）。対処: (1) 矩形選択で範囲を狭めて指示する、(2) 環境変数 CLI_TIMEOUT でタイムアウト秒数を延ばす、(3) CLI_MODEL=haiku など高速なモデルを試す。`));
+      // 診断用: CLIが黙って固まる原因（レート制限・認証切れ等）はstdout/stderrに出ていることが多い
+      const peek = `${stderr}\n${stdout}`.trim().replace(/\s+/g, " ").slice(0, 300);
+      const diag = peek ? `\nCLIの出力（診断用）: ${peek}` : "\nCLIからの出力はありませんでした（起動直後に停止している可能性: claude にログイン済みか、レート制限に達していないか確認してください）";
+      console.error(`[cli-timeout] ${CLI_TIMEOUT_SEC}s, stdout=${stdout.length}B stderr=${stderr.length}B: ${peek}`);
+      settle(reject, userError(`Claude Code CLI がタイムアウトしました（${CLI_TIMEOUT_SEC}秒）。対処: (1) 矩形選択で範囲を狭めて指示する、(2) 環境変数 CLI_TIMEOUT でタイムアウト秒数を延ばす、(3) CLI_MODEL=haiku など高速なモデルを試す。${diag}`));
     }, CLI_TIMEOUT_MS);
 
     registerCancel(() => {
