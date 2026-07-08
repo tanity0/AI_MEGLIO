@@ -617,6 +617,7 @@ export function initRig(store, toast) {
   function setBusy(busy, label) {
     rigGenerateBtn.disabled = busy;
     rigCleanupBtn.disabled = busy;
+    document.getElementById("rigRedrawBtn").disabled = busy; // §22.9-3: 実行中の多重クリック防止
     segmentBtn.disabled = busy;
     rigAbortBtn.disabled = !busy;
     rigProgress.classList.toggle("is-busy", busy);
@@ -835,7 +836,21 @@ export function initRig(store, toast) {
   // -------------------------------------------------------------------
   // AI清書（mode:"cleanup"・§14.4-2。フレームごとに並列リクエスト）
   // -------------------------------------------------------------------
-  rigCleanupBtn.addEventListener("click", async () => {
+  // §22.9-3: どんな例外でも必ず setBusy(false) で終わらせる共通ラッパ（実機報告
+  // 「フォールバック後に描き直し中…のまま止まる」= setBusy(true) 以降の同期例外で
+  // ハンドラが死に busy 表示が残るパターンへの恒久対策。清書側も同構造のため同様に包む）
+  const guardBusy = (label, fn) => async () => {
+    try {
+      await fn();
+    } catch (err) {
+      console.error(`[${label}] 予期しないエラー:`, err);
+      abortController = null;
+      setBusy(false, `エラー: ${err.message}`);
+      toast(`${label}に失敗しました: ${err.message}`, "error");
+    }
+  };
+
+  rigCleanupBtn.addEventListener("click", guardBusy("AI清書", async () => {
     const p = project();
     const rig = p.rig;
     if (!rig || rig.generatedAt === null || !rig.keyframes.length) {
@@ -900,7 +915,7 @@ export function initRig(store, toast) {
     if (okResults.length && errors.length) {
       toast(`一部のフレームの清書に失敗しました: ${errors[0]}`, "error");
     }
-  });
+  }));
 
   // -------------------------------------------------------------------
   // §22.1: AI描き直し（ポーズガイド）— リグ出力を設計図にAIがベースのテイストで描き直す
@@ -964,7 +979,7 @@ export function initRig(store, toast) {
     return out.slice(0, 2);
   }
 
-  rigRedrawBtn.addEventListener("click", async () => {
+  rigRedrawBtn.addEventListener("click", guardBusy("描き直し", async () => {
     const p = project();
     const rig = p.rig;
     if (!rig || rig.generatedAt === null || !rig.keyframes.length) {
@@ -1113,7 +1128,7 @@ export function initRig(store, toast) {
       setBusy(false, aborted ? "中断しました" : `エラー: ${errs[0] || "描き直しに失敗しました"}`);
       if (!aborted && errs[0]) toast(errs[0], "error");
     }
-  });
+  }));
 
   function applyEditsToFrames(p, edits) {
     let cells = 0;

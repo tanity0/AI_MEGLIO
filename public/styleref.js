@@ -169,7 +169,7 @@ export function initStyleRef(store, toast) {
 
   enabledToggle.addEventListener("change", () => {
     const s = ensureStyleRef();
-    if (enabledToggle.checked && !s.guide.trim()) {
+    if (enabledToggle.checked && !(s.guide || "").trim()) {
       toast("ガイドが空です。「AIで解析」するか手書きで入力してください", "error");
       enabledToggle.checked = false;
       return;
@@ -188,7 +188,7 @@ export function initStyleRef(store, toast) {
     }
     if (document.activeElement !== guideText) guideText.value = s ? s.guide : "";
     enabledToggle.checked = !!(s && s.enabled);
-    const active = !!(s && s.enabled && s.guide.trim());
+    const active = !!(s && s.enabled && (s.guide || "").trim());
     badge.hidden = !active;
   }
   store.subscribe(render);

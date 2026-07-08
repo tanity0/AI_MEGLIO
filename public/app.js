@@ -302,7 +302,8 @@ function styleRefFromPlain(raw) {
 // （画像はAPIバックエンドのみ。CLIではテキストのみ）
 export function styleRequestFields(project, serverConfig) {
   const s = project.styleRef;
-  if (!s || !s.enabled || !s.guide.trim()) return {};
+  // §22.9-3: guide が文字列でない壊れた styleRef でも throw しない（busy 表示が残る事故の芽を摘む）
+  if (!s || !s.enabled || typeof s.guide !== "string" || !s.guide.trim()) return {};
   const fields = { styleGuide: s.guide.trim() };
   const backend = serverConfig?.backend || "api";
   if (backend === "api" && s.imageDataUrl && s.imageDataUrl.startsWith("data:image/png;base64,")) {
