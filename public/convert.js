@@ -429,8 +429,34 @@ export function detectComponents(data, w, h) {
     boxes.push({ x0, y0, x1, y1, area });
   }
   if (!boxes.length) return [];
-  const maxArea = Math.max(...boxes.map((b) => b.area));
-  const kept = boxes.filter((b) => b.area >= maxArea * 0.05);
+  // 近接ボックスのマージ: 同一ポーズ内の分離パーツ（銃先・帽子など）を1体に統合。
+  // マージン = 最大ボックス辺の5%（最低8px）。ポーズ間の大きな間隔は維持される。
+  let merged = boxes.map((b) => ({ ...b }));
+  const maxDim = Math.max(...merged.map((b) => Math.max(b.x1 - b.x0 + 1, b.y1 - b.y0 + 1)));
+  const margin = Math.max(8, Math.round(maxDim * 0.05));
+  let changed = true;
+  while (changed) {
+    changed = false;
+    outer: for (let i = 0; i < merged.length; i++) {
+      for (let j = i + 1; j < merged.length; j++) {
+        const a = merged[i], b = merged[j];
+        const overlapX = a.x0 - margin <= b.x1 && b.x0 - margin <= a.x1;
+        const overlapY = a.y0 - margin <= b.y1 && b.y0 - margin <= a.y1;
+        if (overlapX && overlapY) {
+          merged[i] = {
+            x0: Math.min(a.x0, b.x0), y0: Math.min(a.y0, b.y0),
+            x1: Math.max(a.x1, b.x1), y1: Math.max(a.y1, b.y1),
+            area: a.area + b.area,
+          };
+          merged.splice(j, 1);
+          changed = true;
+          break outer;
+        }
+      }
+    }
+  }
+  const maxArea = Math.max(...merged.map((b) => b.area));
+  const kept = merged.filter((b) => b.area >= maxArea * 0.05);
   // 行クラスタリング: y範囲が重なるものを同じ行に
   kept.sort((a, b) => a.y0 - b.y0);
   const rows = [];
