@@ -817,7 +817,7 @@ Windows実機での検証結果（1セル修正=約18秒で成功 / 「キャラ
 
 Windows実機で BACKEND=codex 実行時に「spawn EPERM」。原因: npm グローバルインストールの `codex` の実体は `codex.cmd`（バッチシム）で、Node の `spawn` は `.cmd`/`.bat` を直接起動できない（Node のセキュリティ修正以降 EINVAL/EPERM になる）。対応:
 
-1. **シム自動対応**: 起動コマンド（CODEX_PATH / CLI_PATH の解決結果）が `.cmd` / `.bat` で終わる場合、Windows では `cmd.exe /d /s /c ""<path>" <args...>"` 形式で起動する（各引数はスペースを含む場合に二重引用符で囲む。プロンプトは従来どおり stdin 渡しなのでエスケープ面積は小さい）。それ以外は従来どおり直接 spawn。
+1. **シム自動対応**: 起動コマンド（CODEX_PATH / CLI_PATH の解決結果）が `.cmd` / `.bat` で終わる場合、**または拡張子なしのコマンド名の場合**（改: CODEX_PATH 未設定の素の `codex` が Windows 実機で EPERM になったため。cmd.exe は PATHEXT 解決で PATH 上の codex.cmd を見つけられる）、Windows では `cmd.exe /d /s /c ""<path>" <args...>"` 形式で起動する（各引数はスペースを含む場合に二重引用符で囲む。プロンプトは従来どおり stdin 渡しなのでエスケープ面積は小さい）。それ以外は従来どおり直接 spawn。
 2. **EPERM/EINVAL のエラーメッセージ改善**: spawn エラーが EPERM または EINVAL のとき、「Windows では npm 版 codex/claude の実体が .cmd シムのため直接起動できないことが原因の可能性が高い。CODEX_PATH（または CLI_PATH）に .cmd のフルパスか、実体の .exe（`npm root -g` 配下の @openai/codex 内の *.exe）を設定してください。ウイルス対策ソフトのブロックの可能性もあります」というガイダンスを返す。
 3. README の codex セットアップに Windows 注記を追記（CODEX_PATH の探し方: PowerShell で `Get-Command codex` の Source、それが .cmd の場合はそのままでよい（サーバーがシム対応する）こと、実体 .exe を直接指定する選択肢）。
 

@@ -1447,7 +1447,12 @@ function stripCodeFence(text) {
 // platform はユニットテストのため引数で上書き可能（既定 process.platform）。
 // ---------------------------------------------------------------------------
 export function buildSpawnCommand(cmd, args, platform = process.platform) {
-  if (platform === "win32" && /\.(cmd|bat)$/i.test(cmd)) {
+  // .cmd/.bat シム、または拡張子なしのコマンド名（例: 素の "codex"。npm シムは
+  // CreateProcess から直接起動できず spawn EPERM/EINVAL になる）は cmd.exe 経由で起動する。
+  // cmd.exe は PATHEXT 解決を行うため、PATH 上の codex.cmd も見つけられる。
+  const base = cmd.split(/[\\/]/).pop();
+  const needsShell = /\.(cmd|bat)$/i.test(cmd) || !base.includes(".");
+  if (platform === "win32" && needsShell) {
     const quote = (a) => (/\s/.test(a) ? `"${a}"` : a);
     const inner = [`"${cmd}"`, ...args.map(quote)].join(" ");
     return {
