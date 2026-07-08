@@ -18,6 +18,7 @@ const EFFORT = process.env.EFFORT || "medium";
 const MOCK = process.env.MOCK === "1";
 const BACKEND = process.env.BACKEND === "cli" ? "cli" : "api"; // §15.1: api（既定）| cli
 const CLI_MODEL = process.env.CLI_MODEL || "sonnet";
+const CLI_CMD = process.env.CLI_PATH || "claude"; // Windowsで解決先が紛らわしい場合にフルパス指定可
 const CLI_TIMEOUT_SEC = Number(process.env.CLI_TIMEOUT) > 0 ? Number(process.env.CLI_TIMEOUT) : 300; // §15.5-1: 既定300秒、CLI_TIMEOUT（秒）で上書き
 const CLI_TIMEOUT_MS = CLI_TIMEOUT_SEC * 1000;
 const CLI_CONCURRENCY = 2; // §15.2: 同時実行2のキュー
@@ -1359,8 +1360,9 @@ function spawnClaudeCli(prompt, { registerCancel }) {
   return new Promise((resolve, reject) => {
     let child;
     try {
-      child = spawn("claude", ["-p", "--output-format", "json", "--model", CLI_MODEL], {
+      child = spawn(CLI_CMD, ["-p", "--output-format", "json", "--model", CLI_MODEL], {
         stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
       });
     } catch (err) {
       reject(err);
@@ -1379,7 +1381,7 @@ function spawnClaudeCli(prompt, { registerCancel }) {
       try { child.kill("SIGKILL"); } catch {}
       // 診断用: CLIが黙って固まる原因（レート制限・認証切れ等）はstdout/stderrに出ていることが多い
       const peek = `${stderr}\n${stdout}`.trim().replace(/\s+/g, " ").slice(0, 300);
-      const diag = peek ? `\nCLIの出力（診断用）: ${peek}` : "\nCLIからの出力はありませんでした（起動直後に停止している可能性: claude にログイン済みか、レート制限に達していないか確認してください）";
+      const diag = peek ? `\nCLIの出力（診断用）: ${peek}` : `\nCLIからの出力はありませんでした。起動された「${CLI_CMD}」が別の実体（例: Claudeデスクトップアプリ）に解決されている可能性があります。PowerShellで Get-Command claude のSourceを確認し、そのフルパスを環境変数 CLI_PATH に設定して起動してください。`;
       console.error(`[cli-timeout] ${CLI_TIMEOUT_SEC}s, stdout=${stdout.length}B stderr=${stderr.length}B: ${peek}`);
       settle(reject, userError(`Claude Code CLI がタイムアウトしました（${CLI_TIMEOUT_SEC}秒）。対処: (1) 矩形選択で範囲を狭めて指示する、(2) 環境変数 CLI_TIMEOUT でタイムアウト秒数を延ばす、(3) CLI_MODEL=haiku など高速なモデルを試す。${diag}`));
     }, CLI_TIMEOUT_MS);
@@ -1408,6 +1410,7 @@ function spawnClaudeCli(prompt, { registerCancel }) {
       settle(resolve, stdout);
     });
 
+    console.log(`[cli] spawn ${CLI_CMD} (model=${CLI_MODEL}) prompt=${prompt.length}B`);
     child.stdin.write(prompt);
     child.stdin.end();
   });
