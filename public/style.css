@@ -174,10 +174,12 @@ aside, #canvasPanel {
   flex: 1;
   width: 100%;
   display: flex;
-  align-items: center;
-  justify-content: center;
   min-height: 0;
+  overflow: auto;
+  cursor: grab;
 }
+#canvasWrap.panning { cursor: grabbing; }
+#canvasWrap > canvas { margin: auto; }
 #mainCanvas {
   image-rendering: pixelated;
   border: 1px solid var(--border);

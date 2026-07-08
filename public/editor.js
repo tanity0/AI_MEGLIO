@@ -106,7 +106,27 @@ export function initEditor(store, toast) {
   // ---------------------------------------------------------------------
   // マウス操作
   // ---------------------------------------------------------------------
+  // 空き領域の左ドラッグ / どこでも中ボタンドラッグで表示位置をパン
+  let panning = null;
+  wrap.addEventListener("pointerdown", (ev) => {
+    const middle = ev.button === 1;
+    if (!middle && (ev.button !== 0 || ev.target !== wrap)) return;
+    panning = { x: ev.clientX, y: ev.clientY, left: wrap.scrollLeft, top: wrap.scrollTop };
+    wrap.classList.add("panning");
+    ev.preventDefault(); // 中ボタンのオートスクロールと、キャンバスの互換mousedownを抑止
+  });
+  window.addEventListener("pointermove", (ev) => {
+    if (!panning) return;
+    wrap.scrollLeft = panning.left - (ev.clientX - panning.x);
+    wrap.scrollTop = panning.top - (ev.clientY - panning.y);
+  });
+  window.addEventListener("pointerup", () => {
+    panning = null;
+    wrap.classList.remove("panning");
+  });
+
   canvas.addEventListener("mousedown", (ev) => {
+    if (ev.button !== 0) return; // 描画は左ボタンのみ（中ボタンはパン）
     if (store.state.rigAdjustMode) return; // リグ調整モード中はrig.jsがドラッグを処理する
     const { x, y } = cellFromEvent(ev);
     const tool = store.state.tool;
