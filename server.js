@@ -700,7 +700,10 @@ ${instruction}`;
       ? `\nこのプロンプトの全グリッド（ベース・ラフ・マスク・前後フレーム）はキャンバス座標 (${crop.x}, ${crop.y}) 起点の ${crop.w}x${crop.h} 切り出しです。edits の x, y は**切り出しローカル座標**（(0,0)〜(${crop.w - 1},${crop.h - 1})）で返してください。サーバー側でキャンバス座標へ変換されます。frame は ${frameIndex} のままです。`
       : "";
     const maskText = crop ? cropGridString(allowedMask, crop, 1) : allowedMask;
-    redrawSection = `\n## ポーズガイド再描画モード（対象: フレーム${frameIndex}）\n${mandate}${cropNote}\nマスク（'1' のセルだけ変更可。'0' への edits はサーバー側で破棄されます）:\n${maskText}\n${neighborText}`;
+    // §22.10-1: プロンプト補足（実験用ノブ）— 入力があるときだけ末尾に付加
+    const extra = typeof body.promptExtra === "string" ? body.promptExtra.trim().slice(0, 4000) : "";
+    const extraSection = extra ? `\n## 追加の指示（ユーザー）\n${extra}\n` : "";
+    redrawSection = `\n## ポーズガイド再描画モード（対象: フレーム${frameIndex}）\n${mandate}${cropNote}\nマスク（'1' のセルだけ変更可。'0' への edits はサーバー側で破棄されます）:\n${maskText}\n${neighborText}${extraSection}`;
   }
 
   let cleanupSection = "";
@@ -1963,6 +1966,61 @@ function decodeDataUrl(dataUrl) {
   return m[2] ? Buffer.from(m[3], "base64") : Buffer.from(decodeURIComponent(m[3]), "utf8");
 }
 
+// ---------------------------------------------------------------------------
+// §22.10-2: POST /api/redraw-feedback — 描き直しのワンクリック評価をローカル保存
+// ./redraw-feedback/<timestamp>-<verdict>.json（.gitignore 対象・EXPORT_ROOT 不要）
+// 保存内容はプロンプト改善のための疑似リプレイに足る完全性（palette・キャンバスサイズ・
+// ジョブごとの base/rough/result クロップグリッド+mask+cropRect）で受け取る。
+// ---------------------------------------------------------------------------
+async function handleRedrawFeedback(req, res) {
+  let raw;
+  try {
+    raw = await readBody(req, MAX_BODY_BYTES);
+  } catch {
+    jsonError(res, 413, "フィードバックのサイズが上限（5MB）を超えています");
+    return;
+  }
+  let body;
+  try {
+    body = JSON.parse(raw.toString("utf8"));
+  } catch {
+    jsonError(res, 400, "リクエストが不正です");
+    return;
+  }
+  const verdict = body?.verdict === "good" ? "good" : body?.verdict === "bad" ? "bad" : null;
+  if (!verdict || !Array.isArray(body.jobs) || body.jobs.length === 0) {
+    jsonError(res, 400, "verdict（good/bad）と jobs が必要です");
+    return;
+  }
+  const record = {
+    timestamp: new Date().toISOString(),
+    verdict,
+    backend: String(body.backend || ""),
+    model: String(body.model || ""),
+    promptExtra: String(body.promptExtra || ""),
+    comment: String(body.comment || ""),
+    width: Number(body.width) || 0,
+    height: Number(body.height) || 0,
+    appliedCells: Number(body.appliedCells) || 0,
+    palette: Array.isArray(body.palette) ? body.palette.map(String) : [],
+    warnings: Array.isArray(body.warnings) ? body.warnings.map(String) : [],
+    jobs: body.jobs,
+  };
+  try {
+    const dir = path.join(process.cwd(), "redraw-feedback");
+    await fs.mkdir(dir, { recursive: true });
+    const ts = new Date().toISOString().replace(/[:.]/g, "-");
+    const file = `${ts}-${verdict}.json`;
+    await fs.writeFile(path.join(dir, file), JSON.stringify(record, null, 1));
+    const out = JSON.stringify({ ok: true, file });
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Content-Length": Buffer.byteLength(out) });
+    res.end(out);
+    console.log(`[redraw-feedback] ${file} (${verdict}, jobs=${record.jobs.length})`);
+  } catch (err) {
+    jsonError(res, 500, `フィードバックの保存に失敗しました: ${err.message}`);
+  }
+}
+
 async function handleApiExport(req, res) {
   if (!EXPORT_ROOT) {
     jsonError(res, 403, "EXPORT_ROOT が設定されていないため、書き出しAPIは無効です。EXPORT_ROOT=<ゲームリポジトリのパス> で起動してください");
@@ -2072,6 +2130,8 @@ const server = http.createServer(async (req, res) => {
       await handleApiEdit(req, res);
     } else if (req.method === "POST" && urlPath === "/api/export") {
       await handleApiExport(req, res);
+    } else if (req.method === "POST" && urlPath === "/api/redraw-feedback") {
+      await handleRedrawFeedback(req, res); // §22.10-2
     } else if (req.method === "GET") {
       await serveStatic(req, res);
     } else {

@@ -614,6 +614,24 @@ export function initRig(store, toast) {
     };
   }
 
+  // §22.10: 実行中の経過時間ティッカー。「進捗が動かない=固まった」に見える誤解対策
+  // （CLI系バックエンドは応答がまとめて届くため、実行中は数字が動かないのが正常）。
+  // setBusy(true) で開始・setBusy(false) で必ず停止し、タイマーは残留しない。
+  let busyTimer = null;
+  let busyStartedAt = 0;
+  let busyLabel = "";
+  function fmtElapsed(ms) {
+    const s = Math.floor(ms / 1000);
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  }
+  function renderBusyLabel() {
+    rigProgress.textContent = `${busyLabel}（経過 ${fmtElapsed(Date.now() - busyStartedAt)}）`;
+  }
+  // 実行中の進捗文言の更新はここを通す（経過表示を維持したまま差し替え）
+  function setBusyLabel(text) {
+    busyLabel = text;
+    renderBusyLabel();
+  }
   function setBusy(busy, label) {
     rigGenerateBtn.disabled = busy;
     rigCleanupBtn.disabled = busy;
@@ -621,7 +639,17 @@ export function initRig(store, toast) {
     segmentBtn.disabled = busy;
     rigAbortBtn.disabled = !busy;
     rigProgress.classList.toggle("is-busy", busy);
-    if (label !== undefined) rigProgress.textContent = label;
+    if (busyTimer) {
+      clearInterval(busyTimer);
+      busyTimer = null;
+    }
+    if (busy) {
+      busyStartedAt = Date.now();
+      setBusyLabel(label ?? "");
+      busyTimer = setInterval(renderBusyLabel, 1000);
+    } else if (label !== undefined) {
+      rigProgress.textContent = label;
+    }
   }
   rigAbortBtn.addEventListener("click", () => { if (abortController) abortController.abort(); });
 
@@ -884,7 +912,7 @@ export function initRig(store, toast) {
       };
       return streamEdit(body, { signal: abortController.signal }).then((evt) => {
         doneCount++;
-        rigProgress.textContent = `清書中… ${doneCount}/${frameIndexes.length}`;
+        setBusyLabel(`清書中… ${doneCount}/${frameIndexes.length}`);
         return evt;
       });
     });
@@ -923,6 +951,69 @@ export function initRig(store, toast) {
   const rigRedrawBtn = document.getElementById("rigRedrawBtn");
   const redrawAreaMode = () => document.querySelector('input[name="redrawArea"]:checked')?.value || "rotated";
   const redrawAllFrames = document.getElementById("redrawAllFrames");
+
+  // §22.10-1: プロンプト補足（実験用ノブ）。localStorage でプロジェクト非依存に永続化
+  const redrawPromptExtra = document.getElementById("redrawPromptExtra");
+  const PROMPT_EXTRA_KEY = "aiMeglio.redrawPromptExtra";
+  try { redrawPromptExtra.value = localStorage.getItem(PROMPT_EXTRA_KEY) || ""; } catch {}
+  redrawPromptExtra.addEventListener("input", () => {
+    try { localStorage.setItem(PROMPT_EXTRA_KEY, redrawPromptExtra.value); } catch {}
+  });
+
+  // §22.10-2: 評価用 — 直近の描き直しセッションのクロップグリッドを組み立てる
+  function cropGridRows(pixels, p, rect) {
+    const wide = p.palette.length > 32;
+    const rows = [];
+    for (let y = rect.y; y < rect.y + rect.h; y++) {
+      let row = "";
+      for (let x = rect.x; x < rect.x + rect.w; x++) {
+        const v = pixels[y * p.width + x];
+        row += wide ? (v === 0 ? ".." : v.toString(16).padStart(2, "0")) : charForIndex(v);
+      }
+      rows.push(row);
+    }
+    return rows;
+  }
+  function cropMaskRows(mask, rect) {
+    const lines = mask.split("\n");
+    const rows = [];
+    for (let y = rect.y; y < rect.y + rect.h; y++) rows.push(lines[y].slice(rect.x, rect.x + rect.w));
+    return rows;
+  }
+
+  // §22.10-2: 完了ステータス行に「👍うまくいった / 👎ダメだった」を表示（次の操作まで）
+  function showRedrawFeedbackUi(session) {
+    const wrap = document.createElement("span");
+    wrap.className = "redraw-feedback";
+    const mk = (label, verdict) => {
+      const b = document.createElement("button");
+      b.className = "btn btn-small";
+      b.type = "button";
+      b.textContent = label;
+      b.addEventListener("click", async () => {
+        let comment = "";
+        if (verdict === "bad") comment = window.prompt("何がダメでしたか？（任意・ローカルにのみ保存されます）") || "";
+        try {
+          const res = await fetch("/api/redraw-feedback", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ...session, verdict, comment }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+          wrap.textContent = ` フィードバックを保存しました（redraw-feedback/${data.file}）`;
+          toast("フィードバックを保存しました。プロンプト改善に使われます");
+        } catch (err) {
+          toast(`フィードバックの保存に失敗しました: ${err.message}`, "error");
+        }
+      });
+      return b;
+    };
+    wrap.appendChild(document.createTextNode(" 評価:"));
+    wrap.appendChild(mk("👍うまくいった", "good"));
+    wrap.appendChild(mk("👎ダメだった", "bad"));
+    rigProgress.appendChild(wrap);
+  }
 
   // §22.5-3: マスクを連結成分（8近傍）に分割し、成分ごとに
   // { mask(フルサイズ・その成分の'1'のみ), cropRect(bbox+2pxマージン) } を返す
@@ -1057,12 +1148,14 @@ export function initRig(store, toast) {
         allowedMask: job.mask,
         cropRect: job.cropRect,
         neighborContext: redrawNeighborContext(p, job.fi, job.cropRect),
+        // §22.10-1: 補足が入力されているときだけ付加（空なら付けない）
+        ...(redrawPromptExtra.value.trim() ? { promptExtra: redrawPromptExtra.value.trim() } : {}),
         instruction: "ラフのポーズに合わせて、ベースフレームのテイストで対象領域を描き直してください",
         images: [{ frame: job.fi, dataUrl: frameToPngDataUrl(p, job.fi, p.width > 64 ? 4 : 8) }],
       };
       return streamEdit(body, { signal: abortController.signal }).then((evt) => {
         doneCount++;
-        rigProgress.textContent = `描き直し中… ${doneCount}/${jobs.length}領域`;
+        setBusyLabel(`描き直し中… ${doneCount}/${jobs.length}領域`);
         return evt;
       });
     });
@@ -1122,6 +1215,29 @@ export function initRig(store, toast) {
       } else {
         setBusy(false, `描き直し完了: ${okResults.length}/${jobs.length}領域、適用セル数 ${cells}${warnText}。仕上げにAI清書がおすすめです`);
         toast(`AI描き直しを適用しました（${okResults.length}領域）`);
+      }
+      // §22.10-2: ワンクリック評価（直近ジョブに紐づく完全なスナップショットを保持して表示）
+      {
+        const cfg = store.state.serverConfig || {};
+        const base = basePixels(p);
+        showRedrawFeedbackUi({
+          backend: cfg.backend || "api",
+          model: cfg.backend === "cli" ? cfg.cliModel : cfg.backend === "codex" ? cfg.codexModel : cfg.model,
+          promptExtra: redrawPromptExtra.value.trim(),
+          width: p.width,
+          height: p.height,
+          palette: [...p.palette],
+          appliedCells: cells,
+          warnings: [...new Set(warnings)],
+          jobs: jobs.map((job) => ({
+            frameIndex: job.fi,
+            cropRect: { ...job.cropRect },
+            maskRows: cropMaskRows(job.mask, job.cropRect),
+            baseRows: cropGridRows(base, p, job.cropRect),
+            roughRows: cropGridRows(roughByFrame.get(job.fi), p, job.cropRect),
+            resultRows: cropGridRows(p.frames[job.fi].pixels, p, job.cropRect),
+          })),
+        });
       }
     } else {
       const aborted = errs.some((e) => /abort/i.test(e));
