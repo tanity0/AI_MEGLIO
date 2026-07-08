@@ -212,6 +212,20 @@ async function generateCandidates() {
   await ensureGrid();
   const gallery = $("studioGallery");
   gallery.innerHTML = "";
+  // 背景除去が全ピクセルを消していないか事前確認（消えていたら除去なしで自動リトライ）
+  let hasOpaque = false;
+  for (let i = 3; i < bgCache.length; i += 4) { if (bgCache[i] >= 128) { hasOpaque = true; break; } }
+  if (!hasOpaque) {
+    knobs.bgThreshold = 0;
+    knobs.glowWidth = 0;
+    bgCache = null;
+    await ensureBg();
+    syncKnobUi();
+    const note = document.createElement("div");
+    note.className = "hint";
+    note.textContent = "背景除去がすべてのピクセルを消したため、背景除去なし（閾値0）で候補を生成しました。つまみで調整し直せます。";
+    gallery.appendChild(note);
+  }
   const oneToOneRows = Math.round((srcData.h / grid.s) * 0.9);
   const resolutions = [];
   if (oneToOneRows <= 128) resolutions.push({ label: "1:1", oneToOne: true, targetH: 0 });
@@ -228,9 +242,13 @@ async function generateCandidates() {
       const params = knobsToParams();
       knobs = saveKnobs;
       let conv = null;
+      let convErr = null;
       try {
         conv = convertImage(bgCache, srcData.w, srcData.h, params);
-      } catch {}
+      } catch (e) {
+        convErr = e;
+        console.error("候補の変換に失敗:", res.label, style.label, e);
+      }
       const cell = document.createElement("div");
       cell.className = "cand-cell";
       const cv = document.createElement("canvas");
@@ -245,7 +263,7 @@ async function generateCandidates() {
       const label = document.createElement("span");
       label.textContent = conv
         ? `${res.label}（${conv.width}×${conv.height}）・${candKnobs.colors}色・${style.label}`
-        : `${res.label}・${style.label}（失敗）`;
+        : `${res.label}・${style.label}（失敗: ${(convErr && convErr.message ? convErr.message : "不明なエラー").slice(0, 60)}）`;
       cell.appendChild(cv);
       cell.appendChild(label);
       if (conv) {

@@ -278,6 +278,11 @@ export function convertImage(data, w, h, params) {
     gx0 = x0 - (((x0 - ox) % s) + s) % s;
     gy0 = y0 - (((y0 - oy) % s) + s) % s;
   }
+  // 横長素材対策: 高さ指定モードでは幅も128に収まるようセルサイズを自動クランプ
+  if (targetH > 0) {
+    const minCsForWidth = (x1 + 1 - gx0) / 127.5;
+    if (cs < minCsForWidth) cs = minCsForWidth;
+  }
   const cols = Math.ceil((x1 + 1 - gx0) / cs);
   const rows = Math.ceil((y1 + 1 - gy0) / cs);
   if (cols > 128 || rows > 128) {
