@@ -258,6 +258,9 @@ const SYSTEM_PROMPT = `あなたはドット絵アニメーションの精密編
 ## 部分仕上げ（refineモードのとき適用・最重要の意味論）
 **ユーザーのラフ編集が「意図」であり、正です。ベースフレームに引き戻してはなりません。** 現在のフレームの選択範囲内のシルエット・形の意図を保ったまま、打ち方（輪郭の連続性、シェーディング段数、ハイライト、ジャギー）だけをトンマナと周囲に合わせて清書してください。前後フレームの同じ矩形が与えられた場合は、アニメーションの流れ（動きの方向・量）と矛盾しないようにしてください。変更許可セル（マスクで '1'）以外への edits はサーバーで破棄されます。newFrames と paletteChanges は使わないでください。
 
+## ポーズガイド再描画（redrawモードのとき適用・refineとの違いに注意）
+現フレームはリグ合成による**ラフ（ポーズの設計図）**です。ラフの**シルエット・重心・関節位置**に従い、**線の太さ・シェーディング段数・ディテールの描き込みはベースフレームに従って**、対象領域を描き直してください。refine と異なり、ラフの絵柄そのものは正ではありません——回転による崩れ（ジャギー・つぶれた模様・直線のままの脚）は、ベースフレームの該当部位を参照して**正しい向きに描き起こして**ください。パレットは厳守し、変更許可セル（マスクで '1'）以外への edits はサーバーで破棄されます。newFrames と paletteChanges は使わないでください。
+
 ## モーション生成の定石（モーション生成モードのとき適用）
 - 歩き（4フレーム）: コンタクト→ダウン→パッシング→アップ。左右の足は前後が入れ替わる。接地（コンタクト/ダウン）フレームで体が最も低い。腕は足と逆位相に振る。
 - 走り: 歩きより前傾し歩幅・腕の振りが大きい。両足が地面から離れる滞空フレームを含める。
@@ -379,7 +382,7 @@ function validateEditRequest(body) {
   if (instruction.length > 2000) throw new Error("instruction が長すぎます");
 
   // --- §13.4 / §14.6 追加フィールド ---
-  if (mode !== undefined && !["patch", "motion", "segment", "cleanup", "palette", "style", "refine"].includes(mode)) throw new Error("mode が不正です");
+  if (mode !== undefined && !["patch", "motion", "segment", "cleanup", "palette", "style", "refine", "redraw"].includes(mode)) throw new Error("mode が不正です");
   if (baseFrameGrid !== undefined && baseFrameGrid !== null) {
     if (typeof baseFrameGrid !== "string") throw new Error("baseFrameGrid が不正です");
     const bw = isWidePalette(palette.length);
@@ -466,7 +469,7 @@ function validateEditRequest(body) {
       throw new Error("mode=style では参考画像（images）またはテキストグリッド（styleGrid + stylePalette）が必要です");
     }
   }
-  if (mode === "cleanup" || mode === "refine") {
+  if (mode === "cleanup" || mode === "refine" || mode === "redraw") {
     if (!Number.isInteger(frameIndex) || frameIndex < 0 || frameIndex >= framesGrid.length) {
       throw new Error(`mode=${mode} では対象の frameIndex が必要です`);
     }
@@ -595,9 +598,9 @@ ${instruction}`;
     paletteText = palette.map((color, i) => `${tokenForIndex(i, wide)}: ${color}`).join(", ");
   }
 
-  const framesText = framesGrid
-    .map((grid, i) => `--- フレーム${i} ---\n${grid}`)
-    .join("\n");
+  const framesText = mode === "redraw"
+    ? `--- フレーム${frameIndex}（リグ合成のラフ = ポーズの正） ---\n${framesGrid[frameIndex]}`
+    : framesGrid.map((grid, i) => `--- フレーム${i} ---\n${grid}`).join("\n");
 
   let scopeText;
   if (scope === "all") {
@@ -637,6 +640,16 @@ ${instruction}`;
     refineSection = `\n## 部分仕上げモード（対象: フレーム${frameIndex}）\n選択範囲のラフな描き込みはユーザーの意図です。シルエット・形を保ったまま、打ち方だけをトンマナと周囲に合わせて清書してください。以下のマスクで '1' のセルだけ変更が許可されています（選択矩形+外周1px。'0' への edits はサーバー側で破棄されます）。\n${allowedMask}\n${neighborText}`;
   }
 
+  let redrawSection = "";
+  if (mode === "redraw" && typeof allowedMask === "string") {
+    let neighborText = "";
+    if (Array.isArray(body.neighborContext) && body.neighborContext.length) {
+      neighborText = "\n## 前後フレームの対象領域（動きの連続性の参考）\n" +
+        body.neighborContext.map((nc) => `--- フレーム${nc.frame} ---\n${nc.rows.join("\n")}`).join("\n") + "\n";
+    }
+    redrawSection = `\n## ポーズガイド再描画モード（対象: フレーム${frameIndex}）\n上の「ベースフレーム」がテイストの正、フレーム${frameIndex}のグリッドがポーズの正（リグ合成のラフ）です。ラフのシルエット・重心・関節位置に合わせ、描き込みはベースに従って、以下のマスクで '1' のセルだけを描き直してください（'0' への edits はサーバー側で破棄されます）。\n${allowedMask}\n${neighborText}`;
+  }
+
   let cleanupSection = "";
   if (mode === "cleanup" && typeof allowedMask === "string") {
     cleanupSection = `\n## AI清書モード（対象: フレーム${frameIndex}）\nリグ合成による回転ジャギー・継ぎ目の隙間を最小差分で清書してください。以下のマスクで '1' のセルだけ変更が許可されています（'0' のセルへの edits はサーバー側で破棄されます）。\n${allowedMask}\n`;
@@ -663,7 +676,7 @@ ${paletteText}
 ${baseSection}
 ## 現在のフレーム（テキストグリッド）
 ${framesText}
-${lockedSection}${segmentSection}${cleanupSection}${refineSection}${motionSection}
+${lockedSection}${segmentSection}${cleanupSection}${refineSection}${redrawSection}${motionSection}
 ## ${scopeText}
 
 ## 編集指示
@@ -827,7 +840,7 @@ function validateAndClampPatch(rawPatch, body) {
   }
 
   // --- AI清書/部分仕上げ（§14.4-2/§19）: 許可セル（allowedMask='1'）外の edits を破棄 ---
-  if ((mode === "cleanup" || mode === "refine") && typeof body.allowedMask === "string") {
+  if ((mode === "cleanup" || mode === "refine" || mode === "redraw") && typeof body.allowedMask === "string") {
     const maskRows = body.allowedMask.split("\n");
     let discarded = 0;
     for (const e of cleanEdits) {
@@ -841,7 +854,7 @@ function validateAndClampPatch(rawPatch, body) {
       }));
     }
     if (discarded > 0) warnings.push(`許可セル外の ${discarded} セルの編集を破棄しました`);
-    const modeName = mode === "refine" ? "部分仕上げ" : "清書";
+    const modeName = mode === "refine" ? "部分仕上げ" : mode === "redraw" ? "描き直し" : "清書";
     if (cleanNewFrames.length > 0) {
       warnings.push(`${modeName}モードのため newFrames（${cleanNewFrames.length}件）を破棄しました`);
       cleanNewFrames.length = 0;
@@ -1150,7 +1163,7 @@ async function runMock(body, res, aborted) {
       ],
       note: "MOCK: 頭・胴・脚の3パーツに分割しました（下書き）",
     };
-  } else if (mode === "refine" && typeof allowedMask === "string") {
+  } else if ((mode === "refine" || mode === "redraw") && typeof allowedMask === "string") {
     // 許可セルの現在値をそのままエコー（配管確認用・§19.3）
     const cw2 = cellChars(palette.length);
     const KEEP2 = wide ? "??" : "?";
@@ -1177,7 +1190,7 @@ async function runMock(body, res, aborted) {
       edits: maxX >= 0 ? [{ frame: frameIndex, x: minX, y: minY, rows }] : [],
       newFrames: [],
       paletteChanges: [],
-      note: "MOCK: refine（選択範囲をそのままエコー）",
+      note: mode === "redraw" ? "MOCK: redraw（ラフのエコー）" : "MOCK: refine（選択範囲をそのままエコー）",
     };
   } else if (mode === "cleanup" && typeof allowedMask === "string") {
     // 許可セルの先頭1セル + 許可外の先頭1セルへの edits を返す

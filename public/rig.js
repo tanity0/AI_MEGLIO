@@ -773,6 +773,143 @@ export function initRig(store, toast) {
     }
   });
 
+  // -------------------------------------------------------------------
+  // §22.1: AI描き直し（ポーズガイド）— リグ出力を設計図にAIがベースのテイストで描き直す
+  // -------------------------------------------------------------------
+  const rigRedrawBtn = document.getElementById("rigRedrawBtn");
+  const redrawAreaMode = () => document.querySelector('input[name="redrawArea"]:checked')?.value || "moved";
+  const redrawAllFrames = document.getElementById("redrawAllFrames");
+
+  // 対象領域マスク（§22.1）
+  // moved: ベースとの差分セルの5px膨張 ∪ 移動パーツの矩形（移動前後+2px）
+  // full : 現フレームの非透明bbox
+  function buildRedrawMask(p, frameIndex, kfIdx) {
+    const { width, height } = p;
+    const cur = p.frames[frameIndex].pixels;
+    const rows = Array.from({ length: height }, () => new Uint8Array(width));
+    const markRect = (x0, y0, x1, y1) => {
+      for (let y = Math.max(0, y0); y <= Math.min(height - 1, y1); y++)
+        for (let x = Math.max(0, x0); x <= Math.min(width - 1, x1); x++) rows[y][x] = 1;
+    };
+    if (redrawAreaMode() === "full") {
+      let x0 = width, y0 = height, x1 = -1, y1 = -1;
+      for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+        if (cur[y * width + x] !== 0) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+      }
+      if (x1 >= 0) markRect(x0 - 1, y0 - 1, x1 + 1, y1 + 1);
+    } else {
+      // 差分セル（対ベース）を5px膨張
+      const base = basePixels(p);
+      const diff = [];
+      for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+        if (cur[y * width + x] !== base[y * width + x]) diff.push([x, y]);
+      }
+      for (const [x, y] of diff) markRect(x - 5, y - 5, x + 5, y + 5);
+      // 移動したパーツの矩形（移動前+移動後、+2px）
+      const kf = p.rig?.keyframes?.[kfIdx];
+      if (kf) {
+        for (const part of p.rig.parts) {
+          const t = kf[part.id];
+          if (!t || (t.dx === 0 && t.dy === 0 && t.rot === 0)) continue;
+          const r = part.patch;
+          markRect(r.x - 2, r.y - 2, r.x + r.w + 1, r.y + r.h + 1);
+          markRect(r.x + t.dx - 2, r.y + t.dy - 2, r.x + t.dx + r.w + 1, r.y + t.dy + r.h + 1);
+        }
+      }
+    }
+    return rows.map((r) => Array.from(r).join("")).join("\n");
+  }
+
+  // 前後フレームの対象領域切り出し（マスクbboxの行を切り出し）
+  function redrawNeighborContext(p, frameIndex, mask) {
+    const cw = cellChars(p.palette.length);
+    const maskRows = mask.split("\n");
+    let x0 = p.width, y0 = p.height, x1 = -1, y1 = -1;
+    for (let y = 0; y < p.height; y++) for (let x = 0; x < p.width; x++) {
+      if (maskRows[y][x] === "1") { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+    }
+    if (x1 < 0) return [];
+    const out = [];
+    for (const nf of [frameIndex - 1, frameIndex + 1]) {
+      if (nf < 0 || nf >= p.frames.length) continue;
+      const gridRows = frameToGridString(p, nf).split("\n");
+      const rows = [];
+      for (let y = y0; y <= y1; y++) rows.push(gridRows[y].slice(x0 * cw, (x1 + 1) * cw));
+      out.push({ frame: nf, rows });
+    }
+    return out.slice(0, 2);
+  }
+
+  rigRedrawBtn.addEventListener("click", async () => {
+    const p = project();
+    const rig = p.rig;
+    if (!rig || rig.generatedAt === null || !rig.keyframes.length) {
+      toast("先に「フレーム生成」を実行してください", "error");
+      return;
+    }
+    let frameIndexes = [];
+    if (redrawAllFrames.checked) {
+      for (let i = 0; i < rig.keyframes.length; i++) {
+        const fi = rig.generatedAt + i;
+        if (fi < p.frames.length) frameIndexes.push(fi);
+      }
+    } else {
+      const fi = store.state.currentFrame;
+      const kfIdx = fi - rig.generatedAt;
+      if (kfIdx < 0 || kfIdx >= rig.keyframes.length) {
+        toast("現在のフレームはリグ生成フレームではありません（または「タグ全フレーム」をオンに）", "error");
+        return;
+      }
+      frameIndexes = [fi];
+    }
+
+    abortController = new AbortController();
+    let doneCount = 0;
+    setBusy(true, `描き直し中… 0/${frameIndexes.length}`);
+    const common = baseRequestFields();
+    const tasks = frameIndexes.map((fi) => {
+      const mask = buildRedrawMask(p, fi, fi - rig.generatedAt);
+      const body = {
+        ...common,
+        mode: "redraw",
+        scope: "frame",
+        frameIndex: fi,
+        allowedMask: mask,
+        neighborContext: redrawNeighborContext(p, fi, mask),
+        instruction: "ラフのポーズに合わせて、ベースフレームのテイストで対象領域を描き直してください",
+        images: [{ frame: fi, dataUrl: frameToPngDataUrl(p, fi, p.width > 64 ? 4 : 8) }],
+      };
+      return streamEdit(body, { signal: abortController.signal }).then((evt) => {
+        doneCount++;
+        rigProgress.textContent = `描き直し中… ${doneCount}/${frameIndexes.length}`;
+        return evt;
+      });
+    });
+
+    const results = await Promise.allSettled(tasks);
+    abortController = null;
+    const okResults = results.filter((r) => r.status === "fulfilled").map((r) => r.value);
+    const errs = results.filter((r) => r.status === "rejected").map((r) => r.reason?.message || String(r.reason));
+    if (okResults.length) {
+      store.pushUndo();
+      let cells = 0;
+      const warnings = [];
+      for (const evt of okResults) {
+        cells += applyEditsToFrames(p, evt.patch.edits);
+        if (evt.patch.warnings?.length) warnings.push(...evt.patch.warnings);
+      }
+      store.notify();
+      if (errs.length) warnings.push(`${errs.length}フレームの描き直しに失敗: ${errs[0]}`);
+      const warnText = warnings.length ? ` / 警告: ${[...new Set(warnings)].join(" / ")}` : "";
+      setBusy(false, `描き直し完了: ${okResults.length}/${frameIndexes.length}フレーム、適用セル数 ${cells}${warnText}。仕上げにAI清書がおすすめです`);
+      toast(`AI描き直しを適用しました（${okResults.length}フレーム）`);
+    } else {
+      const aborted = errs.some((e) => /abort/i.test(e));
+      setBusy(false, aborted ? "中断しました" : `エラー: ${errs[0] || "描き直しに失敗しました"}`);
+      if (!aborted && errs[0]) toast(errs[0], "error");
+    }
+  });
+
   function applyEditsToFrames(p, edits) {
     let cells = 0;
     const cw = cellChars(p.palette.length);

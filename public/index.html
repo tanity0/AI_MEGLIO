@@ -248,8 +248,14 @@
         </fieldset>
         <div class="ai-actions">
           <button id="rigGenerateBtn" class="btn btn-accent">フレーム生成</button>
-          <button id="rigCleanupBtn" class="btn" title="合成で変化したセルの周囲2pxだけをAIが清書">AI清書</button>
+          <button id="rigRedrawBtn" class="btn" title="リグ出力を設計図に、AIがベースのテイストで動いた部位を描き直す（§22）">AI描き直し（ポーズガイド）</button>
+          <button id="rigCleanupBtn" class="btn" title="合成で変化したセルの周囲2pxだけをAIが清書">AI清書（継ぎ目±2px）</button>
           <button id="rigAbortBtn" class="btn" disabled>中断</button>
+        </div>
+        <div class="redraw-opts">
+          <label class="radio-row inline" data-help="rig.redrawMoved"><input type="radio" name="redrawArea" value="moved" checked> 動いた部位のみ</label>
+          <label class="radio-row inline" data-help="rig.redrawFull"><input type="radio" name="redrawArea" value="full"> 全身</label>
+          <label class="check-row inline"><input type="checkbox" id="redrawAllFrames" checked> 生成タグの全フレームに適用</label>
         </div>
         <div id="rigProgress" class="ai-progress" aria-live="polite"></div>
       </div>

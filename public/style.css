@@ -841,3 +841,7 @@ aside, #canvasPanel {
 
 .part-item.is-hidden-part { opacity: 0.45; }
 .part-item.is-hidden-part .part-name { text-decoration: line-through; }
+
+/* ---------- ポーズガイド再描画（§22） ---------- */
+.redraw-opts { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12px; }
+.radio-row.inline { display: inline-flex; padding: 0; }
