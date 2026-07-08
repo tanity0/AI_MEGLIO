@@ -22,7 +22,7 @@ const CLI_MODEL = process.env.CLI_MODEL || "sonnet";
 const CLI_CMD = process.env.CLI_PATH || "claude"; // Windowsで解決先が紛らわしい場合にフルパス指定可
 const CODEX_CMD = process.env.CODEX_PATH || "codex"; // §23.1: Codex CLI の実体パス（CLI_PATH と同じ動機）
 const CODEX_MODEL = process.env.CODEX_MODEL || ""; // §23.1: 空 = codex 側の既定モデル
-const CLI_TIMEOUT_SEC = Number(process.env.CLI_TIMEOUT) > 0 ? Number(process.env.CLI_TIMEOUT) : 300; // §15.5-1: 既定300秒、CLI_TIMEOUT（秒）で上書き
+const CLI_TIMEOUT_SEC = Number(process.env.CLI_TIMEOUT) > 0 ? Number(process.env.CLI_TIMEOUT) : 900; // §15.5-1改: 既定900秒（実測: AI分割160秒超・描き直し数分でブレが大きいため）。CLI_TIMEOUT（秒）で上書き
 const CLI_TIMEOUT_MS = CLI_TIMEOUT_SEC * 1000;
 const CLI_CONCURRENCY = Number(process.env.CLI_CONCURRENCY) > 0 ? Number(process.env.CLI_CONCURRENCY) : 2; // §15.2: 同時実行キュー（cli/codex共用。環境変数 CLI_CONCURRENCY で上書き可）
 const CLI_DEBUG = process.env.CLI_DEBUG === "1"; // §22.5-5: プロンプト+生出力を ./cli-logs/ に保存

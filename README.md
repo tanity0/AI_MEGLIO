@@ -57,7 +57,7 @@ BACKEND=cli npm start
 - **サブスクリプションの利用上限を消費します**（AI実行のたびに Claude Code の1リクエストとしてカウントされます）。
 - **画像は渡されません**（テキストグリッドのみでAIが判断します。見た目依存の指示は精度が下がる場合があります）。
 - モデルは `CLI_MODEL`（既定 `sonnet`）で指定します。本文ストリーミングは行われず、完了時に結果がまとめて届きます（実行中は経過秒数付きの進捗表示のみ）。
-- **広範囲の修正は時間がかかります。矩形選択で範囲を絞って指示するのが最速です**（1セル程度の修正は数十秒、フレーム全体に及ぶ修正は数分かかることがあります）。タイムアウトは既定300秒で、`CLI_TIMEOUT`（秒）で延長できます。時間がかかりすぎる場合は `CLI_MODEL=haiku` も試してください。
+- **広範囲の修正は時間がかかります。矩形選択で範囲を絞って指示するのが最速です**（1セル程度の修正は数十秒、フレーム全体に及ぶ修正は数分かかることがあります）。タイムアウトは既定900秒で、`CLI_TIMEOUT`（秒）で変更できます。時間がかかりすぎる場合は `CLI_MODEL=haiku` も試してください。
 - 「全フレーム」スコープの修正は、サーバー側で自動的にフレームごとの呼び出しに分割され（並列2）、進捗が「フレーム 2/5 完了」のように表示されます。この分割モードではフレーム追加（中割り等）は行えないため、中割りは「現在のフレーム」スコープで指示してください。
 - 現在のバックエンドはキャンバス下部に表示されます（「バックエンド: API / Claude Code CLI / MOCK」）。
 
@@ -100,7 +100,7 @@ APIを呼ばず、選択範囲（選択が無ければフレーム全体の中�
 | `BACKEND` | `api` | `api` = Anthropic API / `cli` = ローカルの Claude Code CLI / `codex` = OpenAI Codex CLI |
 | `MODEL` | `claude-opus-4-8` | 使用するClaudeモデル（BACKEND=api） |
 | `CLI_MODEL` | `sonnet` | 使用するモデル（BACKEND=cli）。遅い場合は `haiku` を推奨 |
-| `CLI_TIMEOUT` | `300` | CLI呼び出しのタイムアウト秒数（BACKEND=cli / codex 共通） |
+| `CLI_TIMEOUT` | `900` | CLI呼び出しのタイムアウト秒数（BACKEND=cli / codex 共通） |
 | `CLI_CONCURRENCY` | `2` | CLI呼び出しの同時実行数（BACKEND=cli / codex 共通） |
 | `CLI_PATH` | `claude` | claude CLI 実行ファイルのフルパス。**Windowsで無言タイムアウトする場合は必ず指定**（`Get-Command claude` の Source の値。Node の spawn が PowerShell と異なる実体に解決することがあるため）。`.cmd`/`.bat` を指定した場合は Windows では `cmd.exe` 経由で起動される |
 | `CODEX_PATH` | `codex` | codex CLI 実行ファイルのフルパス（BACKEND=codex。CLI_PATH と同じ動機・`.cmd`/`.bat` のシム対応も同様） |
