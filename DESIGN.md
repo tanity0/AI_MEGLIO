@@ -945,7 +945,7 @@ Windows実機で BACKEND=codex 実行時に「spawn EPERM」。原因: npm グ�
 
 ChatGPT はローカルパスを読めないため完全自動は不可（APIキー無し条件）。ツール側の工程をすべて共有フォルダで自動化し、手作業を「ChatGPT内の3操作（参照PNGドラッグ・依頼文ペースト・画像を in/ に保存）」まで削る。
 
-1. プロジェクト直下に `gpt-exchange/out/` と `gpt-exchange/in/`（サーバー起動時に自動作成、.gitignore 追加）。
+1. プロジェクト直下に `gpt-exchange/out/` と `gpt-exchange/in/`（サーバー起動時に自動作成、.gitignore 追加）。**置き場所は環境変数 `EXCHANGE_DIR` で上書き可能**（例: Google Drive for Desktop 配下を指定すると、スマホの ChatGPT で生成→Drive保存→PCに同期→自動取り込み、という非同期ワークフローが成立する。README にこの運用例を記載）。
 2. **キット書き出し先の変更**: §25.6-4.5 の依頼キットは out/ に保存（reference.png + prompt.txt。依頼文はクリップボードにもコピー）。保存完了トーストにフルパスを表示。
 3. **in/ の監視**: サーバーが `fs.watch` で in/ を監視し、新規画像（png/jpg/webp）を検出したら SSE またはポーリング（GET /api/exchange-inbox）でフロントへ通知。フロントはギャラリーが開いていれば §25.6 の取り込みパイプライン（分割→変換→スナップ→整列）へ自動投入し「新しい候補を取り込みました」トースト。ギャラリーが閉じていればバッジ表示。取り込み済みファイルは in/done/ へ移動（再取り込み防止）。
 4. セキュリティ: 監視対象はプロジェクト直下の gpt-exchange のみ（パス固定・シンボリックリンク不追跡）。ファイルサイズ上限 20MB。
