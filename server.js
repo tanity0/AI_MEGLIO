@@ -687,15 +687,38 @@ ${instruction}`;
         body.neighborContext.map((nc) => `--- フレーム${nc.frame} ---\n${nc.rows.join("\n")}`).join("\n") + "\n";
     }
     const keepTok = isWidePalette(palette.length) ? "'??'" : "'?'";
-    // §22.9: 生成的リフレーミング — 「修正」ではなく「新しいポーズを1枚描き起こす」仕事として依頼する。
-    // ベース丸写し（ポーズ逆戻り）とラフ放置（空応答）の両方を明示的に「失敗」と定義する（§22.5-1/§22.6-2 を統合）。
     const areaWord = crop ? "クロップ全域" : "対象領域全体";
-    const mandate = `あなたはこのキャラクターを担当するドット絵師です。今回の仕事は、アニメーションの1コマとして**キャラクターの新しいポーズを1枚描き起こす**ことです。
+    // §22.12-1: rotationInfo の検証（area=rotated で単一回転パーツに対応する成分のみクライアントが付ける）
+    const ri = body.rotationInfo;
+    const riValid = mode === "redraw" && ri && typeof ri === "object"
+      && typeof ri.partName === "string" && ri.partName.length > 0 && ri.partName.length <= 32
+      && Number.isFinite(ri.angle)
+      && ri.pivot && Number.isInteger(ri.pivot.x) && Number.isInteger(ri.pivot.y)
+      && Array.isArray(ri.basePartRows) && ri.basePartRows.length >= 1 && ri.basePartRows.length <= 128
+      && ri.basePartRows.every((r) => typeof r === "string" && r.length > 0 && r.length <= 256);
+    let mandate;
+    if (riValid) {
+      // §22.12-2: v5「パーツ回転清書」— 無から描くのではなく、お手本（素材パーツ）を
+      // 指定角度で回して、機械回転の下敷きに合わせて手描き品質で仕上げるタスクに変換する。
+      const angleText = ri.angle >= 0 ? `時計回りに ${Math.round(ri.angle)}°` : `反時計回りに ${Math.round(-ri.angle)}°`;
+      mandate = `あなたはこのキャラクターを担当するドット絵師です。今回の仕事は、**パーツ回転の清書**です。
+
+### 素材: ベースフレームのパーツ「${ri.partName}」の絵（${Math.round(ri.basePartRows[0].length / cw)}x${ri.basePartRows.length}）
+${ri.basePartRows.join("\n")}
+
+この素材パーツを、クロップ局所座標の pivot (${ri.pivot.x}, ${ri.pivot.y}) を中心に${angleText}回転させた1枚を描いてください。
+フレーム${frameIndex}のグリッド（クロップ）は、同じ回転を機械的に行った**下敷き**です。シルエットと位置は下敷きが正解（±1px以内で従う）。ただし下敷きはジャギー・穴・千切れを含むドラフトなので、線とシェーディングは素材パーツを参考に**手描き品質**で仕上げてください: 輪郭は途切れない線でつなぐ / シェーディングの帯は素材と同じ段数・同じ側 / 孤立ピクセルを残さない / パレット厳守。
+${areaWord}の rows を**丸ごと**返してください。${keepTok}（変更なし）による差分の最小化に推論時間を使わないでください。この指示は「最小差分の原則」より優先します。`;
+    } else {
+    // §22.9: v4 生成的リフレーミング（moved/full・複数パーツ融合成分など rotationInfo が無い経路）。
+    // ベース丸写し（ポーズ逆戻り）とラフ放置（空応答）の両方を明示的に「失敗」と定義する（§22.5-1/§22.6-2 を統合）。
+    mandate = `あなたはこのキャラクターを担当するドット絵師です。今回の仕事は、アニメーションの1コマとして**キャラクターの新しいポーズを1枚描き起こす**ことです。
 - フレーム${frameIndex}のグリッド（リグ合成のラフ）は**ポーズのあたり（下書き）**です。体の傾き・各パーツの位置・シルエット・関節の曲がりは、必ずこのラフに従ってください。
 - 「ベースフレーム」は**絵柄の見本**です。線の太さ・シェーディングの段数・色使い・ディテールの密度はベースに合わせてください。ただし**ポーズをベースから取るのは失敗です** — ベースと同じ姿勢に戻さないでください。ベースとラフで姿勢が違うのは意図的（アニメーションの1コマ）です。
 - ラフで欠損・崩壊している部分（回転で千切れた/分離したパーツ、つぶれた模様、マント・髪・体の一部の欠け）は、ベースの該当部位を参照して、**ラフの向き・位置に合わせて描き起こして**ください。
 - ラフをそのまま残すのも失敗です（機械的な回転合成によるドラフト品質。ジャギー・パーツの分離を含みます）。
 - ${areaWord}の rows を**丸ごと**返してください。${keepTok}（変更なし）による差分の最小化に推論時間を使わないでください。この指示は「最小差分の原則」より優先します。パレットは厳守してください。`;
+    }
     const cropNote = crop
       ? `\nこのプロンプトの全グリッド（ベース・ラフ・マスク・前後フレーム）はキャンバス座標 (${crop.x}, ${crop.y}) 起点の ${crop.w}x${crop.h} 切り出しです。edits の x, y は**切り出しローカル座標**（(0,0)〜(${crop.w - 1},${crop.h - 1})）で返してください。サーバー側でキャンバス座標へ変換されます。frame は ${frameIndex} のままです。`
       : "";

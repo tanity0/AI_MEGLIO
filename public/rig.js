@@ -1096,15 +1096,63 @@ export function initRig(store, toast) {
       frameIndexes = [fi];
     }
 
+    // §22.12-1: area=rotated のとき、各回転パーツの「移動前後矩形の和+マージン」と
+    // ワールド回転角（親の回転を加算済み）を集める。連結成分がちょうど1つの
+    // 回転パーツに収まる場合、そのリクエストへ rotationInfo を付ける（v5 プロンプト用）。
+    function rotatedPartsInfo(kfIdx) {
+      const kf = p.rig?.keyframes?.[kfIdx];
+      if (!kf) return [];
+      const parts = (p.rig.parts || []).filter((pt) => pt.visible !== false);
+      const rotated = parts.filter((pt) => ((kf[pt.id] || ZERO).rot || 0) !== 0);
+      if (!rotated.length) return [];
+      const worlds = worldTransforms(parts, kf);
+      // マスク生成の+2px と splitMaskComponents のクロップ+2px を許容するマージン
+      const MARGIN = 5;
+      return rotated.map((pt) => {
+        const r = pt.patch;
+        const M = worlds.get(pt.id) || IDENTITY;
+        const corners = [
+          applyT(M, r.x, r.y), applyT(M, r.x + r.w, r.y), applyT(M, r.x, r.y + r.h), applyT(M, r.x + r.w, r.y + r.h),
+        ];
+        return {
+          part: pt,
+          angle: Math.round((Math.atan2(M.s, M.c) * 180) / Math.PI), // 正=時計回り（y下向き座標）
+          union: {
+            x0: Math.min(r.x, Math.floor(Math.min(...corners.map((c) => c[0])))) - MARGIN,
+            y0: Math.min(r.y, Math.floor(Math.min(...corners.map((c) => c[1])))) - MARGIN,
+            x1: Math.max(r.x + r.w, Math.ceil(Math.max(...corners.map((c) => c[0])))) + MARGIN,
+            y1: Math.max(r.y + r.h, Math.ceil(Math.max(...corners.map((c) => c[1])))) + MARGIN,
+          },
+        };
+      });
+    }
+
     // §22.5-3: フレームごとのマスクを連結成分に分割し、成分（領域）ごとに
     // bboxクロップ付きの独立リクエストを発行（サーバー側キューの並列2に乗る）
     let jobs = [];
     const fallbackFrames = [];
     for (const fi of frameIndexes) {
-      const { mask, fellBack } = computeRedrawMask(p, fi, fi - rig.generatedAt, redrawAreaMode());
+      const kfIdx = fi - rig.generatedAt;
+      const { mask, fellBack } = computeRedrawMask(p, fi, kfIdx, redrawAreaMode());
       if (fellBack) fallbackFrames.push(fi);
+      const rotInfos = redrawAreaMode() === "rotated" && !fellBack ? rotatedPartsInfo(kfIdx) : [];
       for (const comp of splitMaskComponents(p, mask)) {
-        jobs.push({ fi, mask: comp.mask, cropRect: comp.cropRect, cells: comp.cells });
+        const job = { fi, mask: comp.mask, cropRect: comp.cropRect, cells: comp.cells };
+        // §22.12-1: 成分bboxがちょうど1つの回転パーツの移動前後矩形の和に収まるか
+        const c = comp.cropRect;
+        const owners = rotInfos.filter((ri) =>
+          c.x >= ri.union.x0 && c.y >= ri.union.y0 && c.x + c.w - 1 <= ri.union.x1 && c.y + c.h - 1 <= ri.union.y1);
+        if (owners.length === 1) {
+          const ri = owners[0];
+          job.rotationInfo = {
+            partName: ri.part.name,
+            angle: ri.angle,
+            // pivot はクロップ局所座標（キャンバス座標 − クロップ原点）
+            pivot: { x: ri.part.patch.x + ri.part.pivot.x - c.x, y: ri.part.patch.y + ri.part.pivot.y - c.y },
+            basePartRows: cropGridRows(basePixels(p), p, ri.part.patch),
+          };
+        }
+        jobs.push(job);
       }
     }
     // §22.6-1: rot≠0 のパーツが無いキーフレームは moved 方式へ自動フォールバック（トーストで通知）
@@ -1151,6 +1199,8 @@ export function initRig(store, toast) {
         allowedMask: job.mask,
         cropRect: job.cropRect,
         neighborContext: redrawNeighborContext(p, job.fi, job.cropRect),
+        // §22.12-1: 単一回転パーツに対応する成分は v5「パーツ回転清書」プロンプトで送る
+        ...(job.rotationInfo ? { rotationInfo: job.rotationInfo } : {}),
         // §22.10-1: 補足が入力されているときだけ付加（空なら付けない）
         ...(redrawPromptExtra.value.trim() ? { promptExtra: redrawPromptExtra.value.trim() } : {}),
         instruction: "ラフのポーズに合わせて、ベースフレームのテイストで対象領域を描き直してください",
@@ -1244,6 +1294,8 @@ export function initRig(store, toast) {
           jobs: jobs.map((job) => ({
             frameIndex: job.fi,
             cropRect: { ...job.cropRect },
+            // §22.12-3: v5（パーツ回転清書）が使われたかどうかと角度
+            rotation: job.rotationInfo ? { partName: job.rotationInfo.partName, angle: job.rotationInfo.angle } : null,
             maskRows: cropMaskRows(job.mask, job.cropRect),
             baseRows: cropGridRows(base, p, job.cropRect),
             roughRows: cropGridRows(roughByFrame.get(job.fi), p, job.cropRect),
