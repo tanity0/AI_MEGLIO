@@ -192,8 +192,23 @@
           <label class="radio-row"><input type="radio" name="motionApply" value="append"> 末尾に追記</label>
         </fieldset>
       </div>
+      <fieldset class="scope-fieldset">
+        <legend data-help="motion.candidates">候補スタジオ（§25・推奨）</legend>
+        <label class="form-row">候補数/フレーム
+          <select id="mcCandCount">
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="3" selected>3</option>
+            <option value="4">4</option>
+          </select>
+        </label>
+        <div class="ai-actions">
+          <button id="mcGenerateBtn" class="btn btn-accent">候補を生成（ギャラリー）</button>
+        </div>
+        <div class="hint">フレームごとにK個の候補を並列生成し、ギャラリーで選別→確定します。候補生成は codex バックエンド推奨</div>
+      </fieldset>
       <div class="ai-actions">
-        <button id="runMotionBtn" class="btn btn-accent">モーション生成</button>
+        <button id="runMotionBtn" class="btn">一括モーション生成（旧方式）</button>
       </div>
     </div>
 
@@ -383,6 +398,24 @@
       <button id="exportRunBtn" class="btn btn-accent">書き出し実行</button>
     </div>
     <div id="exportStatus" class="hint" aria-live="polite"></div>
+  </div>
+</div>
+
+<!-- §25 モーション候補スタジオ（生成→選別→確定） -->
+<div id="mcModal" class="modal-overlay" hidden>
+  <div class="modal mc-modal">
+    <div class="modal-head">
+      <h2>モーション候補スタジオ</h2>
+      <div class="mc-head-actions">
+        <span class="mc-preview-wrap"><canvas id="mcPreviewCanvas" width="64" height="64" title="採用中セットの連続再生（プロジェクトfps）"></canvas></span>
+        <span id="mcProgress" class="ai-progress" aria-live="polite"></span>
+        <button id="mcAbortBtn" class="btn btn-small" disabled>中断</button>
+        <button id="mcConfirmBtn" class="btn btn-small btn-accent" disabled>確定（タイムラインへ追加）</button>
+        <button id="mcCloseBtn" class="btn btn-small">閉じる</button>
+      </div>
+    </div>
+    <div id="mcConfirmedBar" class="mc-confirmed" hidden></div>
+    <div id="mcGrid" class="mc-grid"></div>
   </div>
 </div>
 

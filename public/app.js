@@ -8,6 +8,7 @@ import { initRig, PART_ROLES } from "./rig.js";
 import { initGameExport, initGameView } from "./gameexport.js";
 import { initStyleRef } from "./styleref.js";
 import { initStudio, openStudio } from "./studio.js";
+import { initMotionStudio } from "./motionstudio.js";
 import { initHelp } from "./help.js";
 
 // ---------------------------------------------------------------------------
@@ -799,6 +800,7 @@ function main() {
   initGameView(store);
   initStyleRef(store, toast);
   initStudio(store, toast);
+  initMotionStudio(store, toast); // §25 モーション候補スタジオ
   initHelp();
   initBackendLabel();
   store.notify();
