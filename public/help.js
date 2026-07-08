@@ -70,6 +70,7 @@ export const HELP = {
   // 表示系
   "view.onion": "前のフレームを半透明で重ねて表示します。アニメの動き幅を確認しながら描くときにオンにしてください。",
   "view.diff": "ベースフレームから変わったセルだけをマゼンタ枠で表示します。AIがどこを触ったかを即確認できます。",
+  "rig.partVisible": "このパーツをフレーム生成の合成に含めるかどうかです。外すと次の「フレーム生成」からそのパーツ抜きで組み立てられます（パーツ自体は削除されません。削除は右の「削除」ボタン）。",
   "edit.undo": "直前の操作を取り消します（Ctrl+Z）。ペンの1ストローク、AI編集、フレーム操作などが1回分です。履歴は50回まで。",
   "preview.smooth": "プレビューの拡大方法を切り替えます。OFF=補間なし（ドットがカクカク立つ、ゲーム側でnearest指定した時の見え方）、ON=バイリニア補間（多少滲む、Pixi等のデフォルトの見え方）。実機の描画設定に合わせて確認できます。",
   "meter.deviation": "ベースフレームと異なるセルの割合です。手足が動く程度なら小さく、全面書き換え（テイスト崩れ）だと大きくなります。40%超は警告色になります。",
@@ -192,6 +193,9 @@ function attachHandlers(anchor, key) {
     if (!sticky) showHelp(anchor, key);
   });
   anchor.addEventListener("mouseleave", () => hideHelp());
+  // チェックボックス等の操作可能な要素は、クリックを奪うと本来の機能が死ぬため
+  // ホバー表示のみとする（ヘルプの固定表示は?アイコンと非操作要素だけ）
+  if (anchor.matches("input, select, textarea") && !anchor.classList.contains("help-icon")) return;
   anchor.addEventListener("click", (ev) => {
     ev.stopPropagation();
     ev.preventDefault();

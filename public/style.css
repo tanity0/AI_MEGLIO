@@ -838,3 +838,6 @@ aside, #canvasPanel {
 
 .undo-row { display: flex; gap: 4px; }
 .undo-row .btn { flex: 1; }
+
+.part-item.is-hidden-part { opacity: 0.45; }
+.part-item.is-hidden-part .part-name { text-decoration: line-through; }

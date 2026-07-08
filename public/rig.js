@@ -407,13 +407,20 @@ export function initRig(store, toast) {
     }
     for (const part of rig.parts) {
       const li = document.createElement("li");
-      li.className = "part-item" + (store.state.rigSelectedPart === part.id ? " is-selected" : "");
+      li.className = "part-item"
+        + (store.state.rigSelectedPart === part.id ? " is-selected" : "")
+        + (part.visible === false ? " is-hidden-part" : "");
 
       const vis = document.createElement("input");
       vis.type = "checkbox";
       vis.checked = part.visible !== false;
-      vis.title = "表示（合成に含める）";
-      vis.addEventListener("change", () => { part.visible = vis.checked; store.notify(); });
+      vis.title = "合成に含める（外すと次のフレーム生成からこのパーツが除外されます）";
+      vis.dataset.helpHover = "rig.partVisible";
+      vis.addEventListener("change", () => {
+        part.visible = vis.checked;
+        if (!vis.checked) toast(`「${part.name}」を合成から除外しました（次のフレーム生成から反映）`);
+        store.notify();
+      });
       li.appendChild(vis);
 
       const name = document.createElement("button");
@@ -549,6 +556,7 @@ export function initRig(store, toast) {
       if (!result || !result.parts.length) throw new Error("パーツが返されませんでした");
       store.pushUndo();
       const rig = ensureRig(p);
+      const hadParts = rig.parts.length > 0;
       const base = basePixels(p);
       // §14.5.5: 縮小グリッド座標 → 元解像度へスケール（矩形は外接方向へ丸め、pivotは比率維持）
       const sc = seg.scale;
@@ -577,7 +585,7 @@ export function initRig(store, toast) {
       store.notify();
       const warn = result.warnings?.length ? `（警告: ${result.warnings.join(" / ")}）` : "";
       setBusy(false, `分割完了: ${rig.parts.length}パーツ ${warn}`);
-      toast(`${result.note}（下書き。一覧で調整できます）`);
+      toast(hadParts ? `${result.note}（既存パーツを置き換えました。Ctrl+Zで戻せます）` : `${result.note}（下書き。一覧で調整できます）`);
     } catch (err) {
       // §14.5.5-3: 失敗時は簡易分割を案内
       const hint = "。簡易分割（AIなし）をお試しください";
@@ -645,11 +653,12 @@ export function initRig(store, toast) {
       if (!parts.length) throw new Error("パーツを生成できませんでした");
       store.pushUndo();
       const rig = ensureRig(p);
+      const hadParts = rig.parts.length > 0;
       rig.parts = parts;
       store.state.rigSelectedPart = null;
       store.notify();
       setBusy(false, `簡易分割完了: ${parts.length}パーツ（人型ヒューリスティック・下書き）`);
-      toast("簡易分割で下書きを生成しました。一覧で調整できます");
+      toast(hadParts ? "簡易分割で置き換えました（Ctrl+Zで戻せます）" : "簡易分割で下書きを生成しました。一覧で調整できます");
     } catch (err) {
       toast(err.message, "error");
     }
