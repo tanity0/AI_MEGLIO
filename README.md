@@ -79,6 +79,7 @@ APIを呼ばず、選択範囲（選択が無ければフレーム全体の中�
 | `MODEL` | `claude-opus-4-8` | 使用するClaudeモデル（BACKEND=api） |
 | `CLI_MODEL` | `sonnet` | 使用するモデル（BACKEND=cli）。遅い場合は `haiku` を推奨 |
 | `CLI_TIMEOUT` | `300` | CLI呼び出しのタイムアウト秒数（BACKEND=cli） |
+| `CLI_PATH` | `claude` | claude CLI 実行ファイルのフルパス。**Windowsで無言タイムアウトする場合は必ず指定**（`Get-Command claude` の Source の値。Node の spawn が PowerShell と異なる実体に解決することがあるため） |
 | `EFFORT` | `medium` | 構造化出力の `output_config.effort`（BACKEND=api） |
 | `MOCK` | 未設定 | `1` を指定するとAPIを呼ばずモック応答を返す（BACKENDより優先） |
 | `ANTHROPIC_API_KEY` | — | Anthropic APIキー（BACKEND=api のとき必要。MOCK=1 / BACKEND=cli では不要） |
