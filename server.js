@@ -176,9 +176,21 @@ const PALETTE_SCHEMA = {
         additionalProperties: false,
       },
     },
+    groupChanges: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          mainIndex: { type: "integer" },
+          color: { type: "string" },
+        },
+        required: ["mainIndex", "color"],
+        additionalProperties: false,
+      },
+    },
     note: { type: "string" },
   },
-  required: ["paletteChanges", "note"],
+  required: ["paletteChanges", "groupChanges", "note"],
   additionalProperties: false,
 };
 
@@ -392,6 +404,15 @@ function validateEditRequest(body) {
   if (mode === "palette") {
     if (!baseFrameGrid) throw new Error("mode=palette では baseFrameGrid が必要です");
   }
+  if (body.mainPalette !== undefined && body.mainPalette !== null) {
+    const mp = body.mainPalette;
+    const ok = mp && typeof mp === "object" &&
+      Array.isArray(mp.colors) && mp.colors.length >= 1 && mp.colors.length <= 64 &&
+      mp.colors.every((c) => typeof c === "string" && /^#[0-9a-fA-F]{6}$/.test(c)) &&
+      Array.isArray(mp.groups) && mp.groups.length === palette.length &&
+      mp.groups.every((g) => Number.isInteger(g) && g >= -1 && g < mp.colors.length);
+    if (!ok) throw new Error("mainPalette が不正です");
+  }
   // --- §17 追加フィールド ---
   if (body.styleGuide !== undefined && body.styleGuide !== null) {
     if (typeof body.styleGuide !== "string" || body.styleGuide.length > 4000) throw new Error("styleGuide が不正です");
@@ -495,7 +516,10 @@ ${instruction}`;
   // §16.2: paletteモードはパレット+ベースフレーム1枚のみの軽量プロンプト
   if (mode === "palette") {
     const palText = palette.map((color, i) => `${tokenForIndex(i, isWidePalette(palette.length))}: ${color}`).join(", ");
-    return `${styleSection}## パレットスワップモード
+    const groupNote = body.mainPalette
+      ? `\n\n## メイングループ（推奨: groupChanges で階調ごと変更）\n${body.mainPalette.colors.map((c, i) => `mainIndex ${i}: ${c}`).join(", ")}\nメイングループ単位の変更は groupChanges: [{mainIndex, color}] で返してください。グループ内の全色にHSL相対シフトで展開されます。個別の色変更は従来どおり paletteChanges で指定できます。`
+      : "";
+    return `${styleSection}## パレットスワップモード${groupNote ? groupNote : ""}
 サイズ: ${width}x${height}
 
 ## 現在のパレット（index: 色）
@@ -784,14 +808,91 @@ function validateStyleResult(raw) {
 }
 
 // ---------------------------------------------------------------------------
-// palette レスポンスの検証（§16.2）
+// palette レスポンスの検証（§16.2 / §18.3: groupChanges のHSL相対シフト展開）
 // ---------------------------------------------------------------------------
+function hexToRgbArr(hex) {
+  const h = hex.replace("#", "");
+  return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+}
+function rgbToHslArr(r, g, b) {
+  r /= 255; g /= 255; b /= 255;
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+  const l = (mx + mn) / 2;
+  const d = mx - mn;
+  let h = 0, s = 0;
+  if (d > 0) {
+    s = d / (1 - Math.abs(2 * l - 1));
+    if (mx === r) h = 60 * (((g - b) / d) % 6);
+    else if (mx === g) h = 60 * ((b - r) / d + 2);
+    else h = 60 * ((r - g) / d + 4);
+    if (h < 0) h += 360;
+  }
+  return [h, s, l];
+}
+function hslToHexStr(h, s, l) {
+  h = ((h % 360) + 360) % 360;
+  s = Math.max(0, Math.min(1, s));
+  l = Math.max(0, Math.min(1, l));
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = l - c / 2;
+  let rgb;
+  if (h < 60) rgb = [c, x, 0];
+  else if (h < 120) rgb = [x, c, 0];
+  else if (h < 180) rgb = [0, c, x];
+  else if (h < 240) rgb = [0, x, c];
+  else if (h < 300) rgb = [x, 0, c];
+  else rgb = [c, 0, x];
+  return "#" + rgb.map((v) => Math.round((v + m) * 255).toString(16).padStart(2, "0")).join("");
+}
+
 function validatePaletteResult(raw, body) {
   const warnings = [];
   if (!raw || typeof raw !== "object") throw new Error("palette結果の形式が不正です");
   const paletteLen = body.project.palette.length;
   const hexRe = /^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$/;
   const paletteChanges = [];
+  const seen = new Set();
+  const push = (index, color) => {
+    if (seen.has(index)) {
+      // 後勝ち（個別指定がグループ展開を上書き）
+      const i = paletteChanges.findIndex((p) => p.index === index);
+      paletteChanges[i] = { index, color };
+    } else {
+      paletteChanges.push({ index, color });
+      seen.add(index);
+    }
+  };
+
+  // §18.3: groupChanges → メイングループ全色へHSL相対シフト展開
+  const mp = body.mainPalette;
+  const rawGroups = Array.isArray(raw.groupChanges) ? raw.groupChanges : [];
+  if (rawGroups.length > 0) {
+    if (!mp) {
+      warnings.push("mainPalette が無いため groupChanges を無視しました");
+    } else {
+      for (const gc of rawGroups) {
+        if (!gc || !Number.isInteger(gc.mainIndex) || gc.mainIndex < 0 || gc.mainIndex >= mp.colors.length ||
+            typeof gc.color !== "string" || !/^#[0-9a-fA-F]{6}$/.test(gc.color)) {
+          warnings.push("不正な groupChanges を無視しました");
+          continue;
+        }
+        const from = rgbToHslArr(...hexToRgbArr(mp.colors[gc.mainIndex]));
+        const to = rgbToHslArr(...hexToRgbArr(gc.color));
+        const dH = to[0] - from[0];
+        const dS = to[1] - from[1];
+        const dL = to[2] - from[2];
+        for (let i = 1; i < paletteLen; i++) {
+          if (mp.groups[i] !== gc.mainIndex) continue;
+          const cur = body.project.palette[i];
+          if (typeof cur !== "string" || !hexRe.test(cur)) continue;
+          const hsl = rgbToHslArr(...hexToRgbArr(cur));
+          push(i, hslToHexStr(hsl[0] + dH, hsl[1] + dS, hsl[2] + dL));
+        }
+      }
+    }
+  }
+
   const rawChanges = Array.isArray(raw.paletteChanges) ? raw.paletteChanges : [];
   for (const pc of rawChanges) {
     if (!pc || !Number.isInteger(pc.index) || typeof pc.color !== "string" || !hexRe.test(pc.color)) {
@@ -806,7 +907,7 @@ function validatePaletteResult(raw, body) {
       warnings.push(`index ${pc.index} はパレット範囲外のため無視しました`);
       continue;
     }
-    paletteChanges.push({ index: pc.index, color: pc.color });
+    push(pc.index, pc.color);
   }
   return { paletteChanges, note: typeof raw.note === "string" ? raw.note : "", warnings };
 }
@@ -925,13 +1026,22 @@ async function runMock(body, res, aborted) {
       note: "MOCK: 固定のスタイルガイドを返しました",
     };
   } else if (mode === "palette") {
-    // 固定の paletteChanges（緑基調・§16.7）
-    const greens = ["#1a3d1a", "#2e7d32", "#57a05a", "#7fc383", "#a5d6a7"];
-    const paletteChanges = [];
-    for (let i = 1; i < Math.min(palette.length, greens.length + 1); i++) {
-      paletteChanges.push({ index: i, color: greens[i - 1] });
+    if (body.mainPalette) {
+      // §18.3: グループ単位スワップ（mainIndex 0 を緑へ相対シフト）
+      fakePatch = {
+        paletteChanges: [],
+        groupChanges: [{ mainIndex: 0, color: "#2e7d32" }],
+        note: "MOCK: メイングループ0を緑系へ相対シフト",
+      };
+    } else {
+      // 固定の paletteChanges（緑基調・§16.7）
+      const greens = ["#1a3d1a", "#2e7d32", "#57a05a", "#7fc383", "#a5d6a7"];
+      const paletteChanges = [];
+      for (let i = 1; i < Math.min(palette.length, greens.length + 1); i++) {
+        paletteChanges.push({ index: i, color: greens[i - 1] });
+      }
+      fakePatch = { paletteChanges, groupChanges: [], note: "MOCK: 緑基調の配色に変更しました" };
     }
-    fakePatch = { paletteChanges, note: "MOCK: 緑基調の配色に変更しました" };
   } else if (mode === "segment") {
     // 固定の3パーツ（頭・胴・脚）を比率で返す
     const tw = Math.max(2, Math.floor(width * 0.4));

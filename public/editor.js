@@ -1,5 +1,6 @@
 // editor.js — キャンバス描画・ツール・選択
 import { drawFrameToContext, hexToRgba } from "./app.js";
+import { extractMainPalette } from "./convert.js";
 
 const MIN_ZOOM = 2;
 const MAX_ZOOM = 48;
@@ -18,6 +19,10 @@ export function initEditor(store, toast) {
   const clearSelectionBtn = document.getElementById("clearSelectionBtn");
   const paletteGrid = document.getElementById("paletteGrid");
   const paletteAddBtn = document.getElementById("paletteAddBtn");
+  const mainPaletteRow = document.getElementById("mainPaletteRow");
+  const mainPaletteGrid = document.getElementById("mainPaletteGrid");
+  const mainPaletteReextractBtn = document.getElementById("mainPaletteReextractBtn");
+  const mainPaletteCount = document.getElementById("mainPaletteCount");
   const canvasSizeLabel = document.getElementById("canvasSizeLabel");
   const cursorPosLabel = document.getElementById("cursorPosLabel");
   const toolButtons = Array.from(document.querySelectorAll(".tool-btn"));
@@ -249,8 +254,31 @@ export function initEditor(store, toast) {
   // ---------------------------------------------------------------------
   // パレット
   // ---------------------------------------------------------------------
+  // §18.3: メインパレット段（クリックで所属グループをハイライト）
+  function renderMainPalette() {
+    const p = project();
+    // 33色以上なら（未抽出でも）再抽出コントロールを出す
+    mainPaletteRow.hidden = !(p.mainPalette || p.palette.length > 32);
+    mainPaletteGrid.innerHTML = "";
+    if (!p.mainPalette) return;
+    p.mainPalette.colors.forEach((hex, mi) => {
+      const sw = document.createElement("button");
+      sw.className = "swatch" + (store.state.highlightGroup === mi ? " is-group-active" : "");
+      sw.title = `メイン ${mi}: ${hex}（クリックでグループをハイライト）`;
+      const inner = document.createElement("i");
+      inner.style.background = hex;
+      sw.appendChild(inner);
+      sw.addEventListener("click", () => {
+        store.state.highlightGroup = store.state.highlightGroup === mi ? null : mi;
+        store.notify();
+      });
+      mainPaletteGrid.appendChild(sw);
+    });
+  }
+
   function renderPalette() {
     const p = project();
+    renderMainPalette();
     paletteGrid.innerHTML = "";
     p.palette.forEach((hex, i) => {
       const sw = document.createElement("button");
@@ -282,6 +310,19 @@ export function initEditor(store, toast) {
       paletteGrid.appendChild(sw);
     });
   }
+  mainPaletteReextractBtn.addEventListener("click", () => {
+    const p = project();
+    const count = Math.max(8, Math.min(64, Number(mainPaletteCount.value) || 32));
+    // 使用ピクセル数を集計して頻度重み付き再抽出（§18.3）
+    const counts = new Uint32Array(p.palette.length);
+    for (const f of p.frames) for (const v of f.pixels) counts[v]++;
+    store.pushUndo();
+    p.mainPalette = extractMainPalette(p.palette, counts, count);
+    store.state.highlightGroup = null;
+    store.notify();
+    toast(`メインパレットを再抽出しました（${p.mainPalette.colors.length}色）`);
+  });
+
   paletteAddBtn.addEventListener("click", () => {
     const p = project();
     if (p.palette.length >= 256) {
@@ -338,6 +379,23 @@ export function initEditor(store, toast) {
         const [f, x, y] = key.split(":").map(Number);
         if (f !== store.state.currentFrame) continue;
         ctx.fillRect(x * cellSize, y * cellSize, cellSize, cellSize);
+      }
+      ctx.restore();
+    }
+
+    // §18.3: メイングループのハイライト
+    if (store.state.highlightGroup !== null && store.state.highlightGroup !== undefined && p.mainPalette) {
+      const pixels = p.frames[store.state.currentFrame].pixels;
+      ctx.save();
+      ctx.strokeStyle = "#e8b654";
+      ctx.lineWidth = Math.max(1, Math.min(2, cellSize / 6));
+      for (let y = 0; y < p.height; y++) {
+        for (let x = 0; x < p.width; x++) {
+          const idx = pixels[y * p.width + x];
+          if (idx > 0 && p.mainPalette.groups[idx] === store.state.highlightGroup) {
+            ctx.strokeRect(x * cellSize + 0.5, y * cellSize + 0.5, cellSize - 1, cellSize - 1);
+          }
+        }
       }
       ctx.restore();
     }

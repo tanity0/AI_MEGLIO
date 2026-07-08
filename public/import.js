@@ -133,6 +133,34 @@ function parseSizeInput(text) {
 }
 
 /**
+ * §18.2: ショートカット判定 — ブロック検出が効き（≥2）、実寸≤128、
+ * 生の色数が32色以下（量子化不要）の「真ドット絵」のみ従来経路。
+ */
+export async function probeImage(file) {
+  if (!/^image\/(png|gif|webp|jpeg)$/.test(file.type)) return { shortcut: false };
+  try {
+    const bitmap = await createImageBitmap(file);
+    const imageData = imageDataFromBitmap(bitmap);
+    const data = imageData.data;
+    const block = detectBlockSize(data, bitmap.width, bitmap.height);
+    const realW = Math.max(1, Math.round(bitmap.width / block));
+    const realH = Math.max(1, Math.round(bitmap.height / block));
+    if (block < 2 && (bitmap.width > 128 || bitmap.height > 128)) return { shortcut: false };
+    if (realW > 128 || realH > 128) return { shortcut: false };
+    // 生の色数（量子化なし）
+    const colors = new Set();
+    for (let i = 0; i < data.length; i += 4) {
+      if (data[i + 3] < 128) continue;
+      colors.add((data[i] << 16) | (data[i + 1] << 8) | data[i + 2]);
+      if (colors.size > 32) return { shortcut: false };
+    }
+    return { shortcut: true };
+  } catch {
+    return { shortcut: false };
+  }
+}
+
+/**
  * 画像ファイルからプロジェクトを構築する。
  * 戻り値: project オブジェクト（frame 0 = ベースフレーム、project.baseFrame 保持）
  *         null = ユーザーがダイアログでキャンセル

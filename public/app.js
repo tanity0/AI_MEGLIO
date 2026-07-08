@@ -3,10 +3,11 @@ import { initEditor } from "./editor.js";
 import { initTimeline } from "./timeline.js";
 import { initAi } from "./ai.js";
 import { encodeGif } from "./gif.js";
-import { importImageFile } from "./import.js";
+import { importImageFile, probeImage } from "./import.js";
 import { initRig } from "./rig.js";
 import { initGameExport, initGameView } from "./gameexport.js";
 import { initStyleRef } from "./styleref.js";
+import { initStudio, openStudio } from "./studio.js";
 
 // ---------------------------------------------------------------------------
 // テキストグリッド文字割当て（サーバー側 server.js と同一の規則）
@@ -277,6 +278,14 @@ function cloneStyleRef(s) {
     enabled: !!s.enabled,
   };
 }
+function mainPaletteFromPlain(raw, paletteLen) {
+  if (!raw || !Array.isArray(raw.colors) || !Array.isArray(raw.groups)) return null;
+  if (raw.groups.length !== paletteLen) return null;
+  if (!raw.colors.every((c) => typeof c === "string") || raw.colors.length < 1 || raw.colors.length > 64) return null;
+  if (!raw.groups.every((g) => Number.isInteger(g) && g >= -1 && g < raw.colors.length)) return null;
+  return { colors: raw.colors.slice(), groups: raw.groups.slice() };
+}
+
 function styleRefFromPlain(raw) {
   if (!raw || typeof raw !== "object") return null;
   const imageDataUrl = typeof raw.imageDataUrl === "string" && raw.imageDataUrl.startsWith("data:image/") ? raw.imageDataUrl : "";
@@ -312,6 +321,9 @@ export function cloneProject(project) {
     variants: (project.variants || []).map((v) => ({ name: v.name, palette: v.palette.slice() })),
     profile: project.profile ? JSON.parse(JSON.stringify(project.profile)) : null,
     styleRef: cloneStyleRef(project.styleRef),
+    sourceImage: typeof project.sourceImage === "string" ? project.sourceImage : null,
+    conversionParams: project.conversionParams ? JSON.parse(JSON.stringify(project.conversionParams)) : null,
+    mainPalette: project.mainPalette ? { colors: project.mainPalette.colors.slice(), groups: project.mainPalette.groups.slice() } : null,
   };
 }
 export function projectToPlain(project) {
@@ -328,6 +340,9 @@ export function projectToPlain(project) {
     variants: (project.variants || []).map((v) => ({ name: v.name, palette: v.palette.slice() })),
     profile: project.profile ? JSON.parse(JSON.stringify(project.profile)) : null,
     styleRef: cloneStyleRef(project.styleRef),
+    sourceImage: typeof project.sourceImage === "string" ? project.sourceImage : null,
+    conversionParams: project.conversionParams ? JSON.parse(JSON.stringify(project.conversionParams)) : null,
+    mainPalette: project.mainPalette ? { colors: project.mainPalette.colors.slice(), groups: project.mainPalette.groups.slice() } : null,
   };
 }
 function rigFromPlain(raw, width, height) {
@@ -416,6 +431,9 @@ export function projectFromPlain(o) {
     variants: variantsFromPlain(o.variants, palette.length),
     profile: o.profile && typeof o.profile === "object" ? o.profile : null,
     styleRef: styleRefFromPlain(o.styleRef),
+    sourceImage: typeof o.sourceImage === "string" && o.sourceImage.startsWith("data:image/") ? o.sourceImage : null,
+    conversionParams: o.conversionParams && typeof o.conversionParams === "object" ? o.conversionParams : null,
+    mainPalette: mainPaletteFromPlain(o.mainPalette, palette.length),
   };
   // §16.1: 既存プロジェクト（tags無し）は「all」タグを自動生成
   const tags = tagsFromPlain(o.tags, project.frames.length, fps);
@@ -501,6 +519,7 @@ class Store {
       rigAdjustMode: false,
       activeTagIndex: -1, // §16.1: 選択中タグ（-1 = 全体）
       serverConfig: null, // /api/config の内容（§17でバックエンド判定に使用）
+      highlightGroup: null, // §18.3: メイングループハイライト
       zoom: 12,
       zoomAuto: true,
       timelinePlaying: false,
@@ -568,6 +587,9 @@ class Store {
     }
     if (this.state.activeTagIndex >= p.tags.length) this.state.activeTagIndex = -1;
     if (!Array.isArray(p.variants)) p.variants = [];
+    if (this.state.highlightGroup !== null && !(p.mainPalette && this.state.highlightGroup < p.mainPalette.colors.length)) {
+      this.state.highlightGroup = null;
+    }
   }
   resetProject(project) {
     this.pushUndo();
@@ -607,6 +629,15 @@ function downloadBlob(blob, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(fr.result);
+    fr.onerror = reject;
+    fr.readAsDataURL(file);
+  });
+}
+
 function initHeader() {
   document.getElementById("newProjectBtn").addEventListener("click", () => {
     if (!confirm("現在のプロジェクトを破棄して新規作成しますか？")) return;
@@ -619,10 +650,19 @@ function initHeader() {
     ev.target.value = "";
     if (!file) return;
     try {
-      const project = await importImageFile(file);
-      if (!project) return; // ユーザーキャンセル
-      store.resetProject(project);
-      toast(`画像を ${project.width}×${project.height}・${project.palette.length}色 として読み込みました（frame 0 = ベースフレーム）`);
+      // §18.2: 32色以下の真ドット絵で自動判定成功時のみ従来ショートカット、
+      // それ以外は変換スタジオを開く
+      const probe = await probeImage(file);
+      if (probe.shortcut) {
+        const project = await importImageFile(file);
+        if (!project) return; // ユーザーキャンセル
+        store.resetProject(project);
+        toast(`画像を ${project.width}×${project.height}・${project.palette.length}色 として読み込みました（frame 0 = ベースフレーム）`);
+      } else {
+        const dataUrl = await fileToDataUrl(file);
+        toast("変換スタジオを開きます（真ドット絵と判定できなかったため）");
+        await openStudio(dataUrl);
+      }
     } catch (err) {
       toast(`画像の読込に失敗しました: ${err.message}`, "error");
       console.error(err);
@@ -740,6 +780,7 @@ function main() {
   initGameExport(store, toast);
   initGameView(store);
   initStyleRef(store, toast);
+  initStudio(store, toast);
   initBackendLabel();
   store.notify();
   // デバッグ/E2Eテスト用フック（UIには影響しない）

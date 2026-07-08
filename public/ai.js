@@ -99,9 +99,20 @@ export function initAi(store, toast) {
     }
   }
 
+  // §18.4: 高解像度・多色時のヒント
+  const hiResHint = document.getElementById("hiResHint");
+  const rigRecommendBanner = document.getElementById("rigRecommendBanner");
+  function renderHiResHints() {
+    const p = store.state.project;
+    const big = p.palette.length > 32 || p.width > 64 || p.height > 64;
+    hiResHint.hidden = !big;
+    rigRecommendBanner.hidden = !big;
+  }
+
   // 選択が変わったら「手動選択」フラグをリセットして自動追従に戻す
   let lastSelectionKey = "";
   store.subscribe(() => {
+    renderHiResHints();
     const sel = store.state.selection;
     const key = sel ? `${sel.frameIndex}:${sel.x}:${sel.y}:${sel.w}:${sel.h}` : "";
     if (key !== lastSelectionKey) {
@@ -243,6 +254,7 @@ export function initAi(store, toast) {
       fields.baseFrameGrid = pixelsToGridString(project.baseFrame, project.width, project.height, project.palette.length);
     }
     Object.assign(fields, styleRequestFields(project, store.state.serverConfig)); // §17.3
+    if (project.mainPalette) fields.mainPalette = project.mainPalette; // §18.3
     return fields;
   }
 
@@ -527,6 +539,47 @@ export function initAi(store, toast) {
       abortController = null;
     }
   }
+
+  // §18.2: AI輪郭リファイン — 透明/非透明境界から2px以内だけをcleanup
+  const outlineRefineBtn = document.getElementById("outlineRefineBtn");
+  function buildBoundaryMask(project, frameIndex) {
+    const { width, height } = project;
+    const px = project.frames[frameIndex].pixels;
+    const rows = [];
+    for (let y = 0; y < height; y++) {
+      let row = "";
+      for (let x = 0; x < width; x++) {
+        let boundary = false;
+        const self = px[y * width + x] === 0;
+        for (let dy = -2; dy <= 2 && !boundary; dy++) {
+          for (let dx = -2; dx <= 2 && !boundary; dx++) {
+            const nx = x + dx, ny = y + dy;
+            const other = nx < 0 || ny < 0 || nx >= width || ny >= height
+              ? true
+              : px[ny * width + nx] === 0;
+            if (other !== self) boundary = true;
+          }
+        }
+        row += boundary ? "1" : "0";
+      }
+      rows.push(row);
+    }
+    return rows.join("\n");
+  }
+  outlineRefineBtn.addEventListener("click", async () => {
+    const project = store.state.project;
+    const fi = store.state.currentFrame;
+    const body = {
+      ...baseRequestFields(),
+      mode: "cleanup",
+      scope: "frame",
+      frameIndex: fi,
+      allowedMask: buildBoundaryMask(project, fi),
+      instruction: "変換で甘くなった輪郭とハイライトを、透明境界付近だけ最小差分で清書してください",
+      images: [{ frame: fi, dataUrl: frameToPngDataUrl(project, fi, project.width > 64 ? 4 : 8) }],
+    };
+    await executeEdit(body, "[輪郭リファイン]", (patch) => applyPatch(patch));
+  });
 
   paletteSwapBtn.addEventListener("click", runPaletteSwap);
   paletteApplyBtn.addEventListener("click", () => {

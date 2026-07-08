@@ -19,6 +19,7 @@
       画像を開く
       <input id="importImageInput" type="file" accept="image/png,image/gif,image/webp" hidden>
     </label>
+    <button id="reconvertBtn" class="btn" title="保存された元画像から変換スタジオをやり直す">再変換</button>
     <button id="saveJsonBtn" class="btn" title="プロジェクトをJSONで保存">保存 (JSON)</button>
     <label class="btn" for="loadJsonInput" title="JSONファイルからプロジェクトを読込">
       読込 (JSON)
@@ -63,6 +64,15 @@
     </div>
 
     <h2 class="panel-title">パレット</h2>
+    <div id="mainPaletteRow" hidden>
+      <div class="hint">メイン（クリックでグループをハイライト）</div>
+      <div class="palette-grid main-palette" id="mainPaletteGrid"></div>
+      <div class="main-palette-ctl">
+        <button id="mainPaletteReextractBtn" class="btn btn-small">再抽出</button>
+        <input id="mainPaletteCount" type="number" min="8" max="64" value="32" title="メイン色数">
+      </div>
+      <div class="hint">全色</div>
+    </div>
     <div class="palette-grid" id="paletteGrid"></div>
     <button id="paletteAddBtn" class="btn btn-small">+ 色を追加</button>
   </aside>
@@ -115,9 +125,11 @@
 
       <textarea id="instructionInput" placeholder="例:「腕の振りをもっと大きく」「輪郭のジャギーを滑らかに」「フレーム1と2の間に中割りを追加」「全体を夕暮れの色調に」「この範囲の剣を炎の剣にして」「このトンマナで新しい敵キャラを描いて」（Cmd/Ctrl+Enterで実行）" rows="4"></textarea>
 
+      <div id="hiResHint" class="hint hires-hint" hidden>大きな素材では矩形選択での指示が高速です（フレーム全体のAI編集はトークン・時間を大きく消費します）</div>
       <div class="ai-actions">
         <button id="runAiBtn" class="btn btn-accent">実行</button>
         <button id="paletteSwapBtn" class="btn" title="パレットの色だけをAIで変更（配色バリエーション・§16.2）">配色バリエーション</button>
+        <button id="outlineRefineBtn" class="btn" title="変換で甘くなった輪郭を透明境界±2pxだけAI清書（§18.2）">AI輪郭リファイン</button>
       </div>
 
       <div id="paletteCandidate" class="palette-candidate" hidden>
@@ -135,6 +147,7 @@
     </div>
 
     <div id="motionTab" class="tab-body" hidden>
+      <div id="rigRecommendBanner" class="hint hires-hint" hidden>この解像度ではリグ（パーツ分割+キーフレーム合成）の使用を推奨します</div>
       <div class="motion-form">
         <label class="form-row">プリセット
           <select id="motionPreset">
@@ -349,6 +362,50 @@
       <button id="exportRunBtn" class="btn btn-accent">書き出し実行</button>
     </div>
     <div id="exportStatus" class="hint" aria-live="polite"></div>
+  </div>
+</div>
+
+<div id="studioPanel" class="modal-overlay" hidden>
+  <div class="modal studio-modal">
+    <div class="modal-head">
+      <h2>変換スタジオ（ドット絵風 → 本物ドット絵）</h2>
+      <div>
+        <button id="studioGalleryBtn" class="btn btn-small">候補を生成（3×3）</button>
+        <button id="studioFitBtn" class="btn btn-small">全体表示</button>
+        <button id="studioCancelBtn" class="btn btn-small">キャンセル</button>
+      </div>
+    </div>
+    <div id="studioGallery" class="studio-gallery"></div>
+    <div class="studio-compare">
+      <div class="studio-viewport"><span class="hint">元画像</span><canvas id="studioSrcCanvas"></canvas></div>
+      <div class="studio-viewport"><span class="hint">変換結果（同期ズーム: ホイール/ドラッグ）</span><canvas id="studioResCanvas"></canvas></div>
+    </div>
+    <div id="studioGridInfo" class="hint"></div>
+    <div class="studio-knobs">
+      <label class="form-row">解像度(高さ) <input id="studioTargetH" type="number" min="16" max="128" step="1" value="64"></label>
+      <label class="check-row inline"><input type="checkbox" id="studioOneToOne"> 1:1（グリッド推定サイズ）</label>
+      <label class="form-row">色数 <input id="studioColors" type="range" min="8" max="256" step="1" value="64"> <span id="studioColorsLabel">64</span></label>
+      <div class="form-row">セルサイズ
+        <span><button id="studioSizeMinus" class="btn btn-small">−0.25</button> <span id="studioSizeDelta">0.00</span> <button id="studioSizePlus" class="btn btn-small">+0.25</button></span>
+      </div>
+      <div class="form-row">オフセットX/Y
+        <span>
+          <button id="studioOxMinus" class="btn btn-small">←</button><span id="studioOffsetDX">0</span><button id="studioOxPlus" class="btn btn-small">→</button>
+          <button id="studioOyMinus" class="btn btn-small">↑</button><span id="studioOffsetDY">0</span><button id="studioOyPlus" class="btn btn-small">↓</button>
+          <button id="studioRegridBtn" class="btn btn-small" title="グリッドを再推定">再推定</button>
+        </span>
+      </div>
+      <label class="form-row">支配色⇔平均 <input id="studioDomBlend" type="range" min="0" max="1" step="0.05" value="0.15"></label>
+      <label class="form-row">セル中心重視 <input id="studioCenterWeight" type="range" min="0" max="1" step="0.05" value="0.5"></label>
+      <label class="form-row">輪郭保護 <input id="studioEdgeProtect" type="range" min="0" max="1" step="0.05" value="0.3"></label>
+      <label class="form-row">彩度保護 <input id="studioSatProtect" type="range" min="0" max="1" step="0.05" value="0.5"></label>
+      <label class="form-row">背景除去閾値 <input id="studioBgThreshold" type="range" min="8" max="120" step="1" value="48"></label>
+      <label class="form-row">フチ光彩除去 <input id="studioGlowWidth" type="range" min="0" max="3" step="1" value="0"></label>
+    </div>
+    <div class="ai-actions">
+      <button id="studioConfirmBtn" class="btn btn-accent">確定（プロジェクト化）</button>
+    </div>
+    <div id="studioStatus" class="hint" aria-live="polite"></div>
   </div>
 </div>
 
