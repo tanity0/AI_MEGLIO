@@ -837,21 +837,56 @@ export function initRig(store, toast) {
     return rows.map((r) => Array.from(r).join("")).join("\n");
   }
 
-  // 前後フレームの対象領域切り出し（マスクbboxの行を切り出し）
-  function redrawNeighborContext(p, frameIndex, mask) {
-    const cw = cellChars(p.palette.length);
-    const maskRows = mask.split("\n");
-    let x0 = p.width, y0 = p.height, x1 = -1, y1 = -1;
-    for (let y = 0; y < p.height; y++) for (let x = 0; x < p.width; x++) {
-      if (maskRows[y][x] === "1") { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+  // §22.5-3: マスクを連結成分（8近傍）に分割し、成分ごとに
+  // { mask(フルサイズ・その成分の'1'のみ), cropRect(bbox+2pxマージン) } を返す
+  function splitMaskComponents(p, mask) {
+    const { width, height } = p;
+    const rows = mask.split("\n");
+    const seen = Array.from({ length: height }, () => new Uint8Array(width));
+    const comps = [];
+    for (let sy = 0; sy < height; sy++) for (let sx = 0; sx < width; sx++) {
+      if (rows[sy][sx] !== "1" || seen[sy][sx]) continue;
+      // BFS（8近傍）
+      const cells = [];
+      const queue = [[sx, sy]];
+      seen[sy][sx] = 1;
+      let x0 = sx, y0 = sy, x1 = sx, y1 = sy;
+      while (queue.length) {
+        const [cx, cy] = queue.pop();
+        cells.push([cx, cy]);
+        if (cx < x0) x0 = cx; if (cx > x1) x1 = cx;
+        if (cy < y0) y0 = cy; if (cy > y1) y1 = cy;
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+          if (!dx && !dy) continue;
+          const nx = cx + dx, ny = cy + dy;
+          if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+          if (rows[ny][nx] !== "1" || seen[ny][nx]) continue;
+          seen[ny][nx] = 1;
+          queue.push([nx, ny]);
+        }
+      }
+      const grid = Array.from({ length: height }, () => new Uint8Array(width));
+      for (const [cx, cy] of cells) grid[cy][cx] = 1;
+      const rx = Math.max(0, x0 - 2), ry = Math.max(0, y0 - 2);
+      comps.push({
+        mask: grid.map((r) => Array.from(r).join("")).join("\n"),
+        cropRect: { x: rx, y: ry, w: Math.min(width - 1, x1 + 2) - rx + 1, h: Math.min(height - 1, y1 + 2) - ry + 1 },
+        cells: cells.length,
+      });
     }
-    if (x1 < 0) return [];
+    return comps;
+  }
+
+  // 前後フレームの対象領域切り出し（cropRect と同じ矩形を切り出す）
+  function redrawNeighborContext(p, frameIndex, cropRect) {
+    const cw = cellChars(p.palette.length);
+    const { x, y, w, h } = cropRect;
     const out = [];
     for (const nf of [frameIndex - 1, frameIndex + 1]) {
       if (nf < 0 || nf >= p.frames.length) continue;
       const gridRows = frameToGridString(p, nf).split("\n");
       const rows = [];
-      for (let y = y0; y <= y1; y++) rows.push(gridRows[y].slice(x0 * cw, (x1 + 1) * cw));
+      for (let ry = y; ry < y + h; ry++) rows.push(gridRows[ry].slice(x * cw, (x + w) * cw));
       out.push({ frame: nf, rows });
     }
     return out.slice(0, 2);
@@ -880,25 +915,39 @@ export function initRig(store, toast) {
       frameIndexes = [fi];
     }
 
+    // §22.5-3: フレームごとのマスクを連結成分に分割し、成分（領域）ごとに
+    // bboxクロップ付きの独立リクエストを発行（サーバー側キューの並列2に乗る）
+    const jobs = [];
+    for (const fi of frameIndexes) {
+      const mask = buildRedrawMask(p, fi, fi - rig.generatedAt);
+      for (const comp of splitMaskComponents(p, mask)) {
+        jobs.push({ fi, mask: comp.mask, cropRect: comp.cropRect });
+      }
+    }
+    if (!jobs.length) {
+      toast("描き直す領域がありません（ラフがベースと同一です）", "error");
+      return;
+    }
+
     abortController = new AbortController();
     let doneCount = 0;
-    setBusy(true, `描き直し中… 0/${frameIndexes.length}`);
+    setBusy(true, `描き直し中… 0/${jobs.length}領域`);
     const common = baseRequestFields();
-    const tasks = frameIndexes.map((fi) => {
-      const mask = buildRedrawMask(p, fi, fi - rig.generatedAt);
+    const tasks = jobs.map((job) => {
       const body = {
         ...common,
         mode: "redraw",
         scope: "frame",
-        frameIndex: fi,
-        allowedMask: mask,
-        neighborContext: redrawNeighborContext(p, fi, mask),
+        frameIndex: job.fi,
+        allowedMask: job.mask,
+        cropRect: job.cropRect,
+        neighborContext: redrawNeighborContext(p, job.fi, job.cropRect),
         instruction: "ラフのポーズに合わせて、ベースフレームのテイストで対象領域を描き直してください",
-        images: [{ frame: fi, dataUrl: frameToPngDataUrl(p, fi, p.width > 64 ? 4 : 8) }],
+        images: [{ frame: job.fi, dataUrl: frameToPngDataUrl(p, job.fi, p.width > 64 ? 4 : 8) }],
       };
       return streamEdit(body, { signal: abortController.signal }).then((evt) => {
         doneCount++;
-        rigProgress.textContent = `描き直し中… ${doneCount}/${frameIndexes.length}`;
+        rigProgress.textContent = `描き直し中… ${doneCount}/${jobs.length}領域`;
         return evt;
       });
     });
@@ -916,10 +965,16 @@ export function initRig(store, toast) {
         if (evt.patch.warnings?.length) warnings.push(...evt.patch.warnings);
       }
       store.notify();
-      if (errs.length) warnings.push(`${errs.length}フレームの描き直しに失敗: ${errs[0]}`);
+      if (errs.length) warnings.push(`${errs.length}領域の描き直しに失敗: ${errs[0]}`);
       const warnText = warnings.length ? ` / 警告: ${[...new Set(warnings)].join(" / ")}` : "";
-      setBusy(false, `描き直し完了: ${okResults.length}/${frameIndexes.length}フレーム、適用セル数 ${cells}${warnText}。仕上げにAI清書がおすすめです`);
-      toast(`AI描き直しを適用しました（${okResults.length}フレーム）`);
+      if (cells === 0) {
+        // §22.5-4: ゼロ適用ガード — 成功トーンではなく警告として表示
+        setBusy(false, `AIが変更を返しませんでした（ラフのまま・${okResults.length}/${jobs.length}領域完了）。もう一度実行するか、対象領域を「全身」に切り替えてお試しください${warnText}`);
+        toast("AIが変更を返しませんでした（適用セル数 0）", "error");
+      } else {
+        setBusy(false, `描き直し完了: ${okResults.length}/${jobs.length}領域、適用セル数 ${cells}${warnText}。仕上げにAI清書がおすすめです`);
+        toast(`AI描き直しを適用しました（${okResults.length}領域）`);
+      }
     } else {
       const aborted = errs.some((e) => /abort/i.test(e));
       setBusy(false, aborted ? "中断しました" : `エラー: ${errs[0] || "描き直しに失敗しました"}`);

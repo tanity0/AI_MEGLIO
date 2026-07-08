@@ -21,7 +21,8 @@ const CLI_MODEL = process.env.CLI_MODEL || "sonnet";
 const CLI_CMD = process.env.CLI_PATH || "claude"; // Windowsで解決先が紛らわしい場合にフルパス指定可
 const CLI_TIMEOUT_SEC = Number(process.env.CLI_TIMEOUT) > 0 ? Number(process.env.CLI_TIMEOUT) : 300; // §15.5-1: 既定300秒、CLI_TIMEOUT（秒）で上書き
 const CLI_TIMEOUT_MS = CLI_TIMEOUT_SEC * 1000;
-const CLI_CONCURRENCY = 2; // §15.2: 同時実行2のキュー
+const CLI_CONCURRENCY = Number(process.env.CLI_CONCURRENCY) > 0 ? Number(process.env.CLI_CONCURRENCY) : 2; // §15.2: 同時実行キュー（環境変数 CLI_CONCURRENCY で上書き可）
+const CLI_DEBUG = process.env.CLI_DEBUG === "1"; // §22.5-5: プロンプト+生出力を ./cli-logs/ に保存
 const EXPORT_ROOT = process.env.EXPORT_ROOT || ""; // §16.4: 未設定なら /api/export は無効
 
 const MAX_BODY_BYTES = 5 * 1024 * 1024; // 5MB 上限
@@ -479,6 +480,15 @@ function validateEditRequest(body) {
       throw new Error("allowedMask のサイズまたは文字が不正です");
     }
   }
+  // §22.5-2: redraw のマスクbboxクロップ（モデルはクロップローカル座標で edits を返す）
+  if (body.cropRect !== undefined && body.cropRect !== null) {
+    if (mode !== "redraw") throw new Error("cropRect は mode=redraw でのみ指定できます");
+    const cr = body.cropRect;
+    if (!cr || typeof cr !== "object" || ![cr.x, cr.y, cr.w, cr.h].every(Number.isInteger) ||
+        cr.x < 0 || cr.y < 0 || cr.w < 1 || cr.h < 1 || cr.x + cr.w > width || cr.y + cr.h > height) {
+      throw new Error("cropRect が不正です");
+    }
+  }
   // §19.3: 前後フレームの矩形切り出し（0〜2件）
   if (body.neighborContext !== undefined && body.neighborContext !== null) {
     if (!Array.isArray(body.neighborContext) || body.neighborContext.length > 2) throw new Error("neighborContext が不正です");
@@ -525,6 +535,13 @@ function extractBase64FromDataUrl(dataUrl) {
 const PRESET_LABELS = { walk: "歩き", run: "走り", attack: "攻撃", idle: "待機", jump: "ジャンプ", custom: "カスタム" };
 const MAGNITUDE_LABELS = { small: "小", medium: "中", large: "大" };
 const FACING_LABELS = { keep: "そのまま", right: "横（右向き）", left: "横（左向き）" };
+
+// §22.5-2: グリッド文字列（1セル=cw文字）から cropRect の矩形を切り出す
+function cropGridString(grid, cr, cw) {
+  return grid.split("\n").slice(cr.y, cr.y + cr.h)
+    .map((r) => r.slice(cr.x * cw, (cr.x + cr.w) * cw))
+    .join("\n");
+}
 
 // ユーザープロンプトのテキスト部（全バックエンド共通）
 function buildUserText(body) {
@@ -598,8 +615,13 @@ ${instruction}`;
     paletteText = palette.map((color, i) => `${tokenForIndex(i, wide)}: ${color}`).join(", ");
   }
 
+  // §22.5-2: redraw はマスクbboxクロップ（cropRect）があればグリッドを切り出しで送る
+  const crop = mode === "redraw" && body.cropRect ? body.cropRect : null;
+  const cw = cellChars(palette.length);
   const framesText = mode === "redraw"
-    ? `--- フレーム${frameIndex}（リグ合成のラフ = ポーズの正） ---\n${framesGrid[frameIndex]}`
+    ? (crop
+        ? `--- フレーム${frameIndex}（リグ合成のラフ = ポーズの正。切り出し ${crop.w}x${crop.h}） ---\n${cropGridString(framesGrid[frameIndex], crop, cw)}`
+        : `--- フレーム${frameIndex}（リグ合成のラフ = ポーズの正） ---\n${framesGrid[frameIndex]}`)
     : framesGrid.map((grid, i) => `--- フレーム${i} ---\n${grid}`).join("\n");
 
   let scopeText;
@@ -614,7 +636,9 @@ ${instruction}`;
   let baseSection = "";
   if (baseFrameGrid && mode !== "refine") {
     // §19.1: refine ではベースフレーム・アンカリングを適用しない
-    baseSection = `\n## ベースフレーム（テイストの唯一の正。新規フレームはこれのコピーを起点にする）\n${baseFrameGrid}\n`;
+    baseSection = crop
+      ? `\n## ベースフレーム（テイストの唯一の正。切り出し ${crop.w}x${crop.h}）\n${cropGridString(baseFrameGrid, crop, cw)}\n`
+      : `\n## ベースフレーム（テイストの唯一の正。新規フレームはこれのコピーを起点にする）\n${baseFrameGrid}\n`;
   }
 
   let lockedSection = "";
@@ -647,7 +671,15 @@ ${instruction}`;
       neighborText = "\n## 前後フレームの対象領域（動きの連続性の参考）\n" +
         body.neighborContext.map((nc) => `--- フレーム${nc.frame} ---\n${nc.rows.join("\n")}`).join("\n") + "\n";
     }
-    redrawSection = `\n## ポーズガイド再描画モード（対象: フレーム${frameIndex}）\n上の「ベースフレーム」がテイストの正、フレーム${frameIndex}のグリッドがポーズの正（リグ合成のラフ）です。ラフのシルエット・重心・関節位置に合わせ、描き込みはベースに従って、以下のマスクで '1' のセルだけを描き直してください（'0' への edits はサーバー側で破棄されます）。\n${allowedMask}\n${neighborText}`;
+    const keepTok = isWidePalette(palette.length) ? "'??'" : "'?'";
+    // §22.5-1: 「そのまま残すのは失敗」「最小差分の原則より優先」を明記し、空応答の逃げ道を塞ぐ
+    const mandate = `上の「ベースフレーム」がテイストの正、フレーム${frameIndex}のグリッドがポーズの正（リグ合成のラフ）です。
+マスク '1' の領域は機械的な回転合成による**ドラフト品質**です（ジャギー・パーツの分離・つぶれた模様を含む）。この領域を**そのまま残すのは失敗**です。ベースの該当部位を参照し、ラフのシルエット・重心・関節位置に合わせて、必ず描き直した rows を返してください。${keepTok}（変更なし）を使ってよいのは、マスク外のセルと、描き直した結果たまたま同じ値になるセルだけです。**この指示は「最小差分の原則」より優先します**。パレットは厳守してください。`;
+    const cropNote = crop
+      ? `\nこのプロンプトの全グリッド（ベース・ラフ・マスク・前後フレーム）はキャンバス座標 (${crop.x}, ${crop.y}) 起点の ${crop.w}x${crop.h} 切り出しです。edits の x, y は**切り出しローカル座標**（(0,0)〜(${crop.w - 1},${crop.h - 1})）で返してください。サーバー側でキャンバス座標へ変換されます。frame は ${frameIndex} のままです。`
+      : "";
+    const maskText = crop ? cropGridString(allowedMask, crop, 1) : allowedMask;
+    redrawSection = `\n## ポーズガイド再描画モード（対象: フレーム${frameIndex}）\n${mandate}${cropNote}\nマスク（'1' のセルだけ変更可。'0' への edits はサーバー側で破棄されます）:\n${maskText}\n${neighborText}`;
   }
 
   let cleanupSection = "";
@@ -704,6 +736,20 @@ function cellLocked(x, y, lockedRects) {
     if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) return true;
   }
   return false;
+}
+
+// §22.5-2: redraw+cropRect のとき、モデルはクロップローカル座標で edits を返す。
+// 受信直後にキャンバス座標へオフセット加算してから既存のマスク検証に流す。
+function offsetCropEdits(rawPatch, body) {
+  if (body.mode !== "redraw" || !body.cropRect || !rawPatch || !Array.isArray(rawPatch.edits)) return rawPatch;
+  const { x, y } = body.cropRect;
+  for (const e of rawPatch.edits) {
+    if (e && Number.isInteger(e.x) && Number.isInteger(e.y)) {
+      e.x += x;
+      e.y += y;
+    }
+  }
+  return rawPatch;
 }
 
 function validateAndClampPatch(rawPatch, body) {
@@ -1301,6 +1347,22 @@ async function callBackend(opts) {
   return callBackendApi(opts);
 }
 
+// §22.5-5: CLI_DEBUG=1 のとき、CLI呼び出しごとにプロンプトと生の stdout/stderr を保存
+let cliDebugSeq = 0;
+function cliDebugLog(backend, mode, prompt, stdout, stderr) {
+  if (!CLI_DEBUG) return;
+  try {
+    const dir = path.join(process.cwd(), "cli-logs");
+    fssync.mkdirSync(dir, { recursive: true });
+    const ts = new Date().toISOString().replace(/[:.]/g, "-");
+    const file = path.join(dir, `${ts}-${String(++cliDebugSeq).padStart(3, "0")}-${mode || "patch"}.txt`);
+    fssync.writeFileSync(file, `# backend: ${backend}\n# prompt (${prompt.length}B)\n${prompt}\n\n# stdout (${stdout.length}B)\n${stdout}\n\n# stderr (${stderr.length}B)\n${stderr}\n`);
+    console.log(`[cli-debug] ${file}`);
+  } catch (err) {
+    console.error(`[cli-debug] 保存に失敗しました: ${err.message}`);
+  }
+}
+
 // --- BACKEND=api: @anthropic-ai/sdk（現行どおり・§6の形状） ---
 async function callBackendApi({ systemText, userText, images, schema, onDelta, registerCancel }) {
   const client = new Anthropic();
@@ -1369,7 +1431,7 @@ function stripCodeFence(text) {
   return m ? m[1].trim() : t;
 }
 
-function spawnClaudeCli(prompt, { registerCancel }) {
+function spawnClaudeCli(prompt, { registerCancel, mode }) {
   return new Promise((resolve, reject) => {
     let child;
     try {
@@ -1388,6 +1450,7 @@ function spawnClaudeCli(prompt, { registerCancel }) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      cliDebugLog("cli", mode, prompt, stdout, stderr); // §22.5-5
       fn(arg);
     };
     const timer = setTimeout(() => {
@@ -1429,16 +1492,20 @@ function spawnClaudeCli(prompt, { registerCancel }) {
   });
 }
 
-async function callBackendCli({ systemText, userText, schema, onDelta, registerCancel }) {
-  // 構造化出力APIは使えないため、スキーマをプロンプト末尾に埋め込む（§15.2）
-  const basePrompt = `${systemText}
+// 構造化出力APIは使えないため、スキーマをプロンプト末尾に埋め込む（§15.2。CLI系共通）
+function buildCliPrompt(systemText, userText, schema) {
+  return `${systemText}
 
 ${userText}
 
 ## 出力形式（厳守）
 出力は次のJSON Schemaに厳密に従うJSONのみを返すこと。コードフェンス（\`\`\`）や説明文は一切禁止。
 ${JSON.stringify(schema)}`;
+}
 
+// CLI系バックエンド共通のランナー: キュー・ハートビート・フェンス除去・パース失敗時1回リトライ（§15.2）
+async function runCliLikeBackend({ label, fetchText, usage }, { systemText, userText, schema, onDelta }) {
+  const basePrompt = buildCliPrompt(systemText, userText, schema);
   await acquireCliSlot();
   const startedAt = Date.now();
   const heartbeat = setInterval(() => {
@@ -1446,20 +1513,7 @@ ${JSON.stringify(schema)}`;
     onDelta(`（${sec}秒経過）`);
   }, 10 * 1000); // 進捗ハートビート: 10秒間隔+経過秒数（§15.5-4）
   try {
-    const runOnce = async (prompt) => {
-      const stdout = await spawnClaudeCli(prompt, { registerCancel });
-      let envelope;
-      try {
-        envelope = JSON.parse(stdout);
-      } catch {
-        throw userError("Claude Code CLI の応答エンベロープの解析に失敗しました。");
-      }
-      if (typeof envelope.result !== "string") {
-        throw userError("Claude Code CLI の応答に result フィールドがありません。");
-      }
-      return stripCodeFence(envelope.result);
-    };
-
+    const runOnce = async (prompt) => stripCodeFence(await fetchText(prompt));
     let text = await runOnce(basePrompt);
     try {
       JSON.parse(text);
@@ -1472,14 +1526,34 @@ ${JSON.stringify(schema)}`;
       try {
         JSON.parse(text);
       } catch {
-        throw userError("Claude Code CLI の出力をJSONとして解析できませんでした（リトライ後も失敗）。");
+        throw userError(`${label} の出力をJSONとして解析できませんでした（リトライ後も失敗）。`);
       }
     }
-    return { text, usage: { backend: "cli", model: CLI_MODEL } };
+    return { text, usage };
   } finally {
     clearInterval(heartbeat);
     releaseCliSlot();
   }
+}
+
+async function callBackendCli({ systemText, userText, schema, onDelta, registerCancel, mode }) {
+  const fetchText = async (prompt) => {
+    const stdout = await spawnClaudeCli(prompt, { registerCancel, mode });
+    let envelope;
+    try {
+      envelope = JSON.parse(stdout);
+    } catch {
+      throw userError("Claude Code CLI の応答エンベロープの解析に失敗しました。");
+    }
+    if (typeof envelope.result !== "string") {
+      throw userError("Claude Code CLI の応答に result フィールドがありません。");
+    }
+    return envelope.result;
+  };
+  return runCliLikeBackend(
+    { label: "Claude Code CLI", fetchText, usage: { backend: "cli", model: CLI_MODEL } },
+    { systemText, userText, schema, onDelta }
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1490,7 +1564,7 @@ async function runReal(body, res, aborted) {
   // フレームごとの個別呼び出しに分割する（1呼び出しの出力量・推論時間を分割）
   const effectiveMode = body.mode || "patch";
   if (
-    BACKEND === "cli" &&
+    BACKEND !== "api" &&
     effectiveMode === "patch" &&
     body.scope === "all" &&
     body.project.framesGrid.length > 1
@@ -1498,7 +1572,7 @@ async function runReal(body, res, aborted) {
     return runRealSplitAllFrames(body, res, aborted);
   }
   const schema = body.mode === "segment" ? SEGMENT_SCHEMA : body.mode === "palette" ? PALETTE_SCHEMA : body.mode === "style" ? STYLE_SCHEMA : PATCH_SCHEMA;
-  const includeImages = BACKEND !== "cli"; // §15.2: CLIモードは画像を渡さない
+  const includeImages = BACKEND === "api"; // §15.2: CLI系バックエンドは画像を渡さない
   const images = includeImages ? buildImages(body) : [];
   const userText = buildUserText(body);
 
@@ -1515,6 +1589,7 @@ async function runReal(body, res, aborted) {
       userText,
       images,
       schema,
+      mode: body.mode || "patch",
       onDelta: (delta) => { if (!aborted.value) sseSend(res, { type: "delta", text: delta }); },
       registerCancel: (fn) => cancelFns.push(fn),
     });
@@ -1541,7 +1616,7 @@ async function runReal(body, res, aborted) {
         const style = validateStyleResult(raw);
         sseSend(res, { type: "result", style, usage });
       } else {
-        const patch = validateAndClampPatch(raw, body);
+        const patch = validateAndClampPatch(offsetCropEdits(raw, body), body);
         sseSend(res, { type: "result", patch, usage });
       }
     } catch (err) {
@@ -1583,12 +1658,13 @@ async function runRealSplitAllFrames(body, res, aborted) {
       callBackend({
         systemText: systemPromptFor(body.project.palette.length),
         userText,
-        images: [], // 分割はCLIモードのみ = 画像なし
+        images: [], // 分割はCLI系モードのみ = 画像なし
         schema: PATCH_SCHEMA,
+        mode: "patch",
         onDelta: (delta) => { if (!aborted.value) sseSend(res, { type: "delta", text: delta }); },
         registerCancel: (fn) => cancelFns.push(fn),
       }).then(({ text }) => {
-        const raw = JSON.parse(text); // callBackendCli がパース可能性を保証（リトライ込み）
+        const raw = JSON.parse(text); // runCliLikeBackend がパース可能性を保証（リトライ込み）
         doneCount++;
         if (!aborted.value) sseSend(res, { type: "delta", text: `フレーム ${doneCount}/${frameCount} 完了` });
         return { frame: i, raw };
@@ -1639,7 +1715,7 @@ async function runRealSplitAllFrames(body, res, aborted) {
   try {
     const patch = validateAndClampPatch(mergedRaw, body);
     patch.warnings.push(...splitWarnings);
-    sseSend(res, { type: "result", patch, usage: { backend: "cli", model: CLI_MODEL, split: frameCount } });
+    sseSend(res, { type: "result", patch, usage: { backend: BACKEND, model: CLI_MODEL, split: frameCount } });
   } catch (err) {
     sseSend(res, { type: "error", message: `結果の検証に失敗しました: ${err.message}` });
   }
