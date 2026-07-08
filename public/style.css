@@ -716,7 +716,7 @@ aside, #canvasPanel {
 
 /* ---------- 変換スタジオ（§18.2） ---------- */
 .studio-modal { width: 900px; max-width: 96vw; }
-.studio-compare { display: flex; gap: 8px; height: 320px; }
+.studio-compare { display: flex; gap: 8px; height: 320px; flex-shrink: 0; }
 .studio-viewport {
   flex: 1;
   border: 1px solid var(--border);
@@ -736,6 +736,9 @@ aside, #canvasPanel {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 6px;
+  max-height: 300px;
+  overflow-y: auto;
+  flex-shrink: 0;
 }
 .studio-gallery:empty { display: none; }
 .cand-cell {
