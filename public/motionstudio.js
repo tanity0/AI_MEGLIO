@@ -103,6 +103,7 @@ export function initMotionStudio(store, toast) {
   const mirrorBtn = document.getElementById("mcMirrorBtn");
   const kitBtn = document.getElementById("mcKitBtn");
   const inboxBadge = document.getElementById("mcInboxBadge");
+  const totalInput = document.getElementById("mcTotalInput");
   const mergePanel = document.getElementById("mcMergePanel");
   const mergeTitle = document.getElementById("mcMergeTitle");
   const mergeChips = document.getElementById("mcMergeChips");
@@ -323,6 +324,7 @@ export function initMotionStudio(store, toast) {
       }
     }
     // §25.6-2: (a) 足元基準（最下段の非透明行を一致）(b) 水平は重心一致
+    // §25.9-1: シフト済みピクセルではなく「元配置+オフセット」を返す（ナッジをロスレスにするため）
     const stats = (pixels) => {
       let bottom = -1, sumX = 0, n = 0;
       for (let y = 0; y < p.height; y++) for (let x = 0; x < p.width; x++) {
@@ -336,8 +338,13 @@ export function initMotionStudio(store, toast) {
     const base = p.baseFrame || p.frames[0].pixels;
     const sb = stats(base);
     const sc = stats(full);
-    if (sc.n === 0) return full;
-    return shiftPixels(full, Math.round(sb.cx - sc.cx), sb.bottom - sc.bottom);
+    const offset = sc.n === 0 ? { dx: 0, dy: 0 } : { dx: Math.round(sb.cx - sc.cx), dy: sb.bottom - sc.bottom };
+    return { srcPixels: full, offset };
+  }
+
+  // §25.9-1: 画像候補のオフセットを元配置（srcPixels）から適用し直す（ナッジがロスレスになる）
+  function applyOffset(cand) {
+    cand.pixels = shiftPixels(cand.srcPixels, cand.offset.dx, cand.offset.dy);
   }
 
   function shiftPixels(pixels, dx, dy) {
@@ -390,6 +397,12 @@ export function initMotionStudio(store, toast) {
       return 0;
     }
     let startFrame;
+    // §25.9-3: シートのコマ数が N と不一致なら「フレーム数を合わせますか？」を自動提案
+    if (!session.confirmed && comps.length !== session.total && comps.length >= 1 && comps.length <= 12) {
+      if (window.confirm(`シートは${comps.length}コマです。ギャラリーのフレーム数を${comps.length}に合わせますか？`)) {
+        setTotal(comps.length, { force: true });
+      }
+    }
     if (Number.isInteger(opts.startFrame)) {
       startFrame = opts.startFrame; // §25.8: 自動取り込みはフレーム1から順に割り当て
     } else {
@@ -419,11 +432,12 @@ export function initMotionStudio(store, toast) {
         toast(`コマ${k + 1}の変換に失敗: ${err.message}`, "error");
         continue;
       }
-      const pixels = snapAndAlign(conv);
+      const { srcPixels, offset } = snapAndAlign(conv);
       const cand = {
         id: session.nextId++, status: "ok", variant: session.cands[fi].length,
-        source: "image", snapped: true, aligned: true, pixels,
+        source: "image", snapped: true, aligned: true, srcPixels, offset,
       };
+      applyOffset(cand); // §25.9-1: pixels = srcPixels + offset（ナッジで再適用）
       session.cands[fi].push(cand);
       added++;
     }
@@ -754,6 +768,21 @@ export function initMotionStudio(store, toast) {
       adoptBtn.textContent = session.adopted[i] === cand ? "採用中" : "採用";
       adoptBtn.addEventListener("click", () => adopt(i, cand));
       row.appendChild(adoptBtn);
+      // §25.9-2: フレーム列移動
+      const mvL = document.createElement("button");
+      mvL.className = "btn btn-small";
+      mvL.textContent = "◀列";
+      mvL.title = "前のフレーム列へ移動";
+      mvL.disabled = i === 0;
+      mvL.addEventListener("click", () => moveCand(i, cand, i - 1));
+      row.appendChild(mvL);
+      const mvR = document.createElement("button");
+      mvR.className = "btn btn-small";
+      mvR.textContent = "列▶";
+      mvR.title = "次のフレーム列へ移動";
+      mvR.disabled = i === session.total - 1;
+      mvR.addEventListener("click", () => moveCand(i, cand, i + 1));
+      row.appendChild(mvR);
       if (cand.source === "grid") {
         const redo = document.createElement("button");
         redo.className = "btn btn-small";
@@ -792,7 +821,10 @@ export function initMotionStudio(store, toast) {
           b.textContent = label;
           b.title = "位置を1pxナッジ";
           b.addEventListener("click", () => {
-            cand.pixels = shiftPixels(cand.pixels, dx, dy);
+            // §25.9-1: オフセット方式（元配置から再適用）— 端で切れたピクセルも戻せばロスレス復元
+            cand.offset.dx += dx;
+            cand.offset.dy += dy;
+            applyOffset(cand);
             renderCell(i, cand);
           });
           nudge.appendChild(b);
@@ -844,6 +876,47 @@ export function initMotionStudio(store, toast) {
     updateConfirmState();
   }
 
+  // §25.9-3: ギャラリーでフレーム数 N を直接変更（増=空列追加 / 減=末尾を畳む・候補あり列は確認）
+  function setTotal(n, opts = {}) {
+    if (!session || session.confirmed) return false;
+    n = Math.max(1, Math.min(12, Math.round(n)));
+    if (n === session.total) {
+      totalInput.value = String(n);
+      return true;
+    }
+    if (n < session.total) {
+      const hasCands = session.cands.slice(n).some((list) => list.length > 0);
+      if (hasCands && !opts.force
+        && !window.confirm(`フレーム${n + 1}〜${session.total}の候補は削除されます。フレーム数を${n}にしますか？`)) {
+        totalInput.value = String(session.total);
+        return false;
+      }
+      session.cands.length = n;
+      session.adopted.length = n;
+    } else {
+      while (session.cands.length < n) {
+        session.cands.push([]);
+        session.adopted.push(null);
+      }
+    }
+    session.total = n;
+    totalInput.value = String(n);
+    renderGrid();
+    if (inflight === 0) setIdleProgress();
+    return true;
+  }
+
+  // §25.9-2: 候補のフレーム列移動（採用は列ごとに1つの原則のまま・移動元の採用は解除）
+  function moveCand(i, cand, j) {
+    if (!session || j < 0 || j >= session.total || j === i) return;
+    session.cands[i] = session.cands[i].filter((c) => c !== cand);
+    if (session.adopted[i] === cand) session.adopted[i] = null;
+    cand.variant = session.cands[j].length;
+    session.cands[j].push(cand);
+    renderGrid();
+    if (inflight === 0) setIdleProgress();
+  }
+
   function adopt(i, cand) {
     if (cand.status !== "ok") return;
     session.adopted[i] = session.adopted[i] === cand ? null : cand; // 再クリックで解除
@@ -873,9 +946,18 @@ export function initMotionStudio(store, toast) {
         ctx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
         return;
       }
-      previewIdx = (previewIdx + 1) % frames.length;
-      const tmp = { width: p.width, height: p.height, palette: p.palette, frames: [{ pixels: frames[previewIdx].pixels }] };
-      drawFrameToContext(ctx, tmp, 0, sc);
+      // §25.9-4: ピンポンは往復シーケンス（端重複なし: 0,1,2,3,2,1,…）
+      if ((p.playMode || "loop") === "pingpong" && frames.length > 1) {
+        const cycle = frames.length * 2 - 2;
+        previewIdx = (previewIdx + 1) % cycle;
+        const k = previewIdx < frames.length ? previewIdx : cycle - previewIdx;
+        const tmp = { width: p.width, height: p.height, palette: p.palette, frames: [{ pixels: frames[k].pixels }] };
+        drawFrameToContext(ctx, tmp, 0, sc);
+      } else {
+        previewIdx = (previewIdx + 1) % frames.length;
+        const tmp = { width: p.width, height: p.height, palette: p.palette, frames: [{ pixels: frames[previewIdx].pixels }] };
+        drawFrameToContext(ctx, tmp, 0, sc);
+      }
     }, 1000 / Math.max(1, project().fps));
   }
   function stopPreview() {
@@ -896,6 +978,7 @@ export function initMotionStudio(store, toast) {
     store.state.activeTagIndex = p.tags.indexOf(tag);
     session.confirmed = true;
     session.insertedAt = start;
+    totalInput.disabled = true; // §25.9-3: 確定後の N 変更は不可
     store.clampAfterProjectChange();
     store.state.currentFrame = start;
     store.notify();
@@ -943,6 +1026,7 @@ export function initMotionStudio(store, toast) {
   });
   mirrorBtn.addEventListener("click", mirrorComplete);
   kitBtn.addEventListener("click", exportKit);
+  totalInput.addEventListener("change", () => setTotal(Number(totalInput.value)));
   abortBtn.addEventListener("click", () => {
     if (abortController) abortController.abort();
   });
@@ -987,6 +1071,8 @@ export function initMotionStudio(store, toast) {
     };
     confirmedBar.hidden = true;
     confirmedBar.innerHTML = "";
+    totalInput.value = String(total);
+    totalInput.disabled = false;
     modal.hidden = false;
     abortController = new AbortController();
     for (let i = 0; i < total; i++) {

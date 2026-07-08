@@ -228,18 +228,37 @@ export function initTimeline(store, toast) {
     const p = project();
     store.state.timelinePlaying = true;
     playBtn.textContent = "■ 停止";
+    let dir = 1; // §25.9-4: ピンポン用の進行方向
     const tick = () => {
       const pp = project();
       const t = activeTag();
       const start = t ? t.start : 0;
       const end = t ? Math.min(t.end, pp.frames.length - 1) : pp.frames.length - 1;
-      let next = store.state.currentFrame + 1;
-      if (next > end || next < start) next = start;
+      let next;
+      if ((pp.playMode || "loop") === "pingpong" && end > start) {
+        // 端フレームを重複させない往復（start..end..start+1..）
+        next = store.state.currentFrame + dir;
+        if (next > end) { dir = -1; next = end - 1; }
+        else if (next < start) { dir = 1; next = start + 1; }
+      } else {
+        dir = 1;
+        next = store.state.currentFrame + 1;
+        if (next > end || next < start) next = start;
+      }
       store.state.currentFrame = next;
       store.notify();
     };
     playTimer = setInterval(tick, Math.max(1000 / Math.max(1, playFps()), 16));
   }
+  // §25.9-4: 再生モード（プロジェクト単位で保存・GIFピンポンチェックにも同期）
+  const playModeSelect = document.getElementById("playModeSelect");
+  playModeSelect.addEventListener("change", () => {
+    project().playMode = playModeSelect.value === "pingpong" ? "pingpong" : "loop";
+    const chk = document.getElementById("gifPingpongChk");
+    if (chk) chk.checked = project().playMode === "pingpong";
+    store.notify();
+  });
+
   playBtn.addEventListener("click", () => {
     if (store.state.timelinePlaying) stopPlay();
     else startPlay();
@@ -267,6 +286,7 @@ export function initTimeline(store, toast) {
       if (store.state.timelinePlaying) { stopPlay(); startPlay(); }
     }
     fpsInput.value = String(p.fps);
+    playModeSelect.value = p.playMode === "pingpong" ? "pingpong" : "loop"; // §25.9-4
 
     renderTags();
 

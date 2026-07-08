@@ -80,6 +80,12 @@ function bitsForColorCount(n) {
  * project: { width, height, fps, palette: [hex,...], frames: [{pixels:Uint8Array}] }
  * 戻り値: Uint8Array（GIF89aバイナリ）
  */
+// §25.9-4: ピンポン（往復）展開 — 端フレームを重複させない（4Fなら 1,2,3,4,3,2 の 2N-2 枚）
+export function pingpongFrames(frames) {
+  if (!Array.isArray(frames) || frames.length <= 2) return frames ? frames.slice() : [];
+  return frames.concat(frames.slice(1, -1).reverse());
+}
+
 export function encodeGif(project) {
   const { width, height, fps, palette, frames } = project;
   if (!width || !height || !frames || !frames.length) throw new Error("不正なプロジェクトです");

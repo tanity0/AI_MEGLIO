@@ -2,7 +2,7 @@
 import { initEditor } from "./editor.js";
 import { initTimeline } from "./timeline.js";
 import { initAi } from "./ai.js";
-import { encodeGif } from "./gif.js";
+import { encodeGif, pingpongFrames } from "./gif.js";
 import { importImageFile, probeImage } from "./import.js";
 import { initRig, PART_ROLES } from "./rig.js";
 import { initGameExport, initGameView } from "./gameexport.js";
@@ -330,6 +330,7 @@ export function cloneProject(project) {
     sourceImage: typeof project.sourceImage === "string" ? project.sourceImage : null,
     conversionParams: project.conversionParams ? JSON.parse(JSON.stringify(project.conversionParams)) : null,
     mainPalette: project.mainPalette ? { colors: project.mainPalette.colors.slice(), groups: project.mainPalette.groups.slice() } : null,
+    playMode: project.playMode === "pingpong" ? "pingpong" : "loop", // §25.9-4
   };
 }
 export function projectToPlain(project) {
@@ -349,6 +350,7 @@ export function projectToPlain(project) {
     sourceImage: typeof project.sourceImage === "string" ? project.sourceImage : null,
     conversionParams: project.conversionParams ? JSON.parse(JSON.stringify(project.conversionParams)) : null,
     mainPalette: project.mainPalette ? { colors: project.mainPalette.colors.slice(), groups: project.mainPalette.groups.slice() } : null,
+    playMode: project.playMode === "pingpong" ? "pingpong" : "loop", // §25.9-4
   };
 }
 function rigFromPlain(raw, width, height) {
@@ -443,6 +445,7 @@ export function projectFromPlain(o) {
     sourceImage: typeof o.sourceImage === "string" && o.sourceImage.startsWith("data:image/") ? o.sourceImage : null,
     conversionParams: o.conversionParams && typeof o.conversionParams === "object" ? o.conversionParams : null,
     mainPalette: mainPaletteFromPlain(o.mainPalette, palette.length),
+    playMode: o.playMode === "pingpong" ? "pingpong" : "loop", // §25.9-4（未知値は loop）
   };
   // §16.1: 既存プロジェクト（tags無し）は「all」タグを自動生成
   const tags = tagsFromPlain(o.tags, project.frames.length, fps);
@@ -721,9 +724,11 @@ function initHeader() {
     try {
       const project = store.state.project;
       const tag = store.state.activeTagIndex >= 0 ? project.tags[store.state.activeTagIndex] : null;
-      const target = tag
-        ? { ...project, fps: tag.fps, frames: project.frames.slice(tag.start, tag.end + 1) }
-        : project;
+      let frames = tag ? project.frames.slice(tag.start, tag.end + 1) : project.frames;
+      // §25.9-4: ピンポン書き出し（フレーム列を往復展開。端重複なし = 2N-2 枚）
+      const pingpong = document.getElementById("gifPingpongChk")?.checked;
+      if (pingpong) frames = pingpongFrames(frames);
+      const target = { ...project, fps: tag ? tag.fps : project.fps, frames };
       const bytes = encodeGif(target);
       const name = tag ? `ai-meglio_${tag.name}.gif` : "ai-meglio.gif";
       downloadBlob(new Blob([bytes], { type: "image/gif" }), name);

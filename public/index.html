@@ -27,6 +27,7 @@
     </label>
     <button id="exportPngBtn" class="btn" title="スプライトシートPNGを書き出し">PNG書き出し</button>
     <button id="exportGifBtn" class="btn btn-accent" title="アニメーションGIFを書き出し">GIF書き出し</button>
+    <label class="check-row inline" title="GIFのフレーム列を往復展開して書き出す（端の重複なし）"><input type="checkbox" id="gifPingpongChk"> ピンポン</label>
   </div>
 </header>
 
@@ -361,6 +362,12 @@
     <span class="sep"></span>
     <label class="fps-row">fps<input type="number" id="fpsInput" min="1" max="24" value="8"></label>
     <button id="playBtn" class="btn btn-small">▶ 再生</button>
+    <label class="form-row inline" data-help="play.mode">再生
+      <select id="playModeSelect">
+        <option value="loop" selected>通常</option>
+        <option value="pingpong">ピンポン</option>
+      </select>
+    </label>
   </div>
   </div>
 </footer>
@@ -410,6 +417,7 @@
       <div class="mc-head-actions">
         <span class="mc-preview-wrap"><canvas id="mcPreviewCanvas" width="64" height="64" title="採用中セットの連続再生（プロジェクトfps）"></canvas></span>
         <span id="mcProgress" class="ai-progress" aria-live="polite"></span>
+        <label class="form-row inline" title="フレーム数（増=空列追加・減=末尾列を畳む）">N <input id="mcTotalInput" type="number" min="1" max="12" value="4" style="width:52px"></label>
         <button id="mcKitBtn" class="btn btn-small" title="ChatGPT への依頼キット（参照PNG+依頼文）を gpt-exchange/out/ に書き出し、依頼文をクリップボードへコピー（§25.6/§25.8）">GPT用依頼キットを書き出し</button>
         <button id="mcImageBtn" class="btn btn-small" title="画像ファイル（単発またはシート）をパレットスナップ+足元/重心整列して候補に追加（§25.6）">画像から候補追加</button>
         <input id="mcImageInput" type="file" accept="image/*" hidden>
