@@ -106,6 +106,22 @@ export function initEditor(store, toast) {
   // ---------------------------------------------------------------------
   // マウス操作
   // ---------------------------------------------------------------------
+  // ペンの長押しスポイト（0.7秒静止で発動、離すと色を拾ってペンに戻る）
+  const HOLD_EYEDROP_MS = 700;
+  let holdTimer = null;
+  let holdEyedrop = false;
+  let holdStartCell = null;
+  function clearHoldTimer() {
+    if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
+  }
+  function pickColorAt(x, y) {
+    const p = project();
+    const frameIndex = store.state.currentFrame;
+    if (!inBounds(x, y)) return;
+    store.state.colorIndex = p.frames[frameIndex].pixels[y * p.width + x];
+    store.notify();
+  }
+
   // 空き領域の左ドラッグ / どこでも中ボタンドラッグで表示位置をパン
   let panning = null;
   wrap.addEventListener("pointerdown", (ev) => {
@@ -131,9 +147,30 @@ export function initEditor(store, toast) {
     const { x, y } = cellFromEvent(ev);
     const tool = store.state.tool;
     const frameIndex = store.state.currentFrame;
+
+    // Alt+クリック = どのツールでも即スポイト
+    if (ev.altKey && (tool === "pen" || tool === "eraser" || tool === "fill")) {
+      pickColorAt(x, y);
+      return;
+    }
+
     dragging = true;
     dragTool = tool;
     lastPaintedCell = null;
+
+    if (tool === "pen") {
+      // 長押しスポイト: 0.7秒同じセルで静止したら、打った点を取り消してスポイトモードへ
+      holdStartCell = `${x},${y}`;
+      clearHoldTimer();
+      holdTimer = setTimeout(() => {
+        if (!dragging || dragTool !== "pen" || lastPaintedCell !== holdStartCell) return;
+        store.undo();
+        store.redoStack.pop(); // 取り消した1点をやり直し履歴に残さない
+        holdEyedrop = true;
+        dragTool = null;
+        canvas.style.cursor = "copy";
+      }, HOLD_EYEDROP_MS);
+    }
 
     if (tool === "pen" || tool === "eraser") {
       store.pushUndo();
@@ -165,6 +202,7 @@ export function initEditor(store, toast) {
     if (!dragging) return;
     const { x, y } = cellFromEvent(ev);
     const frameIndex = store.state.currentFrame;
+    if (holdTimer && `${x},${y}` !== holdStartCell) clearHoldTimer();
     if (dragTool === "pen" || dragTool === "eraser") {
       const key = `${x},${y}`;
       if (key !== lastPaintedCell) {
@@ -178,7 +216,14 @@ export function initEditor(store, toast) {
     }
   });
 
-  window.addEventListener("mouseup", () => {
+  window.addEventListener("mouseup", (ev) => {
+    clearHoldTimer();
+    if (holdEyedrop) {
+      const { x, y } = cellFromEvent(ev);
+      pickColorAt(x, y);
+      holdEyedrop = false;
+      canvas.style.cursor = "";
+    }
     dragging = false;
     dragTool = null;
     dragStart = null;
