@@ -880,3 +880,11 @@ aside, #canvasPanel {
 .mc-confirmed[hidden] { display: none; }
 .mc-badge { font-size: 10px; color: var(--text-1); }
 .mc-inbox-badge { font-size: 11px; color: var(--accent); border: 1px solid var(--accent); border-radius: 8px; padding: 1px 6px; }
+/* §25.7 差分採用マージ */
+.mc-merge { border: 1px solid var(--border); border-radius: 6px; padding: 6px; margin: 6px 0; display: flex; flex-direction: column; gap: 6px; }
+.mc-merge[hidden] { display: none; }
+.mc-merge-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; }
+.mc-merge-chips { display: flex; gap: 4px; flex-wrap: wrap; }
+.mc-chip { border-width: 2px; }
+.mc-merge-canvas-wrap { overflow: auto; max-height: 60vh; }
+.mc-merge-canvas-wrap canvas { image-rendering: pixelated; cursor: crosshair; }

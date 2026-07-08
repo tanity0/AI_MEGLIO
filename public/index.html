@@ -420,6 +420,19 @@
       </div>
     </div>
     <div id="mcConfirmedBar" class="mc-confirmed" hidden></div>
+    <div id="mcMergePanel" class="mc-merge" hidden>
+      <div class="mc-merge-head">
+        <strong id="mcMergeTitle"></strong>
+        <span class="hint">塊をクリック（またはチップ）で採用/却下。細かい調整はブラシで</span>
+        <label class="check-row inline"><input type="checkbox" id="mcMergeBrush"> ブラシ</label>
+        <label class="radio-row inline"><input type="radio" name="mcBrushMode" value="add" checked> 足す</label>
+        <label class="radio-row inline"><input type="radio" name="mcBrushMode" value="del"> 引く</label>
+        <button id="mcMergeApply" class="btn btn-small btn-accent">適用</button>
+        <button id="mcMergeCancel" class="btn btn-small">キャンセル</button>
+      </div>
+      <div id="mcMergeChips" class="mc-merge-chips"></div>
+      <div class="mc-merge-canvas-wrap"><canvas id="mcMergeCanvas"></canvas></div>
+    </div>
     <div id="mcGrid" class="mc-grid"></div>
   </div>
 </div>

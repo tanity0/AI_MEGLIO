@@ -18,6 +18,75 @@ import {
 
 const PRESET_LABELS = { walk: "歩き", run: "走り", attack: "攻撃", idle: "待機", jump: "ジャンプ", custom: "カスタム" };
 
+// §25.7-2: セル差分を8近傍の連結成分（塊）に分割し、少数セルの飛び地は近接統合する。
+// 純関数（数値検証用に export）。戻り値: [{ cells:[index...], count, bbox:{x0,y0,x1,y1} }...]（セル数降順）
+export function diffBlobs(ref, cand, width, height, opts = {}) {
+  const minCells = opts.minCells ?? 8;   // これ未満の塊は「飛び地」候補
+  const mergeDist = opts.mergeDist ?? 6; // bbox間チェビシェフ距離がこれ以内なら近接統合
+  const labels = new Int32Array(width * height).fill(-1);
+  let blobs = [];
+  for (let start = 0; start < width * height; start++) {
+    if (labels[start] !== -1 || ref[start] === cand[start]) continue;
+    const cells = [];
+    const stack = [start];
+    labels[start] = blobs.length;
+    let x0 = width, y0 = height, x1 = -1, y1 = -1;
+    while (stack.length) {
+      const idx = stack.pop();
+      const x = idx % width, y = (idx / width) | 0;
+      cells.push(idx);
+      if (x < x0) x0 = x; if (x > x1) x1 = x;
+      if (y < y0) y0 = y; if (y > y1) y1 = y;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (!dx && !dy) continue;
+          const nx = x + dx, ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+          const ni = ny * width + nx;
+          if (labels[ni] === -1 && ref[ni] !== cand[ni]) {
+            labels[ni] = labels[idx];
+            stack.push(ni);
+          }
+        }
+      }
+    }
+    blobs.push({ cells, count: cells.length, bbox: { x0, y0, x1, y1 } });
+  }
+  // 近接統合: 小塊を、bbox距離 mergeDist 以内で最も大きい他の塊へ吸収
+  const gap = (a, b) => Math.max(
+    Math.max(a.bbox.x0 - b.bbox.x1, b.bbox.x0 - a.bbox.x1, 0),
+    Math.max(a.bbox.y0 - b.bbox.y1, b.bbox.y0 - a.bbox.y1, 0),
+  );
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let i = 0; i < blobs.length; i++) {
+      if (blobs[i].count >= minCells) continue;
+      let best = -1, bestCount = -1;
+      for (let j = 0; j < blobs.length; j++) {
+        if (j === i || blobs[j].count <= blobs[i].count) continue;
+        if (gap(blobs[i], blobs[j]) <= mergeDist && blobs[j].count > bestCount) {
+          best = j; bestCount = blobs[j].count;
+        }
+      }
+      if (best >= 0) {
+        const a = blobs[best], b = blobs[i];
+        a.cells = a.cells.concat(b.cells);
+        a.count = a.cells.length;
+        a.bbox = {
+          x0: Math.min(a.bbox.x0, b.bbox.x0), y0: Math.min(a.bbox.y0, b.bbox.y0),
+          x1: Math.max(a.bbox.x1, b.bbox.x1), y1: Math.max(a.bbox.y1, b.bbox.y1),
+        };
+        blobs.splice(i, 1);
+        changed = true;
+        break;
+      }
+    }
+  }
+  blobs.sort((a, b) => b.count - a.count);
+  return blobs;
+}
+
 export function initMotionStudio(store, toast) {
   const modal = document.getElementById("mcModal");
   const grid = document.getElementById("mcGrid");
@@ -34,6 +103,13 @@ export function initMotionStudio(store, toast) {
   const mirrorBtn = document.getElementById("mcMirrorBtn");
   const kitBtn = document.getElementById("mcKitBtn");
   const inboxBadge = document.getElementById("mcInboxBadge");
+  const mergePanel = document.getElementById("mcMergePanel");
+  const mergeTitle = document.getElementById("mcMergeTitle");
+  const mergeChips = document.getElementById("mcMergeChips");
+  const mergeCanvas = document.getElementById("mcMergeCanvas");
+  const mergeBrush = document.getElementById("mcMergeBrush");
+  const mergeApplyBtn = document.getElementById("mcMergeApply");
+  const mergeCancelBtn = document.getElementById("mcMergeCancel");
   const motionPreset = document.getElementById("motionPreset");
   const motionCustomText = document.getElementById("motionCustomText");
   const motionFrames = document.getElementById("motionFrames");
@@ -359,6 +435,181 @@ export function initMotionStudio(store, toast) {
   }
 
   // ---------------------------------------------------------------------
+  // §25.7: 差分採用マージ — 候補の変化を塊ごとに選んで取り込む
+  // ---------------------------------------------------------------------
+  const MERGE_HUES = [200, 30, 300, 120, 0, 60, 260, 170];
+  let merge = null; // { i, cand, ref, refKind, blobs, adopted:Set, mask:Uint8Array }
+
+  function basePixels() {
+    const p = project();
+    return p.baseFrame || p.frames[0].pixels;
+  }
+
+  function openMerge(i, cand) {
+    const p = project();
+    // §25.7-6: スナップなし候補では適用不可（パレット整合が前提）
+    if (cand.snapped === false) {
+      toast("この候補はパレットスナップされていないため差分採用マージは使えません", "error");
+      return;
+    }
+    // 比較先 = そのフレームの現在値: 確定済みなら確定フレーム、選別中は採用中候補、無ければベース
+    let ref, refKind;
+    if (session.confirmed && session.insertedAt !== null && p.frames[session.insertedAt + i]) {
+      ref = p.frames[session.insertedAt + i].pixels;
+      refKind = "frame";
+    } else if (session.adopted[i] && session.adopted[i] !== cand) {
+      ref = session.adopted[i].pixels;
+      refKind = "adopted";
+    } else {
+      ref = basePixels();
+      refKind = "base";
+    }
+    const blobs = diffBlobs(ref, cand.pixels, p.width, p.height);
+    if (!blobs.length) {
+      toast("この候補と比較先に差分がありません", "error");
+      return;
+    }
+    merge = {
+      i, cand, refKind,
+      ref: Uint8Array.from(ref),
+      blobs,
+      adopted: new Set(),
+      mask: new Uint8Array(p.width * p.height),
+    };
+    const refLabel = refKind === "adopted" ? "採用中の候補" : refKind === "frame" ? `確定済みフレーム${session.insertedAt + i}` : "ベースフレーム";
+    mergeTitle.textContent = `差分採用マージ — フレーム${i + 1}の候補 vs ${refLabel}（${blobs.length}塊）`;
+    mergeBrush.checked = false;
+    mergePanel.hidden = false;
+    renderMerge();
+  }
+
+  function mergeComposite() {
+    const cand = merge.cand.pixels;
+    const out = Uint8Array.from(merge.ref);
+    for (let i = 0; i < out.length; i++) if (merge.mask[i]) out[i] = cand[i];
+    return out;
+  }
+
+  function renderMerge() {
+    if (!merge) return;
+    const p = project();
+    const sc = Math.max(3, Math.min(8, Math.floor(560 / Math.max(p.width, p.height))));
+    merge.sc = sc;
+    mergeCanvas.width = p.width * sc;
+    mergeCanvas.height = p.height * sc;
+    const ctx = mergeCanvas.getContext("2d");
+    // §25.7-3: 採用中の見た目は合成プレビューで常時反映
+    const tmp = { width: p.width, height: p.height, palette: p.palette, frames: [{ pixels: mergeComposite() }] };
+    drawFrameToContext(ctx, tmp, 0, sc);
+    // 非採用の塊は色付きオーバーレイ、採用中の塊は枠のみ
+    merge.blobs.forEach((blob, k) => {
+      const hue = MERGE_HUES[k % MERGE_HUES.length];
+      if (merge.adopted.has(k)) {
+        ctx.strokeStyle = `hsl(${hue}, 90%, 60%)`;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(blob.bbox.x0 * sc + 1, blob.bbox.y0 * sc + 1, (blob.bbox.x1 - blob.bbox.x0 + 1) * sc - 2, (blob.bbox.y1 - blob.bbox.y0 + 1) * sc - 2);
+      } else {
+        ctx.fillStyle = `hsla(${hue}, 90%, 60%, 0.4)`;
+        for (const idx of blob.cells) {
+          ctx.fillRect((idx % p.width) * sc, ((idx / p.width) | 0) * sc, sc, sc);
+        }
+      }
+    });
+    // チップ（塊A 214セル）
+    mergeChips.innerHTML = "";
+    merge.blobs.forEach((blob, k) => {
+      const b = document.createElement("button");
+      b.className = "btn btn-small mc-chip" + (merge.adopted.has(k) ? " btn-accent" : "");
+      b.style.borderColor = `hsl(${MERGE_HUES[k % MERGE_HUES.length]}, 90%, 60%)`;
+      b.textContent = `塊${String.fromCharCode(65 + (k % 26))} ${blob.count}セル`;
+      b.addEventListener("click", () => toggleBlob(k));
+      mergeChips.appendChild(b);
+    });
+  }
+
+  function toggleBlob(k) {
+    if (!merge) return;
+    const blob = merge.blobs[k];
+    if (merge.adopted.has(k)) {
+      merge.adopted.delete(k);
+      for (const idx of blob.cells) merge.mask[idx] = 0;
+    } else {
+      merge.adopted.add(k);
+      for (const idx of blob.cells) merge.mask[idx] = 1;
+    }
+    renderMerge();
+  }
+
+  // 塊クリック採用 / ブラシ加減（足す=候補のセルを取り込む・引く=外す）
+  let mergeDrag = false;
+  function mergeCellFromEvent(ev) {
+    const r = mergeCanvas.getBoundingClientRect();
+    const p = project();
+    const x = Math.floor((ev.clientX - r.left) / merge.sc);
+    const y = Math.floor((ev.clientY - r.top) / merge.sc);
+    if (x < 0 || y < 0 || x >= p.width || y >= p.height) return -1;
+    return y * p.width + x;
+  }
+  function brushMode() {
+    return document.querySelector('input[name="mcBrushMode"]:checked')?.value || "add";
+  }
+  mergeCanvas.addEventListener("mousedown", (ev) => {
+    if (!merge) return;
+    const idx = mergeCellFromEvent(ev);
+    if (idx < 0) return;
+    if (mergeBrush.checked) {
+      mergeDrag = true;
+      merge.mask[idx] = brushMode() === "add" ? 1 : 0;
+      renderMerge();
+    } else {
+      const k = merge.blobs.findIndex((b) => b.cells.includes(idx));
+      if (k >= 0) toggleBlob(k);
+    }
+  });
+  window.addEventListener("mousemove", (ev) => {
+    if (!merge || !mergeDrag) return;
+    const idx = mergeCellFromEvent(ev);
+    if (idx < 0) return;
+    merge.mask[idx] = brushMode() === "add" ? 1 : 0;
+    renderMerge();
+  });
+  window.addEventListener("mouseup", () => { mergeDrag = false; });
+
+  mergeApplyBtn.addEventListener("click", () => {
+    if (!merge) return;
+    const p = project();
+    const adoptedCells = merge.mask.reduce((a, v) => a + v, 0);
+    if (adoptedCells === 0) {
+      toast("採用中の塊（またはブラシ加算）がありません", "error");
+      return;
+    }
+    const composite = mergeComposite();
+    if (merge.refKind === "frame") {
+      // 確定済みフレームへ直接適用（アンドゥ対象）
+      store.pushUndo();
+      p.frames[session.insertedAt + merge.i].pixels = composite;
+      store.notify();
+      toast(`確定済みフレーム${session.insertedAt + merge.i}へ採用塊（${adoptedCells}セル）を取り込みました（Ctrl+Zで戻せます）`);
+    } else {
+      // 選別中: 取り込み結果を新しい候補として作成し採用
+      const cand = {
+        id: session.nextId++, status: "ok", variant: session.cands[merge.i].length,
+        source: "merge", snapped: true, pixels: composite,
+      };
+      session.cands[merge.i].push(cand);
+      session.adopted[merge.i] = cand;
+      renderGrid();
+      toast(`採用塊（${adoptedCells}セル）だけ取り込んだ候補を作成し採用しました`);
+    }
+    merge = null;
+    mergePanel.hidden = true;
+  });
+  mergeCancelBtn.addEventListener("click", () => {
+    merge = null;
+    mergePanel.hidden = true;
+  });
+
+  // ---------------------------------------------------------------------
   // §25.6-4.5/§25.8: GPT依頼キット（out/ へ reference.png + prompt.txt・依頼文はクリップボードにも）
   // ---------------------------------------------------------------------
   async function exportKit() {
@@ -515,6 +766,12 @@ export function initMotionStudio(store, toast) {
         });
         row.appendChild(redo);
       }
+      const mg = document.createElement("button");
+      mg.className = "btn btn-small";
+      mg.textContent = "差分採用";
+      mg.title = "この候補の変化を塊ごとに選んで取り込む（§25.7）";
+      mg.addEventListener("click", () => openMerge(i, cand));
+      row.appendChild(mg);
       const del = document.createElement("button");
       del.className = "btn btn-small";
       del.textContent = "削除";
@@ -668,6 +925,8 @@ export function initMotionStudio(store, toast) {
   // 開閉・中断
   // ---------------------------------------------------------------------
   function closeModal() {
+    merge = null;
+    mergePanel.hidden = true;
     if (abortController) abortController.abort();
     abortController = null;
     inflight = 0;
@@ -687,6 +946,18 @@ export function initMotionStudio(store, toast) {
   abortBtn.addEventListener("click", () => {
     if (abortController) abortController.abort();
   });
+
+  // 検証用フック（§25.7-6 の「スナップなし候補では適用不可」等をテストから注入するため）
+  modal.__mcTest = {
+    getSession: () => session,
+    addCandidate(i, cand) {
+      if (!session) return null;
+      const c = { id: session.nextId++, status: "ok", variant: session.cands[i].length, source: "image", ...cand };
+      session.cands[i].push(c);
+      renderGrid();
+      return c.id;
+    },
+  };
 
   generateBtn.addEventListener("click", () => {
     const p = project();
