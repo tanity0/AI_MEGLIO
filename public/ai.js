@@ -768,6 +768,7 @@ export function initAi(store, toast) {
   let previewFrame = 0;
   let previewAcc = 0;
   let lastTs = null;
+  let previewDir = 1; // pingpong用の進行方向
 
   function sizePreviewCanvas() {
     const p = store.state.project;
@@ -802,9 +803,15 @@ export function initAi(store, toast) {
     const frameDuration = 1000 / Math.max(1, fps);
     while (previewAcc >= frameDuration) {
       previewAcc -= frameDuration;
-      previewFrame = previewFrame + 1 > end || previewFrame + 1 < start ? start : previewFrame + 1;
+      if (p.playMode === "pingpong" && end > start) {
+        // 往復: 端のフレームは重複させない（§25.9-4）
+        previewDir = previewFrame >= end ? -1 : previewFrame <= start ? 1 : previewDir;
+        previewFrame += previewDir;
+      } else {
+        previewFrame = previewFrame + 1 > end || previewFrame + 1 < start ? start : previewFrame + 1;
+      }
     }
-    if (previewFrame < start || previewFrame > end) previewFrame = start;
+    if (previewFrame < start || previewFrame > end) { previewFrame = start; previewDir = 1; }
     const ctx = previewCanvas.getContext("2d");
     const smoothToggle = document.getElementById("previewSmoothToggle");
     if (smoothToggle && smoothToggle.checked) {
