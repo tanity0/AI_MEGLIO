@@ -785,6 +785,16 @@ Windows実機での検証結果（1セル修正=約18秒で成功 / 「キャラ
 - 実 codex はこのクラウド環境では認証できないため（ChatGPTログインが必要）、実機確認はユーザーのPCで行う。可能なら `npm i -g @openai/codex` だけ行い `codex exec --help` でフラグ名の実在を確認する（ネットワーク不可ならスキップし、その旨をレポート）。
 - BACKEND=cli / api / MOCK の退行なし。
 
+### 23.4 Windows 実機フィードバック対応（spawn EPERM）
+
+Windows実機で BACKEND=codex 実行時に「spawn EPERM」。原因: npm グローバルインストールの `codex` の実体は `codex.cmd`（バッチシム）で、Node の `spawn` は `.cmd`/`.bat` を直接起動できない（Node のセキュリティ修正以降 EINVAL/EPERM になる）。対応:
+
+1. **シム自動対応**: 起動コマンド（CODEX_PATH / CLI_PATH の解決結果）が `.cmd` / `.bat` で終わる場合、Windows では `cmd.exe /d /s /c ""<path>" <args...>"` 形式で起動する（各引数はスペースを含む場合に二重引用符で囲む。プロンプトは従来どおり stdin 渡しなのでエスケープ面積は小さい）。それ以外は従来どおり直接 spawn。
+2. **EPERM/EINVAL のエラーメッセージ改善**: spawn エラーが EPERM または EINVAL のとき、「Windows では npm 版 codex/claude の実体が .cmd シムのため直接起動できないことが原因の可能性が高い。CODEX_PATH（または CLI_PATH）に .cmd のフルパスか、実体の .exe（`npm root -g` 配下の @openai/codex 内の *.exe）を設定してください。ウイルス対策ソフトのブロックの可能性もあります」というガイダンスを返す。
+3. README の codex セットアップに Windows 注記を追記（CODEX_PATH の探し方: PowerShell で `Get-Command codex` の Source、それが .cmd の場合はそのままでよい（サーバーがシム対応する）こと、実体 .exe を直接指定する選択肢）。
+
+検証: ダミー .cmd シム（`fake-codex.cmd` → node スクリプトを呼ぶ）を CODEX_PATH に指定して Linux では検証できないため、シム判定と cmd.exe 引数組み立てを単体関数に切り出して**引数組み立ての文字列をユニットテスト**（スペース入りパス・二重引用符の位置）。EPERM を人工的に投げるダミーで新ガイダンス文言。非 Windows 経路の退行なし。
+
 ## 将来メモ（未設計・アイデア置き場）
 
 - **ChatGPT Apps（Apps SDK）への埋め込み**: ChatGPT のサブスクリプション内で GPT-5.5 系モデルを推論に使う案。実現には (a) 本ツールを公開 MCP サーバーとしてホスティングし OpenAI の審査を通す、(b) AI 操作をチャットターン駆動に作り替える（現行の SSE リアルタイム編集ループと相性が悪い）、(c) ローカル EXPORT_ROOT 連携（zombie リポジトリの public/sprites への直接書き出し）を放棄する、という大きなアーキテクチャ変更が必要。**当面は §23（Codex CLI バックエンド、`codex exec` 経由で ChatGPT サブスク認証のまま GPT モデルを使う）を優先**し、本案は Apps SDK のローカル実行・私的配布が緩和されたら再検討する。
