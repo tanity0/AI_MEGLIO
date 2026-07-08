@@ -2001,7 +2001,8 @@ async function handleRedrawFeedback(req, res) {
     comment: String(body.comment || ""),
     width: Number(body.width) || 0,
     height: Number(body.height) || 0,
-    appliedCells: Number(body.appliedCells) || 0,
+    writtenCells: Number(body.writtenCells) || 0, // §22.11-3
+    changedCells: Number(body.changedCells) || 0, // §22.11-3
     palette: Array.isArray(body.palette) ? body.palette.map(String) : [],
     warnings: Array.isArray(body.warnings) ? body.warnings.map(String) : [],
     jobs: body.jobs,

@@ -925,15 +925,18 @@ export function initRig(store, toast) {
 
     if (okResults.length) {
       store.pushUndo();
-      let cells = 0;
+      let written = 0;
+      let changed = 0;
       const warnings = [];
       for (const evt of okResults) {
-        cells += applyEditsToFrames(p, evt.patch.edits);
+        const n = applyEditsToFrames(p, evt.patch.edits);
+        written += n.written;
+        changed += n.changed;
         if (evt.patch.warnings?.length) warnings.push(...evt.patch.warnings);
       }
       store.notify();
       const warnText = warnings.length ? ` / 警告: ${[...new Set(warnings)].join(" / ")}` : "";
-      setBusy(false, `清書完了: ${okResults.length}/${frameIndexes.length}フレーム、適用セル数 ${cells}${warnText}`);
+      setBusy(false, `清書完了: ${okResults.length}/${frameIndexes.length}フレーム、適用 ${written} / 実変化 ${changed}${warnText}`);
       toast(`AI清書を適用しました（${okResults.length}フレーム）`);
     } else {
       const aborted = errors.some((e) => /abort/i.test(e));
@@ -1171,10 +1174,13 @@ export function initRig(store, toast) {
       for (const job of jobs) {
         if (!roughByFrame.has(job.fi)) roughByFrame.set(job.fi, Uint8Array.from(p.frames[job.fi].pixels));
       }
-      let cells = 0;
+      let written = 0; // §22.11: 書き込みセル数
+      let changed = 0; // §22.11: 実際に値が変わったセル数
       const warnings = [];
       for (const evt of okResults) {
-        cells += applyEditsToFrames(p, evt.patch.edits);
+        const n = applyEditsToFrames(p, evt.patch.edits);
+        written += n.written;
+        changed += n.changed;
         if (evt.patch.warnings?.length) warnings.push(...evt.patch.warnings);
       }
       store.notify();
@@ -1202,18 +1208,23 @@ export function initRig(store, toast) {
             }
           }
         }
-        if (cells > 0 && diffCells > REVERT_MIN_DIFF && matchBase > matchRough) {
+        // §22.11-2: エコー（実変化0）とは排他。優先順: ゼロ適用 > エコー > ベース逆戻り
+        if (changed > 0 && diffCells > REVERT_MIN_DIFF && matchBase > matchRough) {
           warnings.push("ポーズがベースに戻された可能性があります。指示欄に補足を書いて再実行してください");
         }
       }
       if (errs.length) warnings.push(`${errs.length}領域の描き直しに失敗: ${errs[0]}`);
       const warnText = warnings.length ? ` / 警告: ${[...new Set(warnings)].join(" / ")}` : "";
-      if (cells === 0) {
+      if (written === 0) {
         // §22.5-4: ゼロ適用ガード — 成功トーンではなく警告として表示
         setBusy(false, `AIが変更を返しませんでした（ラフのまま・${okResults.length}/${jobs.length}領域完了）。もう一度実行するか、対象領域を「全身」に切り替えてお試しください${warnText}`);
         toast("AIが変更を返しませんでした（適用セル数 0）", "error");
+      } else if (changed === 0) {
+        // §22.11-2: エコー検出 — 書き込みは多いのに1セルも値が変わっていない = ラフの丸写し
+        setBusy(false, `AIがラフをそのまま返しました（エコー・適用 ${written} / 実変化 0・${okResults.length}/${jobs.length}領域）。プロンプト補足で「ラフの写しではなく描き直す」ことを強調するか、モデルを変えてお試しください${warnText}`);
+        toast("AIがラフをそのまま返しました（エコー・実変化 0）", "error");
       } else {
-        setBusy(false, `描き直し完了: ${okResults.length}/${jobs.length}領域、適用セル数 ${cells}${warnText}。仕上げにAI清書がおすすめです`);
+        setBusy(false, `描き直し完了: ${okResults.length}/${jobs.length}領域、適用 ${written} / 実変化 ${changed}${warnText}。仕上げにAI清書がおすすめです`);
         toast(`AI描き直しを適用しました（${okResults.length}領域）`);
       }
       // §22.10-2: ワンクリック評価（直近ジョブに紐づく完全なスナップショットを保持して表示）
@@ -1227,7 +1238,8 @@ export function initRig(store, toast) {
           width: p.width,
           height: p.height,
           palette: [...p.palette],
-          appliedCells: cells,
+          writtenCells: written, // §22.11-3
+          changedCells: changed, // §22.11-3
           warnings: [...new Set(warnings)],
           jobs: jobs.map((job) => ({
             frameIndex: job.fi,
@@ -1246,8 +1258,11 @@ export function initRig(store, toast) {
     }
   }));
 
+  // §22.11: 「書き込みセル数」と「実際に値が変わったセル数」を分けて返す
+  // （ラフ丸写し=エコー応答は written が大きくても changed が 0 になる）
   function applyEditsToFrames(p, edits) {
-    let cells = 0;
+    let written = 0;
+    let changed = 0;
     const cw = cellChars(p.palette.length);
     const wide = cw === 2;
     for (const e of edits) {
@@ -1262,12 +1277,14 @@ export function initRig(store, toast) {
           if (idx < 0 || idx >= p.palette.length) continue;
           const px = e.x + rx;
           if (px < 0 || px >= p.width) continue;
-          frame.pixels[py * p.width + px] = idx;
-          cells++;
+          const at = py * p.width + px;
+          if (frame.pixels[at] !== idx) changed++;
+          frame.pixels[at] = idx;
+          written++;
         }
       }
     }
-    return cells;
+    return { written, changed };
   }
 
   // -------------------------------------------------------------------
