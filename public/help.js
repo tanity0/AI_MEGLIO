@@ -1,0 +1,280 @@
+// help.js — §21 設定ヘルプ（？アイコン + ポップオーバー）
+// data-help="キー" を持つ要素の横に ? を自動挿入。ホバー+クリック/タップで表示、
+// 同時に開くのは1つ、画面端で位置反転。ヘルプ文はこの辞書1箇所に集約。
+
+// ---------------------------------------------------------------------------
+// ヘルプ辞書（§21.2 対象を漏れなく。文体: 何が変わるか+どういう時に使うか）
+// ---------------------------------------------------------------------------
+export const HELP = {
+  // 変換スタジオ（§18.2）
+  "studio.targetH": "出力ドット絵の高さ（ピクセル数）を指定します。小さいほどドットが大きく単純に、大きいほど元の細部が残ります。まず64前後で試すのがおすすめです。",
+  "studio.oneToOne": "グリッド推定で見つかった「描かれた時のドット」1個を出力1ピクセルにします。元がドット絵風の画像なら最も忠実ですが、出力が128pxを超える素材では使えません。",
+  "studio.colors": "減色後の色数です。少ないほどドット絵らしく、多いほどグラデーションが残ります。肌や差し色が潰れるときは増やすか「彩度保護」を上げてください。",
+  "studio.cellSize": "推定されたセルサイズ（ドット1個の元画像上の大きさ）を±0.25pxずつ調整します。出力が周期的に滲む・線が二重になるときに合わせ込んでください。",
+  "studio.offset": "グリッドの位相（開始位置）を±1pxずつ動かします。ドットの境界とグリッドがずれてエッジが甘いときに調整します。「再推定」で自動推定からやり直せます。",
+  "studio.domBlend": "セルの代表色を「最頻色（0=カリカリ）」と「平均色（1=なめらか）」のどちら寄りにするかです。ノイズの多い素材は少し上げると安定し、上げすぎると色が濁ります。",
+  "studio.centerWeight": "セル中心付近のピクセルをどれだけ重視するかです。隣のドットの色が混入する（にじむ）ときに上げてください。",
+  "studio.edgeProtect": "セル内に暗い輪郭色が含まれるとき、代表色より輪郭色を優先します。線が途切れる・細部が消えるときに上げてください。0でオフです。",
+  "studio.satProtect": "使用面積は小さいが色相が独立した色（肌・差し色など）を減色時に消えにくくします。大事なワンポイント色が失われるときに上げてください。",
+  "studio.bgThreshold": "背景とみなす色の許容幅です。背景が消え残るときは上げ、キャラの一部まで消えるときは下げてください。外周から繋がった領域だけが除去されます。",
+  "studio.glowWidth": "背景との境目にある光彩・フチ（例: 紫のグロー）を、透明との境界から指定px幅で除去します。シルエット周りに背景色の粒が残るときに1〜3にしてください。",
+  // 分割インポート（§20）
+  "studio.split.single": "検出された複数のポーズを無視して、画像全体を1枚のドット絵として変換します。ポーズ分割が誤検出のときに選んでください。",
+  "studio.split.components": "検出された各ポーズを1体ずつ切り出し、アニメーションのフレームとして読み込みます。共通パレット・共通キャンバスで足元（下端中央）を揃えます。",
+  "studio.split.grid": "自動検出がうまくいかないシート向けに、画像を横N×縦Mの等間隔で機械的に分割してフレーム化します。各区画内の絵の周囲は自動で詰められます。",
+  "studio.split.align": "各ポーズの配置を「下端中央（接地・歩きなどの足元が揃う）」から「中央（飛行・浮遊キャラ向け）」に変えます。",
+  // トンマナ（§17）
+  "style.image": "トンマナの基準となる参考画像を読み込みます（最大256×256に縮小して保存）。ゲームの既存スプライトを入れると世界観を揃えられます。",
+  "style.analyze": "参考画像から頭身・輪郭・シェーディング・代表色などのスタイルガイド（テキスト）をAIで抽出します。CLIバックエンドでは小さなドット絵のみ解析できます。",
+  "style.guide": "AIに渡されるスタイルの説明文です。このテキストが「正」なので、自由に編集して意図を追い込めます。",
+  "style.enabled": "オンにすると、修正・モーション生成・リグ・配色などすべてのAIリクエストにこのガイドが「厳守すべきトンマナ基準」として添付されます。",
+  // 修正タブ
+  "patch.scope": "AIに編集させる範囲です。「選択範囲のみ」が最速・最安全。「全フレーム」は大きな素材では時間がかかります（CLIバックエンドではフレームごとに分割実行されます）。",
+  "patch.refine": "選択範囲のラフな描き込みを、形はそのままに綺麗なドットの打ち方へ清書します。ペンで大雑把に直した後の仕上げに使ってください。指示欄が空でも実行できます。",
+  "patch.paletteSwap": "ドットの形を変えずにパレットの色だけをAIが変更します。色違いの敵バリエーション作りに使い、結果は適用かバリエーション保存を選べます。",
+  "patch.outlineRefine": "透明との境界±2pxだけをAIが清書します。変換直後に輪郭がガタつく・欠けるときに使ってください。",
+  "tools.lock": "選択中の矩形を変更禁止のロック領域にします。AIが何を返してもロック内はベースの値に強制的に戻るので、顔などを守って体だけ編集させたいときに使います。",
+  // モーション生成タブ
+  "motion.preset": "生成するモーションの種類です。歩き・走りなどの定石（足の逆位相、接地で体が沈む等）が自動で適用されます。カスタムでは自由入力欄の指示が使われます。",
+  "motion.frames": "生成するフレーム数（2〜12）です。多いほど滑らかですが生成時間が伸びます。プリセットを選ぶと推奨値が入ります。",
+  "motion.magnitude": "手足の振りや移動量の大きさです。動きが地味なら「大」、暴れるなら「小」にしてください。",
+  "motion.bounce": "歩行などに伴う体の上下動を付けるかどうかです。オフにすると胴体の高さが一定になります。",
+  "motion.facing": "キャラの向きの扱いです。「そのまま」はベースの向きを維持、「横」は指定方向へ向き直して生成します。",
+  "motion.apply": "生成結果の入れ方です。「置き換え」はフレーム0（ベース）以外を捨てて差し替え、「追記」は既存フレームの後ろに追加します。どちらも新しいタグが付きます。",
+  // リグタブ
+  "rig.register": "矩形選択した範囲をベースフレームから切り出し、リグのパーツ（腕・脚など）として登録します。",
+  "rig.pivot": "パーツの回転の支点です。腕なら肩、脚なら股関節をプレビュー上でクリックして指定してください。ここがずれると回転が不自然になります。",
+  "rig.z": "パーツの描画順です。小さいほど奥に描かれます。奥の腕を胴体の後ろにしたいときなどに調整します。",
+  "rig.parent": "親パーツを設定すると、親の移動・回転に子が追従します（例: 胴を親にした頭）。",
+  "rig.segment": "ベースフレームをAIが頭・胴・腕・脚などのパーツ矩形に自動分割します。結果は下書きなので、一覧で名前やpivotを調整してください。",
+  "rig.preset": "キーフレームテーブルによるモーションの種類です。歩き4f・走り6fなどの定石値（左右脚の逆位相・接地で胴体最低）がそのまま入ります。",
+  "rig.magnitude": "キーフレームの回転・移動量を0.5×〜1.5×にスケールします。",
+  "rig.bounce": "胴体の上下動（キーフレームのdy成分）をオン/オフします。",
+  "rig.frames": "生成フレーム数です。テーブルを線形補間して増減します（2〜12）。",
+  "rig.apply": "生成結果の入れ方です。「置き換え」はフレーム0以外を差し替え、「追記」は末尾に追加します。",
+  "rig.cleanup": "回転で生じたジャギーやパーツの継ぎ目を、合成で変化したセルの周囲2pxに限定してAIが清書します。フレームごとに並列実行されます。",
+  "rig.adjust": "選択パーツの位置(±1px)と回転(±15°)をフレーム単位で微調整します。「キャンバスでドラッグ移動」をオンにするとキャンバス上でつかんで動かせます。",
+  // タグ
+  "tag.fps": "このタグ（モーション）だけの再生速度です。プロジェクト全体のfpsとは独立で、書き出しJSONのフレーム時間にも使われます。",
+  "tag.loop": "タグ再生をループさせるかどうかです（書き出しメタにも記録されます）。",
+  // 書き出しパネル
+  "export.format": "sheet+json はエンジン取り込み向け（Aseprite互換メタ付き）、strip-per-tag はタグごとの横並びPNG、frames は連番PNGです。迷ったら sheet+json を選んでください。",
+  "export.scale": "書き出し時の整数拡大率です。ゲーム側で拡大しない運用なら2〜4を指定します（最近傍でくっきり拡大）。",
+  "export.mirror": "プロファイルが mirror:\"export\" のとき、左右反転版タグ（walk_left など）も書き出します。非対称なキャラはタグごとにオフにできます。",
+  "export.variants": "保存した配色バリエーションぶんのファイルも一括で書き出されます。不要なものはここで削除できます。",
+  "export.dest": "ブラウザダウンロードか、EXPORT_ROOT で指定したゲームリポジトリへの直接書き込みかを選びます（サーバー起動時に EXPORT_ROOT=パス が必要）。",
+  // プロファイル
+  "profile.select": "ゲームごとの書き出し規約（出力先・形式・命名・必要モーション）をまとめたプロファイルを選びます。public/profiles/ にJSONを置くと追加できます。",
+  "profile.checklist": "プロファイルが要求するモーションタグの充足状況です。✗をクリックすると、そのモーションの生成設定に直行します。",
+  // 表示系
+  "view.onion": "前のフレームを半透明で重ねて表示します。アニメの動き幅を確認しながら描くときにオンにしてください。",
+  "view.diff": "ベースフレームから変わったセルだけをマゼンタ枠で表示します。AIがどこを触ったかを即確認できます。",
+  "meter.deviation": "ベースフレームと異なるセルの割合です。手足が動く程度なら小さく、全面書き換え（テイスト崩れ）だと大きくなります。40%超は警告色になります。",
+};
+
+// data-help を自動付与するセレクタ → キーの対応（辞書と同じファイルに集約）
+const SELECTOR_MAP = [
+  // 変換スタジオ
+  ['label:has(#studioTargetH)', "studio.targetH"],
+  ['label:has(#studioOneToOne)', "studio.oneToOne"],
+  ['label:has(#studioColors)', "studio.colors"],
+  ['#studioSizeMinus', "studio.cellSize"],
+  ['#studioRegridBtn', "studio.offset"],
+  ['label:has(#studioDomBlend)', "studio.domBlend"],
+  ['label:has(#studioCenterWeight)', "studio.centerWeight"],
+  ['label:has(#studioEdgeProtect)', "studio.edgeProtect"],
+  ['label:has(#studioSatProtect)', "studio.satProtect"],
+  ['label:has(#studioBgThreshold)', "studio.bgThreshold"],
+  ['label:has(#studioGlowWidth)', "studio.glowWidth"],
+  // トンマナ
+  ['label[for="styleUploadInput"]', "style.image"],
+  ['#styleAnalyzeBtn', "style.analyze"],
+  ['#styleGuideText', "style.guide"],
+  ['label:has(#styleEnabledToggle)', "style.enabled"],
+  // 修正タブ
+  ['#patchTab .scope-fieldset legend', "patch.scope"],
+  ['#refineBtn', "patch.refine"],
+  ['#paletteSwapBtn', "patch.paletteSwap"],
+  ['#outlineRefineBtn', "patch.outlineRefine"],
+  ['#lockSelectionBtn', "tools.lock"],
+  // モーション生成タブ
+  ['label:has(#motionPreset)', "motion.preset"],
+  ['label:has(#motionFrames)', "motion.frames"],
+  ['label:has(#motionMagnitude)', "motion.magnitude"],
+  ['label:has(#motionBounce)', "motion.bounce"],
+  ['label:has(#motionFacing)', "motion.facing"],
+  ['#motionTab .scope-fieldset legend', "motion.apply"],
+  // リグタブ
+  ['#registerPartBtn', "rig.register"],
+  ['#pivotLabel', "rig.pivot"],
+  ['label:has(#partZInput)', "rig.z"],
+  ['label:has(#partParentSelect)', "rig.parent"],
+  ['#segmentBtn', "rig.segment"],
+  ['label:has(#rigPreset)', "rig.preset"],
+  ['label:has(#rigMagnitude)', "rig.magnitude"],
+  ['label:has(#rigBounce)', "rig.bounce"],
+  ['label:has(#rigFrames)', "rig.frames"],
+  ['#rigTab .scope-fieldset legend', "rig.apply"],
+  ['#rigCleanupBtn', "rig.cleanup"],
+  ['.rig-adjust > .hint:first-child', "rig.adjust"],
+  // タグフォーム
+  ['#tagForm label:has(#tagFpsInput)', "tag.fps"],
+  ['#tagForm label:has(#tagLoopInput)', "tag.loop"],
+  // 書き出しパネル
+  ['label:has(#exportFormatSelect)', "export.format"],
+  ['label:has(#exportScaleInput)', "export.scale"],
+  ['#exportMirrorList', "export.mirror"],
+  ['#exportVariantList', "export.variants"],
+  ['#exportPanel .scope-fieldset legend', "export.dest"],
+  // プロファイル
+  ['.profile-row', "profile.select"],
+  ['#tagChecklist', "profile.checklist"],
+  // 表示系
+  ['label:has(#onionSkinToggle)', "view.onion"],
+  ['label:has(#diffViewToggle)', "view.diff"],
+];
+
+// ---------------------------------------------------------------------------
+// ポップオーバー（単一・排他・画面端反転）
+// ---------------------------------------------------------------------------
+let popover = null;
+let currentAnchor = null;
+let sticky = false;
+
+function ensurePopover() {
+  if (popover) return popover;
+  popover = document.createElement("div");
+  popover.className = "help-popover";
+  popover.hidden = true;
+  document.body.appendChild(popover);
+  return popover;
+}
+
+function showHelp(anchor, key) {
+  const text = HELP[key];
+  if (!text) return;
+  const pop = ensurePopover();
+  pop.textContent = text;
+  pop.hidden = false;
+  currentAnchor = anchor;
+  const r = anchor.getBoundingClientRect();
+  pop.style.left = "0px";
+  pop.style.top = "0px";
+  const pw = Math.min(300, window.innerWidth - 20);
+  pop.style.maxWidth = pw + "px";
+  // 一旦表示して実サイズを測る
+  const rect = pop.getBoundingClientRect();
+  let left = r.left;
+  let top = r.bottom + 6;
+  if (left + rect.width > window.innerWidth - 8) left = window.innerWidth - rect.width - 8; // 右端反転
+  if (top + rect.height > window.innerHeight - 8) top = r.top - rect.height - 6; // 下端反転
+  if (left < 8) left = 8;
+  if (top < 8) top = 8;
+  pop.style.left = `${left}px`;
+  pop.style.top = `${top}px`;
+}
+
+function hideHelp(force = false) {
+  if (sticky && !force) return;
+  if (popover) popover.hidden = true;
+  currentAnchor = null;
+  if (force) sticky = false;
+}
+
+function attachHandlers(anchor, key) {
+  anchor.addEventListener("mouseenter", () => {
+    if (!sticky) showHelp(anchor, key);
+  });
+  anchor.addEventListener("mouseleave", () => hideHelp());
+  anchor.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    ev.preventDefault();
+    if (sticky && currentAnchor === anchor) {
+      hideHelp(true); // もう一度タップで閉じる
+    } else {
+      sticky = true; // クリック/タップで固定表示（排他）
+      showHelp(anchor, key);
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// data-help 要素の処理: ? アイコン挿入（動的要素は MutationObserver で追従）
+// ---------------------------------------------------------------------------
+function processElement(el) {
+  if (el.dataset.helpDone) return;
+  el.dataset.helpDone = "1";
+  const key = el.dataset.help;
+  if (!HELP[key]) {
+    console.warn(`help.js: 辞書に無いキーです: ${key}`);
+    return;
+  }
+  const icon = document.createElement("button");
+  icon.type = "button";
+  icon.className = "help-icon";
+  icon.textContent = "?";
+  icon.setAttribute("aria-label", "ヘルプ");
+  icon.tabIndex = 0;
+  attachHandlers(icon, key);
+  const tag = el.tagName;
+  if (tag === "LABEL" || tag === "LEGEND" || tag === "SPAN") {
+    el.appendChild(icon); // ラベル類はテキストの直後に内包
+  } else {
+    // ボタン等（誤クリック防止）と、innerHTMLが再描画されるコンテナは隣に置く
+    el.insertAdjacentElement("afterend", icon);
+  }
+}
+
+function processHoverElement(el) {
+  if (el.dataset.helpDone) return;
+  el.dataset.helpDone = "1";
+  const key = el.dataset.helpHover;
+  if (!HELP[key]) return;
+  attachHandlers(el, key);
+}
+
+function scan(root) {
+  if (root.matches?.("[data-help]")) processElement(root);
+  if (root.matches?.("[data-help-hover]")) processHoverElement(root);
+  root.querySelectorAll?.("[data-help]").forEach(processElement);
+  root.querySelectorAll?.("[data-help-hover]").forEach(processHoverElement);
+  // 逸脱メーター（動的生成）にはホバーヘルプを自動付与（§21.2）
+  root.querySelectorAll?.(".deviation:not([data-help-hover])").forEach((el) => {
+    if (!el.textContent) return;
+    el.dataset.helpHover = "meter.deviation";
+    processHoverElement(el);
+  });
+}
+
+export function initHelp() {
+  // 静的セレクタへ data-help を付与（辞書と同じファイルで一元管理）
+  for (const [selector, key] of SELECTOR_MAP) {
+    try {
+      document.querySelectorAll(selector).forEach((el) => {
+        if (!el.dataset.help) el.dataset.help = key;
+      });
+    } catch {}
+  }
+  scan(document.body);
+
+  // 動的に増える要素（タグフォーム・逸脱メーター等）に追従
+  const observer = new MutationObserver((muts) => {
+    for (const m of muts) {
+      for (const node of m.addedNodes) {
+        if (node.nodeType === 1) scan(node);
+      }
+    }
+  });
+  observer.observe(document.body, { childList: true, subtree: true });
+
+  // 外側クリック / Escape で閉じる
+  document.addEventListener("click", (ev) => {
+    if (popover && !popover.hidden && !popover.contains(ev.target)) hideHelp(true);
+  });
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") hideHelp(true);
+  });
+
+  // E2E/網羅チェック用
+  window.aiMeglioHelp = { HELP, SELECTOR_MAP };
+}

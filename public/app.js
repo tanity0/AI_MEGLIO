@@ -8,6 +8,7 @@ import { initRig } from "./rig.js";
 import { initGameExport, initGameView } from "./gameexport.js";
 import { initStyleRef } from "./styleref.js";
 import { initStudio, openStudio } from "./studio.js";
+import { initHelp } from "./help.js";
 
 // ---------------------------------------------------------------------------
 // テキストグリッド文字割当て（サーバー側 server.js と同一の規則）
@@ -781,6 +782,7 @@ function main() {
   initGameView(store);
   initStyleRef(store, toast);
   initStudio(store, toast);
+  initHelp();
   initBackendLabel();
   store.notify();
   // デバッグ/E2Eテスト用フック（UIには影響しない）

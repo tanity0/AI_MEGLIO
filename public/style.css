@@ -776,6 +776,7 @@ aside, #canvasPanel {
 }
 
 /* ---------- マルチポーズ分割（§20） ---------- */
+.studio-split[hidden] { display: none; }
 .studio-split {
   display: flex;
   align-items: center;
@@ -795,3 +796,37 @@ aside, #canvasPanel {
   border-radius: 4px;
   padding: 2px 4px;
 }
+
+/* ---------- 設定ヘルプ（§21） ---------- */
+.help-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin-left: 4px;
+  border-radius: 50%;
+  border: 1px solid var(--text-2);
+  background: transparent;
+  color: var(--text-2);
+  font-size: 10px;
+  line-height: 1;
+  cursor: help;
+  flex: 0 0 auto;
+  vertical-align: middle;
+  padding: 0;
+}
+.help-icon:hover { border-color: var(--accent); color: var(--accent); }
+.help-popover {
+  position: fixed;
+  z-index: 1000;
+  background: var(--bg-3);
+  color: var(--text-0);
+  border: 1px solid var(--accent-dark);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.5);
+}
+.deviation[data-help-hover] { cursor: help; text-decoration: underline dotted; }
