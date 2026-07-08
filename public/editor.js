@@ -111,6 +111,7 @@ export function initEditor(store, toast) {
   let holdTimer = null;
   let holdEyedrop = false;
   let holdStartCell = null;
+  let pendingPen = null; // {x, y} 押下直後の未確定ドット（離す=打つ / 動かす=線 / 0.7秒=スポイト）
   function clearHoldTimer() {
     if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
   }
@@ -159,23 +160,20 @@ export function initEditor(store, toast) {
     lastPaintedCell = null;
 
     if (tool === "pen") {
-      // 長押しスポイト: 0.7秒同じセルで静止したら、打った点を取り消してスポイトモードへ
+      // ペンは押下時点では打たない。すぐ離す=ドット / 動かす=線 / 0.7秒静止=スポイト
+      pendingPen = { x, y };
       holdStartCell = `${x},${y}`;
       clearHoldTimer();
       holdTimer = setTimeout(() => {
-        if (!dragging || dragTool !== "pen" || lastPaintedCell !== holdStartCell) return;
-        store.undo();
-        store.redoStack.pop(); // 取り消した1点をやり直し履歴に残さない
+        if (!dragging || dragTool !== "pen" || !pendingPen) return;
+        pendingPen = null;
         holdEyedrop = true;
         dragTool = null;
         canvas.style.cursor = "copy";
       }, HOLD_EYEDROP_MS);
-    }
-
-    if (tool === "pen" || tool === "eraser") {
+    } else if (tool === "eraser") {
       store.pushUndo();
-      const color = tool === "eraser" ? 0 : store.state.colorIndex;
-      if (setPixel(frameIndex, x, y, color)) lastPaintedCell = `${x},${y}`;
+      if (setPixel(frameIndex, x, y, 0)) lastPaintedCell = `${x},${y}`;
       render();
     } else if (tool === "fill") {
       store.pushUndo();
@@ -203,7 +201,14 @@ export function initEditor(store, toast) {
     const { x, y } = cellFromEvent(ev);
     const frameIndex = store.state.currentFrame;
     if (holdTimer && `${x},${y}` !== holdStartCell) clearHoldTimer();
-    if (dragTool === "pen" || dragTool === "eraser") {
+    if (dragTool === "pen" && pendingPen && `${x},${y}` !== `${pendingPen.x},${pendingPen.y}`) {
+      // 保留中のドットを起点に線を開始
+      store.pushUndo();
+      setPixel(frameIndex, pendingPen.x, pendingPen.y, store.state.colorIndex);
+      pendingPen = null;
+      lastPaintedCell = null;
+    }
+    if ((dragTool === "pen" && !pendingPen) || dragTool === "eraser") {
       const key = `${x},${y}`;
       if (key !== lastPaintedCell) {
         const color = dragTool === "eraser" ? 0 : store.state.colorIndex;
@@ -223,7 +228,13 @@ export function initEditor(store, toast) {
       pickColorAt(x, y);
       holdEyedrop = false;
       canvas.style.cursor = "";
+    } else if (pendingPen && dragTool === "pen") {
+      // すぐ離した → ドット確定
+      store.pushUndo();
+      setPixel(store.state.currentFrame, pendingPen.x, pendingPen.y, store.state.colorIndex);
+      render();
     }
+    pendingPen = null;
     dragging = false;
     dragTool = null;
     dragStart = null;
