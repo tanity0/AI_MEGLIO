@@ -530,6 +530,26 @@ export function initEditor(store, toast) {
         ctx.lineWidth = isSel ? 2.5 : 1.5;
         ctx.setLineDash(part.visible === false ? [3, 3] : []);
         ctx.strokeRect(r.x * cellSize + 0.5, r.y * cellSize + 0.5, r.w * cellSize - 1, r.h * cellSize - 1);
+        // §22.8: 選択中パーツはリサイズ用の8ハンドル（四隅+四辺中点）を描画
+        if (isSel) {
+          const hx0 = r.x * cellSize, hy0 = r.y * cellSize;
+          const hx1 = (r.x + r.w) * cellSize, hy1 = (r.y + r.h) * cellSize;
+          const xs = [hx0, (hx0 + hx1) / 2, hx1];
+          const ys = [hy0, (hy0 + hy1) / 2, hy1];
+          ctx.setLineDash([]);
+          for (let iy = 0; iy < 3; iy++) {
+            for (let ix = 0; ix < 3; ix++) {
+              if (ix === 1 && iy === 1) continue;
+              ctx.fillStyle = col;
+              ctx.fillRect(xs[ix] - 3, ys[iy] - 3, 6, 6);
+              ctx.strokeStyle = "rgba(0,0,0,0.8)";
+              ctx.lineWidth = 1;
+              ctx.strokeRect(xs[ix] - 3.5, ys[iy] - 3.5, 7, 7);
+            }
+          }
+          ctx.strokeStyle = col;
+          ctx.lineWidth = 2.5;
+        }
         // 支点（＋マーク）
         const px = (r.x + part.pivot.x + 0.5) * cellSize;
         const py = (r.y + part.pivot.y + 0.5) * cellSize;

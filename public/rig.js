@@ -1183,6 +1183,184 @@ export function initRig(store, toast) {
   window.addEventListener("mouseup", () => { dragState = null; });
 
   // -------------------------------------------------------------------
+  // §22.8: パーツ矩形・pivot のドラッグ編集（リグタブ表示中・フロントのみ）
+  // 枠線±4pxクリック=選択 / 選択中: 枠内ドラッグ=移動・8ハンドル=リサイズ・
+  // pivot十字=支点移動（すべてセルスナップ+クランプ+アンドゥ対象）。
+  // 既存のパン/ペン/矩形選択より優先するため canvasWrap の pointerdown を
+  // キャプチャ段階で奪い、preventDefault で互換 mousedown を抑止する。
+  // -------------------------------------------------------------------
+  const canvasWrap = document.getElementById("canvasWrap");
+  const rigTabEl = document.getElementById("rigTab");
+  const EDIT_TOL = 4; // ±4px ヒット判定
+  let editDrag = null; // { kind, part, hx, hy, startCell, orig, undoPushed }
+  let reflectNoteShown = false; // §22.8-4: 「次のフレーム生成から反映」はステータスに一度だけ
+
+  const rigTabVisible = () => rigTabEl && !rigTabEl.hidden;
+  const clampInt = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  function editCellFromEvent(ev) {
+    const rect = mainCanvas.getBoundingClientRect();
+    const cs = store.state.zoom;
+    return { x: Math.floor((ev.clientX - rect.left) / cs), y: Math.floor((ev.clientY - rect.top) / cs) };
+  }
+
+  // キャンバスピクセル座標でのヒット判定。優先順: 選択中パーツの pivot > ハンドル >
+  // 枠内(移動) > 他パーツの枠線±4px(選択)
+  function partEditHit(ev) {
+    const p = project();
+    if (!p.rig?.parts?.length) return null;
+    const rect = mainCanvas.getBoundingClientRect();
+    const px = ev.clientX - rect.left;
+    const py = ev.clientY - rect.top;
+    const cs = store.state.zoom;
+    const selId = store.state.rigSelectedPart;
+    const sel = p.rig.parts.find((pt) => pt.id === selId);
+    if (sel) {
+      const r = sel.patch;
+      const x0 = r.x * cs, y0 = r.y * cs, x1 = (r.x + r.w) * cs, y1 = (r.y + r.h) * cs;
+      // ハンドルを pivot より先に判定する（pivot が枠の辺中央にあるパーツ=脚などで
+      // リサイズハンドルが掴めなくなるのを防ぐ。pivot はセル中央側から掴める）
+      const xs = [x0, (x0 + x1) / 2, x1];
+      const ys = [y0, (y0 + y1) / 2, y1];
+      for (let hy = -1; hy <= 1; hy++) for (let hx = -1; hx <= 1; hx++) {
+        if (!hx && !hy) continue;
+        if (Math.abs(px - xs[hx + 1]) <= EDIT_TOL && Math.abs(py - ys[hy + 1]) <= EDIT_TOL) {
+          return { kind: "resize", part: sel, hx, hy };
+        }
+      }
+      const pvx = (r.x + sel.pivot.x + 0.5) * cs, pvy = (r.y + sel.pivot.y + 0.5) * cs;
+      if (Math.abs(px - pvx) <= EDIT_TOL + 2 && Math.abs(py - pvy) <= EDIT_TOL + 2) return { kind: "pivot", part: sel };
+      if (px >= x0 - EDIT_TOL && px <= x1 + EDIT_TOL && py >= y0 - EDIT_TOL && py <= y1 + EDIT_TOL) {
+        return { kind: "move", part: sel };
+      }
+    }
+    // 他パーツの枠線（±4px）→ 選択（重なりは手前=リスト後方を優先）
+    for (let i = p.rig.parts.length - 1; i >= 0; i--) {
+      const pt = p.rig.parts[i];
+      if (pt.id === selId) continue;
+      const r = pt.patch;
+      const x0 = r.x * cs, y0 = r.y * cs, x1 = (r.x + r.w) * cs, y1 = (r.y + r.h) * cs;
+      const inX = px >= x0 - EDIT_TOL && px <= x1 + EDIT_TOL;
+      const inY = py >= y0 - EDIT_TOL && py <= y1 + EDIT_TOL;
+      const nearTB = inX && (Math.abs(py - y0) <= EDIT_TOL || Math.abs(py - y1) <= EDIT_TOL);
+      const nearLR = inY && (Math.abs(px - x0) <= EDIT_TOL || Math.abs(px - x1) <= EDIT_TOL);
+      if (nearTB || nearLR) return { kind: "select", part: pt };
+    }
+    return null;
+  }
+
+  function editStatus(part) {
+    const r = part.patch;
+    rigProgress.textContent = `パーツ「${part.name}」: (${r.x}, ${r.y}) ${r.w}×${r.h} / pivot(${part.pivot.x}, ${part.pivot.y})`;
+  }
+  function lazyPushUndo(d) {
+    if (d.undoPushed) return;
+    store.pushUndo();
+    d.undoPushed = true;
+  }
+  // 矩形変更の反映: patch.pixels をベースフレームから切り出し直す
+  function applyPartRect(part, nextRect) {
+    part.patch = { ...nextRect, pixels: cutPatch(basePixels(project()), project().width, nextRect) };
+  }
+
+  canvasWrap.addEventListener("pointerdown", (ev) => {
+    if (ev.button !== 0 || !rigTabVisible() || ev.target !== mainCanvas) return;
+    if (store.state.rigAdjustMode) return; // §14.5 のキーフレーム調整ドラッグを優先
+    const hit = partEditHit(ev);
+    if (!hit) {
+      // 空クリック: 選択解除（ペン等の通常ツールはそのまま動く）
+      if (store.state.rigSelectedPart) {
+        store.state.rigSelectedPart = null;
+        store.notify();
+      }
+      return;
+    }
+    ev.preventDefault(); // 互換 mousedown を抑止（editor.js のペン/選択に渡さない）
+    ev.stopPropagation(); // canvasWrap のパンにも渡さない
+    if (hit.kind === "select" || store.state.rigSelectedPart !== hit.part.id) {
+      store.state.rigSelectedPart = hit.part.id;
+      store.notify();
+    }
+    const part = hit.part;
+    editDrag = {
+      kind: hit.kind === "select" ? "move" : hit.kind, // 枠線クリックは選択+そのまま移動開始
+      part,
+      hx: hit.hx || 0,
+      hy: hit.hy || 0,
+      startCell: editCellFromEvent(ev),
+      orig: { x: part.patch.x, y: part.patch.y, w: part.patch.w, h: part.patch.h, pivot: { ...part.pivot } },
+      undoPushed: false,
+    };
+    editStatus(part);
+  }, true);
+
+  window.addEventListener("pointermove", (ev) => {
+    if (!editDrag) return;
+    const d = editDrag;
+    const p = project();
+    const { x: cx, y: cy } = editCellFromEvent(ev);
+    const part = d.part;
+    if (d.kind === "move") {
+      const nx = clampInt(d.orig.x + (cx - d.startCell.x), 0, p.width - d.orig.w);
+      const ny = clampInt(d.orig.y + (cy - d.startCell.y), 0, p.height - d.orig.h);
+      if (nx !== part.patch.x || ny !== part.patch.y) {
+        lazyPushUndo(d);
+        applyPartRect(part, { x: nx, y: ny, w: d.orig.w, h: d.orig.h }); // pivot はローカル維持（矩形と一緒に動く）
+        store.notify();
+      }
+    } else if (d.kind === "resize") {
+      let x0 = d.orig.x, y0 = d.orig.y;
+      let x1 = d.orig.x + d.orig.w - 1, y1 = d.orig.y + d.orig.h - 1;
+      if (d.hx < 0) x0 = clampInt(cx, 0, x1);
+      if (d.hx > 0) x1 = clampInt(cx, x0, p.width - 1);
+      if (d.hy < 0) y0 = clampInt(cy, 0, y1);
+      if (d.hy > 0) y1 = clampInt(cy, y0, p.height - 1);
+      const next = { x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 }; // 最小1×1はクランプで保証
+      if (next.x !== part.patch.x || next.y !== part.patch.y || next.w !== part.patch.w || next.h !== part.patch.h) {
+        lazyPushUndo(d);
+        applyPartRect(part, next);
+        // pivot はキャンバス上の同じセルを指し続け、矩形外に出るなら矩形内へクランプ
+        part.pivot = {
+          x: clampInt(d.orig.x + d.orig.pivot.x - next.x, 0, next.w - 1),
+          y: clampInt(d.orig.y + d.orig.pivot.y - next.y, 0, next.h - 1),
+        };
+        store.notify();
+      }
+    } else if (d.kind === "pivot") {
+      const nx = clampInt(cx - part.patch.x, 0, part.patch.w - 1);
+      const ny = clampInt(cy - part.patch.y, 0, part.patch.h - 1);
+      if (nx !== part.pivot.x || ny !== part.pivot.y) {
+        lazyPushUndo(d);
+        part.pivot = { x: nx, y: ny };
+        store.notify();
+      }
+    }
+    editStatus(part); // ドラッグ中のライブ表示 (x,y) w×h / pivot(x,y)
+  });
+
+  window.addEventListener("pointerup", () => {
+    if (!editDrag) return;
+    const changed = editDrag.undoPushed;
+    const part = editDrag.part;
+    editDrag = null;
+    if (changed) {
+      editStatus(part);
+      if (!reflectNoteShown) {
+        reflectNoteShown = true;
+        rigProgress.textContent += "（次のフレーム生成から反映されます）";
+      }
+    }
+  });
+
+  // Esc で選択解除（リグタブ表示中のみ）
+  window.addEventListener("keydown", (ev) => {
+    if (ev.key !== "Escape" || !rigTabVisible()) return;
+    if (store.state.rigSelectedPart) {
+      store.state.rigSelectedPart = null;
+      store.notify();
+    }
+  });
+
+  // -------------------------------------------------------------------
   // 表示更新
   // -------------------------------------------------------------------
   function renderAdjustInfo() {
