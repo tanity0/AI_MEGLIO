@@ -277,6 +277,9 @@ const SYSTEM_PROMPT = `あなたはドット絵アニメーションの精密編
 ## ポーズガイド再描画（redrawモードのとき適用・refineとの違いに注意）
 このモードでは、アニメーションの1コマとして**キャラクターの新しいポーズを描き起こします**（§22.9）。現フレームはリグ合成による**ラフ（ポーズのあたり）**で、傾き・パーツ位置・シルエット・関節の曲がりの正です。ベースフレームは**絵柄の見本**（線の太さ・シェーディング段数・ディテール密度）であって、**ポーズをベースから取ってはなりません**——ベースと同じ姿勢に戻すのは失敗です（ベースとラフの姿勢差は意図的なもの）。ラフで欠損・崩壊している部分（千切れたパーツ・つぶれた模様・直線のままの脚）は、ベースの該当部位を参照して**ラフの向き・位置に合わせて描き起こして**ください。ラフをそのまま残すのも失敗です。パレットは厳守し、変更許可セル（マスクで '1'）以外への edits はサーバーで破棄されます。newFrames と paletteChanges は使わないでください。
 
+## モーション候補の単フレーム生成（motionframeモードのとき適用・§25）
+ベースフレームのキャラクターの、指定されたアニメーションの**1コマだけ**を newFrames にフルサイズ1枚で返します。ポーズは指示された局面（フレーム位置のヒント）とバリエーション指定に従い、絵柄（頭身・配色・輪郭の太さ・シェーディング段数・ドットの打ち方）はベースフレームを厳密に維持してください。edits と paletteChanges は使いません（返しても破棄されます）。下記「モーション生成の定石」の知識はこのモードにも適用されます。
+
 ## モーション生成の定石（モーション生成モードのとき適用）
 - 歩き（4フレーム）: コンタクト→ダウン→パッシング→アップ。左右の足は前後が入れ替わる。接地（コンタクト/ダウン）フレームで体が最も低い。腕は足と逆位相に振る。
 - 走り: 歩きより前傾し歩幅・腕の振りが大きい。両足が地面から離れる滞空フレームを含める。
@@ -398,7 +401,7 @@ function validateEditRequest(body) {
   if (instruction.length > 2000) throw new Error("instruction が長すぎます");
 
   // --- §13.4 / §14.6 追加フィールド ---
-  if (mode !== undefined && !["patch", "motion", "segment", "cleanup", "palette", "style", "refine", "redraw"].includes(mode)) throw new Error("mode が不正です");
+  if (mode !== undefined && !["patch", "motion", "segment", "cleanup", "palette", "style", "refine", "redraw", "motionframe"].includes(mode)) throw new Error("mode が不正です");
   if (baseFrameGrid !== undefined && baseFrameGrid !== null) {
     if (typeof baseFrameGrid !== "string") throw new Error("baseFrameGrid が不正です");
     const bw = isWidePalette(palette.length);
@@ -514,6 +517,28 @@ function validateEditRequest(body) {
       }
     }
   }
+  // §25.1: モーション候補の単フレーム生成
+  if (mode === "motionframe") {
+    if (!baseFrameGrid) throw new Error("mode=motionframe では baseFrameGrid が必要です");
+    const mf = body.motionframe;
+    if (!mf || typeof mf !== "object") throw new Error("mode=motionframe では motionframe が必要です");
+    if (!MOTION_PRESETS.includes(mf.preset)) throw new Error("motionframe.preset が不正です");
+    if (mf.customText !== undefined && (typeof mf.customText !== "string" || mf.customText.length > 500)) {
+      throw new Error("motionframe.customText が不正です");
+    }
+    if (!Number.isInteger(mf.total) || mf.total < 2 || mf.total > 12) throw new Error("motionframe.total は2〜12です");
+    if (!Number.isInteger(mf.index) || mf.index < 0 || mf.index >= mf.total) throw new Error("motionframe.index が不正です");
+    if (!Number.isInteger(mf.variant) || mf.variant < 0 || mf.variant > 31) throw new Error("motionframe.variant が不正です");
+    if (mf.instruction !== undefined && (typeof mf.instruction !== "string" || mf.instruction.length > 500)) {
+      throw new Error("motionframe.instruction が不正です");
+    }
+    for (const k of ["prevFrameGrid", "nextFrameGrid"]) {
+      if (mf[k] !== undefined && (typeof mf[k] !== "string" || mf[k].split("\n").length !== project.height)) {
+        throw new Error(`motionframe.${k} が不正です`);
+      }
+    }
+  }
+
   if (mode === "motion") {
     if (!baseFrameGrid) throw new Error("mode=motion では baseFrameGrid が必要です");
     if (!motion || typeof motion !== "object") throw new Error("mode=motion では motion が必要です");
@@ -548,6 +573,51 @@ function extractBase64FromDataUrl(dataUrl) {
 // プロンプト構築
 // ---------------------------------------------------------------------------
 const PRESET_LABELS = { walk: "歩き", run: "走り", attack: "攻撃", idle: "待機", jump: "ジャンプ", custom: "カスタム" };
+
+// §25.1: phaseHint 定型文テーブル（プリセット×フレーム位置。リグの keyframe テーブルの知見を言語化）
+const MOTIONFRAME_PHASE_HINTS = {
+  walk: [
+    "右脚を前に踏み出して接地するコンタクト。体はわずかに沈み、右腕は後ろ・左腕は前に振れる",
+    "両脚が体の下で交差するパッシング。体は最も高く、腕は体側を通過する",
+    "左脚を前に踏み出して接地するコンタクト。体はわずかに沈み、左腕は後ろ・右腕は前に振れる",
+    "両脚が交差するパッシング（逆側）。体は最も高く、腕は体側を通過する",
+  ],
+  run: [
+    "右脚で強く接地して蹴り出す。前傾が深く、腕は大きく振れる（右腕後ろ・左腕前）",
+    "蹴り出し直後、体が前へ伸びる。歩幅は歩きより大きい",
+    "両足が地面から離れる滞空。脚は前後に大きく開く",
+    "左脚で強く接地して蹴り出す。前傾が深く、腕は大きく振れる（左腕後ろ・右腕前）",
+    "蹴り出し直後（逆側）、体が前へ伸びる",
+    "滞空（逆側）。脚は前後に大きく開く",
+  ],
+  attack: [
+    "予備動作: 武器（または腕）を後ろへ大きく振りかぶり、体を少しひねってタメる",
+    "ヒット: 最大リーチで振り抜く。体は前へ踏み込み、攻撃が最も大きく伸びる",
+    "フォロースルー: 振り切った余韻。体勢を戻し始める",
+  ],
+  idle: [
+    "直立の基本姿勢。呼吸で胸がわずかに膨らむ程度",
+    "呼吸で体全体が1〜2px沈む。輪郭の大部分は動かさない",
+  ],
+  jump: [
+    "しゃがみ込み: 膝を曲げて体を低くタメる。腕は後ろへ引く",
+    "蹴り出し: 体が伸び上がり、腕を上へ振り上げる",
+    "滞空（最高点）: 体は最も高い位置。脚は軽く曲がる",
+    "着地: 膝で衝撃を吸収して体が沈む",
+  ],
+};
+function motionframePhaseHint(preset, index, total) {
+  const table = MOTIONFRAME_PHASE_HINTS[preset];
+  if (!table || !table.length) return "アニメーションの流れとして自然な1コマを描く";
+  return table[Math.min(table.length - 1, Math.floor((index * table.length) / total))];
+}
+// §25.1: 候補ごとのバリエーション文（candidate k → k % length）
+const MOTIONFRAME_VARIANTS = [
+  "標準的な動き幅で描く",
+  "動きを大きめに誇張する（歩幅・腕の振りを広く、ポーズをダイナミックに）",
+  "動きを控えめにする（小さな振り幅で落ち着いた動きに）",
+  "重心移動とタメを強調する（体の傾き・沈み込みをはっきりと）",
+];
 const MAGNITUDE_LABELS = { small: "小", medium: "中", large: "大" };
 const FACING_LABELS = { keep: "そのまま", right: "横（右向き）", left: "横（左向き）" };
 
@@ -637,7 +707,9 @@ ${instruction}`;
     ? (crop
         ? `--- フレーム${frameIndex}（リグ合成のラフ = ポーズの正。切り出し ${crop.w}x${crop.h}） ---\n${cropGridString(framesGrid[frameIndex], crop, cw)}`
         : `--- フレーム${frameIndex}（リグ合成のラフ = ポーズの正） ---\n${framesGrid[frameIndex]}`)
-    : framesGrid.map((grid, i) => `--- フレーム${i} ---\n${grid}`).join("\n");
+    : mode === "motionframe"
+      ? "（省略 — このモードでは上のベースフレームだけを参照してください）"
+      : framesGrid.map((grid, i) => `--- フレーム${i} ---\n${grid}`).join("\n");
 
   let scopeText;
   if (scope === "all") {
@@ -734,6 +806,31 @@ ${areaWord}の rows を**丸ごと**返してください。${keepTok}（変更�
     cleanupSection = `\n## AI清書モード（対象: フレーム${frameIndex}）\nリグ合成による回転ジャギー・継ぎ目の隙間を最小差分で清書してください。以下のマスクで '1' のセルだけ変更が許可されています（'0' のセルへの edits はサーバー側で破棄されます）。\n${allowedMask}\n`;
   }
 
+  // §25.1: モーション候補の単フレーム生成
+  let motionframeSection = "";
+  if (mode === "motionframe" && body.motionframe) {
+    const mf = body.motionframe;
+    const label = PRESET_LABELS[mf.preset] || mf.preset;
+    const hint = motionframePhaseHint(mf.preset, mf.index, mf.total);
+    const variantText = MOTIONFRAME_VARIANTS[mf.variant % MOTIONFRAME_VARIANTS.length];
+    const lines = [
+      `このキャラクターの「${label}」アニメーション（全${mf.total}フレーム）の**第${mf.index + 1}フレーム**を1枚描いてください。`,
+    ];
+    if (mf.preset === "custom" && mf.customText) lines.push(`自由指示: ${mf.customText}`);
+    lines.push(`このフレームのポーズ: ${hint}`);
+    lines.push(`バリエーション指定: ${variantText}`);
+    if (mf.instruction) lines.push(`追記指示（ユーザー）: ${mf.instruction}`);
+    lines.push(`キャンバス全体（${width}x${height}）を1枚だけ newFrames で返してください（insertAfter は ${framesGrid.length - 1}）。edits と paletteChanges は空配列にします。キャラの頭身・配色・輪郭の太さ・ドットの打ち方はベースフレームを維持し、パレットを厳守してください。`);
+    let neighborText = "";
+    if (typeof mf.prevFrameGrid === "string") {
+      neighborText += `\n## 採用済みの前フレーム（第${mf.index}フレーム。動きの連続性の参考）\n${mf.prevFrameGrid}\n`;
+    }
+    if (typeof mf.nextFrameGrid === "string") {
+      neighborText += `\n## 採用済みの次フレーム（第${mf.index + 2}フレーム。動きの連続性の参考）\n${mf.nextFrameGrid}\n`;
+    }
+    motionframeSection = `\n## モーション候補生成モード（§25）\n${lines.join("\n")}\n${neighborText}`;
+  }
+
   let motionSection = "";
   if (mode === "motion" && motion) {
     const lines = [
@@ -755,7 +852,7 @@ ${paletteText}
 ${baseSection}
 ## 現在のフレーム（テキストグリッド）
 ${framesText}
-${lockedSection}${segmentSection}${cleanupSection}${refineSection}${redrawSection}${motionSection}
+${lockedSection}${segmentSection}${cleanupSection}${refineSection}${redrawSection}${motionframeSection}${motionSection}
 ## ${scopeText}
 
 ## 編集指示
@@ -930,6 +1027,25 @@ function validateAndClampPatch(rawPatch, body) {
   if (mode === "motion" && cleanPaletteChanges.length > 0) {
     warnings.push(`モーション生成モードのため paletteChanges（${cleanPaletteChanges.length}件）を破棄しました`);
     cleanPaletteChanges.length = 0;
+  }
+
+  // --- §25.1: motionframe は newFrames 1枚のみ（edits / paletteChanges は破棄+警告） ---
+  if (mode === "motionframe") {
+    if (cleanEdits.length > 0) {
+      warnings.push(`モーション候補生成のため edits（${cleanEdits.length}件）を破棄しました`);
+      cleanEdits.length = 0;
+    }
+    if (cleanPaletteChanges.length > 0) {
+      warnings.push(`モーション候補生成のため paletteChanges（${cleanPaletteChanges.length}件）を破棄しました`);
+      cleanPaletteChanges.length = 0;
+    }
+    if (cleanNewFrames.length === 0) {
+      throw new Error("モーション候補のフレームが返されませんでした（newFrames が空です）");
+    }
+    if (cleanNewFrames.length > 1) {
+      warnings.push(`newFrames が複数（${cleanNewFrames.length}件）返されたため先頭のみ使用します`);
+      cleanNewFrames.length = 1;
+    }
   }
 
   // --- AI清書/部分仕上げ（§14.4-2/§19）: 許可セル（allowedMask='1'）外の edits を破棄 ---
@@ -1304,6 +1420,19 @@ async function runMock(body, res, aborted) {
       newFrames: [],
       paletteChanges: [],
       note: "MOCK: 許可セル1点を清書（許可外1点はサーバーで破棄されるはず）",
+    };
+  } else if (mode === "motionframe" && body.motionframe && baseFrameGrid) {
+    // §25.5: ベースのエコー1枚（奇数候補は1px上シフトでバリエーションを模擬）+
+    // edits/paletteChanges の破棄確認用ダミーを混ぜる
+    const mf = body.motionframe;
+    const baseRows = baseFrameGrid.split("\n");
+    const blankRow = (wide ? ".." : ".").repeat(width);
+    const rows = mf.variant % 2 === 1 ? baseRows.slice(1).concat([blankRow]) : baseRows.slice();
+    fakePatch = {
+      edits: [{ frame: 0, x: 0, y: 0, rows: [wide ? "01" : "1"] }], // 破棄されるはず
+      newFrames: [{ insertAfter: project.framesGrid.length - 1, rows }],
+      paletteChanges: [{ index: 1, color: "#ff00ff" }], // 破棄されるはず
+      note: `MOCK: motionframe 第${mf.index + 1}/${mf.total}（${mf.preset}・候補${mf.variant + 1}${mf.instruction ? "・再生成" : ""}${mf.prevFrameGrid || mf.nextFrameGrid ? "・前後文脈あり" : ""}）`,
     };
   } else if (mode === "motion" && motion && baseFrameGrid) {
     // ベースフレームのコピーを上下にシフトした newFrames を motion.frames 枚生成
