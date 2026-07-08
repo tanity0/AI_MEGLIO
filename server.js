@@ -26,6 +26,7 @@ const CLI_TIMEOUT_SEC = Number(process.env.CLI_TIMEOUT) > 0 ? Number(process.env
 const CLI_TIMEOUT_MS = CLI_TIMEOUT_SEC * 1000;
 const CLI_CONCURRENCY = Number(process.env.CLI_CONCURRENCY) > 0 ? Number(process.env.CLI_CONCURRENCY) : 2; // §15.2: 同時実行キュー（cli/codex共用。環境変数 CLI_CONCURRENCY で上書き可）
 const CLI_DEBUG = process.env.CLI_DEBUG === "1"; // §22.5-5: プロンプト+生出力を ./cli-logs/ に保存
+const REDRAW_MAX_CELLS = Number(process.env.REDRAW_MAX_CELLS) > 0 ? Number(process.env.REDRAW_MAX_CELLS) : 1800; // §22.6-3: 描き直し1リクエストの大領域ガード閾値（CLI系のみクライアントが確認ダイアログに使用）
 const EXPORT_ROOT = process.env.EXPORT_ROOT || ""; // §16.4: 未設定なら /api/export は無効
 
 const MAX_BODY_BYTES = 5 * 1024 * 1024; // 5MB 上限
@@ -677,7 +678,8 @@ ${instruction}`;
     const keepTok = isWidePalette(palette.length) ? "'??'" : "'?'";
     // §22.5-1: 「そのまま残すのは失敗」「最小差分の原則より優先」を明記し、空応答の逃げ道を塞ぐ
     const mandate = `上の「ベースフレーム」がテイストの正、フレーム${frameIndex}のグリッドがポーズの正（リグ合成のラフ）です。
-マスク '1' の領域は機械的な回転合成による**ドラフト品質**です（ジャギー・パーツの分離・つぶれた模様を含む）。この領域を**そのまま残すのは失敗**です。ベースの該当部位を参照し、ラフのシルエット・重心・関節位置に合わせて、必ず描き直した rows を返してください。${keepTok}（変更なし）を使ってよいのは、マスク外のセルと、描き直した結果たまたま同じ値になるセルだけです。**この指示は「最小差分の原則」より優先します**。パレットは厳守してください。`;
+マスク '1' の領域は機械的な回転合成による**ドラフト品質**です（ジャギー・パーツの分離・つぶれた模様を含む）。この領域を**そのまま残すのは失敗**です。ベースの該当部位を参照し、ラフのシルエット・重心・関節位置に合わせて、必ず描き直した rows を返してください。${keepTok}（変更なし）を使ってよいのは、マスク外のセルと、描き直した結果たまたま同じ値になるセルだけです。**この指示は「最小差分の原則」より優先します**。パレットは厳守してください。
+${crop ? "クロップ内" : "対象領域"}は ${keepTok} を使わず**全セルを丸ごと書き直した rows を返して構いません**。差分の最小化に推論時間を使わないでください。`;
     const cropNote = crop
       ? `\nこのプロンプトの全グリッド（ベース・ラフ・マスク・前後フレーム）はキャンバス座標 (${crop.x}, ${crop.y}) 起点の ${crop.w}x${crop.h} 切り出しです。edits の x, y は**切り出しローカル座標**（(0,0)〜(${crop.w - 1},${crop.h - 1})）で返してください。サーバー側でキャンバス座標へ変換されます。frame は ${frameIndex} のままです。`
       : "";
@@ -1847,6 +1849,7 @@ async function handleApiConfig(req, res) {
     backend: BACKEND,
     cliModel: CLI_MODEL,
     codexModel: CODEX_MODEL || "default", // §23.2
+    redrawMaxCells: REDRAW_MAX_CELLS, // §22.6-3
     exportEnabled: !!EXPORT_ROOT,
     exportRoot: EXPORT_ROOT || null,
   });

@@ -225,6 +225,89 @@ export function composeRigFrame(project, kf) {
   return out;
 }
 
+// §22.1/§22.6: 描き直しの対象領域マスク（純関数・検証しやすいよう module レベルで export）
+// area:
+//   rotated: rot≠0 のパーツの移動前後矩形の和+2px ∪ 回転パーツ×親パーツの継ぎ目帯±2px（§22.6・既定）
+//   moved  : ベースとの差分セルの5px膨張 ∪ 移動パーツの矩形（移動前後+2px）
+//   full   : 現フレームの非透明bbox+1px
+// 戻り値: { mask, fellBack } — rotated 指定で rot≠0 のパーツが無いときは moved に自動フォールバック（fellBack=true）
+export function computeRedrawMask(p, frameIndex, kfIdx, area) {
+  const { width, height } = p;
+  const cur = p.frames[frameIndex].pixels;
+  const base = p.baseFrame || p.frames[0].pixels;
+  const rows = Array.from({ length: height }, () => new Uint8Array(width));
+  const markRect = (x0, y0, x1, y1) => {
+    for (let y = Math.max(0, y0); y <= Math.min(height - 1, y1); y++)
+      for (let x = Math.max(0, x0); x <= Math.min(width - 1, x1); x++) rows[y][x] = 1;
+  };
+  const kf = p.rig?.keyframes?.[kfIdx];
+  let fellBack = false;
+
+  if (area === "full") {
+    let x0 = width, y0 = height, x1 = -1, y1 = -1;
+    for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+      if (cur[y * width + x] !== 0) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+    }
+    if (x1 >= 0) markRect(x0 - 1, y0 - 1, x1 + 1, y1 + 1);
+    return { mask: rows.map((r) => Array.from(r).join("")).join("\n"), fellBack };
+  }
+
+  if (area === "rotated") {
+    // §22.6-1: 平行移動はドット絵を劣化させない。崩れるのは回転パーツとその継ぎ目だけ。
+    const parts = (p.rig?.parts || []).filter((pt) => pt.visible !== false);
+    const rotated = kf ? parts.filter((pt) => ((kf[pt.id] || ZERO).rot || 0) !== 0) : [];
+    if (!rotated.length) {
+      area = "moved"; // rot≠0 のパーツが無い → 旧 moved 方式へ自動フォールバック
+      fellBack = true;
+    } else {
+      const worlds = worldTransforms(parts, kf);
+      const byId = new Map(parts.map((pt) => [pt.id, pt]));
+      for (const pt of rotated) {
+        const r = pt.patch;
+        // 移動前の矩形 +2px
+        markRect(r.x - 2, r.y - 2, r.x + r.w + 1, r.y + r.h + 1);
+        // 移動後（親変換込みのワールド変換で回転した）矩形のbbox +2px
+        const M = worlds.get(pt.id) || IDENTITY;
+        const corners = [
+          applyT(M, r.x, r.y), applyT(M, r.x + r.w, r.y), applyT(M, r.x, r.y + r.h), applyT(M, r.x + r.w, r.y + r.h),
+        ];
+        markRect(
+          Math.floor(Math.min(...corners.map((c) => c[0]))) - 2,
+          Math.floor(Math.min(...corners.map((c) => c[1]))) - 2,
+          Math.ceil(Math.max(...corners.map((c) => c[0]))) + 1,
+          Math.ceil(Math.max(...corners.map((c) => c[1]))) + 1,
+        );
+        // 回転パーツ×親パーツ矩形の重なり帯（継ぎ目）±2px
+        const parent = pt.parent ? byId.get(pt.parent) : null;
+        if (parent) {
+          const q = parent.patch;
+          const ix0 = Math.max(r.x, q.x) - 2, iy0 = Math.max(r.y, q.y) - 2;
+          const ix1 = Math.min(r.x + r.w, q.x + q.w) + 1, iy1 = Math.min(r.y + r.h, q.y + q.h) + 1;
+          if (ix0 <= ix1 && iy0 <= iy1) markRect(ix0, iy0, ix1, iy1);
+        }
+      }
+      return { mask: rows.map((r) => Array.from(r).join("")).join("\n"), fellBack };
+    }
+  }
+
+  // moved: 差分セル（対ベース）を5px膨張 + 移動したパーツの矩形（移動前後+2px）
+  const diff = [];
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+    if (cur[y * width + x] !== base[y * width + x]) diff.push([x, y]);
+  }
+  for (const [x, y] of diff) markRect(x - 5, y - 5, x + 5, y + 5);
+  if (kf) {
+    for (const part of p.rig.parts) {
+      const t = kf[part.id];
+      if (!t || (t.dx === 0 && t.dy === 0 && t.rot === 0)) continue;
+      const r = part.patch;
+      markRect(r.x - 2, r.y - 2, r.x + r.w + 1, r.y + r.h + 1);
+      markRect(r.x + t.dx - 2, r.y + t.dy - 2, r.x + t.dx + r.w + 1, r.y + t.dy + r.h + 1);
+    }
+  }
+  return { mask: rows.map((r) => Array.from(r).join("")).join("\n"), fellBack };
+}
+
 // 「合成時に変化したセルの周囲2px」の許可マスク（§14.4-2）
 export function buildAllowedMask(project, framePixels) {
   const { width, height } = project;
@@ -794,48 +877,8 @@ export function initRig(store, toast) {
   // §22.1: AI描き直し（ポーズガイド）— リグ出力を設計図にAIがベースのテイストで描き直す
   // -------------------------------------------------------------------
   const rigRedrawBtn = document.getElementById("rigRedrawBtn");
-  const redrawAreaMode = () => document.querySelector('input[name="redrawArea"]:checked')?.value || "moved";
+  const redrawAreaMode = () => document.querySelector('input[name="redrawArea"]:checked')?.value || "rotated";
   const redrawAllFrames = document.getElementById("redrawAllFrames");
-
-  // 対象領域マスク（§22.1）
-  // moved: ベースとの差分セルの5px膨張 ∪ 移動パーツの矩形（移動前後+2px）
-  // full : 現フレームの非透明bbox
-  function buildRedrawMask(p, frameIndex, kfIdx) {
-    const { width, height } = p;
-    const cur = p.frames[frameIndex].pixels;
-    const rows = Array.from({ length: height }, () => new Uint8Array(width));
-    const markRect = (x0, y0, x1, y1) => {
-      for (let y = Math.max(0, y0); y <= Math.min(height - 1, y1); y++)
-        for (let x = Math.max(0, x0); x <= Math.min(width - 1, x1); x++) rows[y][x] = 1;
-    };
-    if (redrawAreaMode() === "full") {
-      let x0 = width, y0 = height, x1 = -1, y1 = -1;
-      for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
-        if (cur[y * width + x] !== 0) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
-      }
-      if (x1 >= 0) markRect(x0 - 1, y0 - 1, x1 + 1, y1 + 1);
-    } else {
-      // 差分セル（対ベース）を5px膨張
-      const base = basePixels(p);
-      const diff = [];
-      for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
-        if (cur[y * width + x] !== base[y * width + x]) diff.push([x, y]);
-      }
-      for (const [x, y] of diff) markRect(x - 5, y - 5, x + 5, y + 5);
-      // 移動したパーツの矩形（移動前+移動後、+2px）
-      const kf = p.rig?.keyframes?.[kfIdx];
-      if (kf) {
-        for (const part of p.rig.parts) {
-          const t = kf[part.id];
-          if (!t || (t.dx === 0 && t.dy === 0 && t.rot === 0)) continue;
-          const r = part.patch;
-          markRect(r.x - 2, r.y - 2, r.x + r.w + 1, r.y + r.h + 1);
-          markRect(r.x + t.dx - 2, r.y + t.dy - 2, r.x + t.dx + r.w + 1, r.y + t.dy + r.h + 1);
-        }
-      }
-    }
-    return rows.map((r) => Array.from(r).join("")).join("\n");
-  }
 
   // §22.5-3: マスクを連結成分（8近傍）に分割し、成分ごとに
   // { mask(フルサイズ・その成分の'1'のみ), cropRect(bbox+2pxマージン) } を返す
@@ -917,16 +960,44 @@ export function initRig(store, toast) {
 
     // §22.5-3: フレームごとのマスクを連結成分に分割し、成分（領域）ごとに
     // bboxクロップ付きの独立リクエストを発行（サーバー側キューの並列2に乗る）
-    const jobs = [];
+    let jobs = [];
+    const fallbackFrames = [];
     for (const fi of frameIndexes) {
-      const mask = buildRedrawMask(p, fi, fi - rig.generatedAt);
+      const { mask, fellBack } = computeRedrawMask(p, fi, fi - rig.generatedAt, redrawAreaMode());
+      if (fellBack) fallbackFrames.push(fi);
       for (const comp of splitMaskComponents(p, mask)) {
-        jobs.push({ fi, mask: comp.mask, cropRect: comp.cropRect });
+        jobs.push({ fi, mask: comp.mask, cropRect: comp.cropRect, cells: comp.cells });
       }
+    }
+    // §22.6-1: rot≠0 のパーツが無いキーフレームは moved 方式へ自動フォールバック（トーストで通知）
+    if (fallbackFrames.length) {
+      toast(`回転した部位が無いため「動いた部位すべて」で領域を作成しました（フレーム${fallbackFrames.join(", ")}）`);
     }
     if (!jobs.length) {
       toast("描き直す領域がありません（ラフがベースと同一です）", "error");
       return;
+    }
+    // §22.6-3: 大領域ガード — CLI系バックエンドで1リクエストのマスクセル数が閾値超のとき確認。
+    // キャンセルで超過リクエストのみ除外（他の領域は続行）。
+    const cfg = store.state.serverConfig || {};
+    if (cfg.backend === "cli" || cfg.backend === "codex") {
+      const maxCells = Number(cfg.redrawMaxCells) > 0 ? Number(cfg.redrawMaxCells) : 1800;
+      const big = jobs.filter((j) => j.cells > maxCells);
+      if (big.length) {
+        const ok = window.confirm(
+          `対象領域が大きく（最大 ${Math.max(...big.map((j) => j.cells))}セル > 閾値 ${maxCells}）、タイムアウトの可能性が高いです。` +
+          `パーツの「固定」や対象領域「回転した部位のみ」で領域を絞るのがおすすめです。このまま続行しますか？` +
+          `（キャンセルで大きい${big.length}領域だけ除外します）`,
+        );
+        if (!ok) {
+          jobs = jobs.filter((j) => j.cells <= maxCells);
+          if (!jobs.length) {
+            toast("大きい領域を除外した結果、送信する領域がありません", "error");
+            return;
+          }
+          toast(`${big.length}領域を除外して続行します`);
+        }
+      }
     }
 
     abortController = new AbortController();
