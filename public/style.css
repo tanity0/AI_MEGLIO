@@ -303,6 +303,14 @@ aside, #canvasPanel {
 .part-item.is-selected .part-name { color: var(--accent); font-weight: 700; }
 .part-item .part-z { width: 44px; }
 .part-item .part-parent { max-width: 90px; }
+.part-item .part-fixed {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 11px;
+  color: var(--text-1);
+  white-space: nowrap;
+}
 .part-item input, .part-item select {
   background: var(--bg-1);
   color: var(--text-0);

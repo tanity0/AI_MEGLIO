@@ -110,7 +110,8 @@ export function buildKeyframes(preset, nFrames, magnitude, bounce, parts) {
     const f = t - Math.floor(t);
     const kf = {};
     for (const part of parts) {
-      const role = roleOf(part);
+      // §22.2 固定: ロール変換を適用せず、胴と同じ変換のみ（バウンス追従）
+      const role = part.fixed ? "torso" : roleOf(part);
       const ea = entryOf(table[a], role);
       const eb = entryOf(table[b], role);
       let dx = (ea.dx + (eb.dx - ea.dx) * f) * magnitude;
@@ -432,6 +433,22 @@ export function initRig(store, toast) {
         store.notify();
       });
       li.appendChild(name);
+
+      // §22.2 固定トグル: ロール変換なし・胴と同じ変換のみ（visibleとは別物）
+      const fixLabel = document.createElement("label");
+      fixLabel.className = "part-fixed";
+      const fix = document.createElement("input");
+      fix.type = "checkbox";
+      fix.checked = part.fixed === true;
+      fix.addEventListener("change", () => {
+        part.fixed = fix.checked;
+        if (fix.checked) toast(`「${part.name}」を固定しました（次のフレーム生成から胴と同じ動きだけになります）`);
+        store.notify();
+      });
+      fix.dataset.helpHover = "rig.partFixed"; // input直付け（labelに付けるとクリックがヘルプに奪われる）
+      fixLabel.appendChild(fix);
+      fixLabel.appendChild(document.createTextNode("固定"));
+      li.appendChild(fixLabel);
 
       const z = document.createElement("input");
       z.type = "number";

@@ -172,6 +172,7 @@ function cloneRig(rig, toPlain) {
       z: p.z,
       parent: p.parent || "",
       visible: p.visible !== false,
+      fixed: p.fixed === true,
     })),
     keyframes: (rig.keyframes || []).map((kf) => {
       const out = {};
@@ -369,6 +370,7 @@ function rigFromPlain(raw, width, height) {
         z: Number.isInteger(p.z) ? p.z : 0,
         parent: typeof p.parent === "string" ? p.parent : "",
         visible: p.visible !== false,
+        fixed: p.fixed === true,
       });
       seen.add(p.id);
     }
