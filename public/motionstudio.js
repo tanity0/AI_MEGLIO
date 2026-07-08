@@ -499,6 +499,8 @@ export function initMotionStudio(store, toast) {
     mergeTitle.textContent = `部位取り込み — フレーム${i + 1}の候補 vs ${refLabel}（${blobs.length}塊）`;
     const rectTool = document.querySelector('input[name="mcMergeTool"][value="rect"]');
     if (rectTool) rectTool.checked = true;
+    const compReplace = document.querySelector('input[name="mcMergeComposite"][value="replace"]');
+    if (compReplace) compReplace.checked = true; // §25.11: 既定は完全置換
     mergePanel.hidden = false;
     renderMerge();
   }
@@ -534,10 +536,24 @@ export function initMotionStudio(store, toast) {
     renderMerge();
   }
 
+  // §25.11: 取り込み方（完全置換=既定 / 前面=候補非透明のみ / 背面=比較先透明∧候補非透明のみ）
+  function compositeMode() {
+    return document.querySelector('input[name="mcMergeComposite"]:checked')?.value || "replace";
+  }
   function mergeComposite() {
     const cand = merge.cand.pixels;
+    const mode = compositeMode();
     const out = Uint8Array.from(merge.ref);
-    for (let i = 0; i < out.length; i++) if (merge.mask[i]) out[i] = cand[i];
+    for (let i = 0; i < out.length; i++) {
+      if (!merge.mask[i]) continue;
+      if (mode === "front") {
+        if (cand[i] !== 0) out[i] = cand[i]; // 候補の透明部は現状維持（上に乗せる）
+      } else if (mode === "behind") {
+        if (out[i] === 0 && cand[i] !== 0) out[i] = cand[i]; // 透明の後ろに差し込む
+      } else {
+        out[i] = cand[i]; // 完全置換
+      }
+    }
     return out;
   }
 
@@ -736,6 +752,10 @@ export function initMotionStudio(store, toast) {
     merge = null;
     mergePanel.hidden = true;
   });
+  // §25.11-4: 取り込み方の切り替えは合成プレビューへ即時反映
+  for (const r of document.querySelectorAll('input[name="mcMergeComposite"]')) {
+    r.addEventListener("change", () => { if (merge) renderMerge(); });
+  }
 
   // ---------------------------------------------------------------------
   // §25.6-4.5/§25.8: GPT依頼キット（out/ へ reference.png + prompt.txt・依頼文はクリップボードにも）

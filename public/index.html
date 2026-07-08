@@ -437,6 +437,10 @@
         <label class="radio-row inline"><input type="radio" name="mcMergeTool" value="brush"> ブラシ</label>
         <label class="radio-row inline"><input type="radio" name="mcBrushMode" value="add" checked> 足す</label>
         <label class="radio-row inline"><input type="radio" name="mcBrushMode" value="del"> 引く</label>
+        <span class="hint">取り込み方:</span>
+        <label class="radio-row inline" title="採用セルを候補の値で置換（候補が透明なら消える）"><input type="radio" name="mcMergeComposite" value="replace" checked> 完全置換</label>
+        <label class="radio-row inline" title="候補が非透明のセルだけ置換（部位を上に乗せる）"><input type="radio" name="mcMergeComposite" value="front"> 前面</label>
+        <label class="radio-row inline" title="比較先が透明かつ候補が非透明のセルだけ置換（後ろ髪・マント等を後ろに差し込む）"><input type="radio" name="mcMergeComposite" value="behind"> 背面</label>
         <button id="mcMergeApply" class="btn btn-small btn-accent">適用</button>
         <button id="mcMergeCancel" class="btn btn-small">キャンセル</button>
       </div>
