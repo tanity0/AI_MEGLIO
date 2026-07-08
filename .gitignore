@@ -4,3 +4,4 @@ redraw-feedback/
 *.log
 npm-debug.log*
 .DS_Store
+gpt-exchange/

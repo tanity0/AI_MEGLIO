@@ -39,6 +39,20 @@ const CLI_CONCURRENCY = Number(process.env.CLI_CONCURRENCY) > 0 ? Number(process
 const CLI_DEBUG = process.env.CLI_DEBUG === "1"; // §22.5-5: プロンプト+生出力を ./cli-logs/ に保存
 const REDRAW_MAX_CELLS = Number(process.env.REDRAW_MAX_CELLS) > 0 ? Number(process.env.REDRAW_MAX_CELLS) : 1800; // §22.6-3: 描き直し1リクエストの大領域ガード閾値（CLI系のみクライアントが確認ダイアログに使用）
 const EXPORT_ROOT = process.env.EXPORT_ROOT || ""; // §16.4: 未設定なら /api/export は無効
+// §25.8: GPT往復用の共有フォルダ。既定はプロジェクト直下、環境変数 EXCHANGE_DIR で
+// 上書き可能（例: Google Drive for Desktop 配下を指してスマホ→Drive→PC の自動取り込み）
+const EXCHANGE_DIR = process.env.EXCHANGE_DIR ? path.resolve(process.env.EXCHANGE_DIR) : path.join(process.cwd(), "gpt-exchange");
+const EXCHANGE_OUT = path.join(EXCHANGE_DIR, "out");
+const EXCHANGE_IN = path.join(EXCHANGE_DIR, "in");
+const EXCHANGE_DONE = path.join(EXCHANGE_IN, "done");
+const EXCHANGE_MAX_BYTES = 20 * 1024 * 1024; // 画像1ファイル20MB上限
+const EXCHANGE_IMAGE_RE = /\.(png|jpe?g|webp)$/i;
+try {
+  fssync.mkdirSync(EXCHANGE_OUT, { recursive: true });
+  fssync.mkdirSync(EXCHANGE_DONE, { recursive: true });
+} catch (err) {
+  console.error(`[exchange] フォルダ作成に失敗: ${err.message}`);
+}
 
 const MAX_BODY_BYTES = 5 * 1024 * 1024; // 5MB 上限
 
@@ -2124,6 +2138,109 @@ function decodeDataUrl(dataUrl) {
 // 保存内容はプロンプト改善のための疑似リプレイに足る完全性（palette・キャンバスサイズ・
 // ジョブごとの base/rough/result クロップグリッド+mask+cropRect）で受け取る。
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// §25.6-4.5/§25.8: GPT依頼キットの書き出し（gpt-exchange/out/）
+// body: { preset, customText?, total, styleGuide?, referencePng(dataUrl) }
+// サーバー側で依頼文を組み立て（phaseHint テーブルを流用）、reference.png + prompt.txt を保存。
+// ---------------------------------------------------------------------------
+async function handleExchangeKit(req, res) {
+  let raw;
+  try {
+    raw = await readBody(req, MAX_BODY_BYTES);
+  } catch {
+    jsonError(res, 413, "キットのサイズが上限を超えています");
+    return;
+  }
+  let body;
+  try {
+    body = JSON.parse(raw.toString("utf8"));
+  } catch {
+    jsonError(res, 400, "リクエストが不正です");
+    return;
+  }
+  const preset = MOTION_PRESETS.includes(body.preset) ? body.preset : null;
+  const total = Number.isInteger(body.total) && body.total >= 2 && body.total <= 12 ? body.total : null;
+  if (!preset || !total) {
+    jsonError(res, 400, "preset / total が不正です");
+    return;
+  }
+  const customText = typeof body.customText === "string" ? body.customText.slice(0, 500) : "";
+  const styleGuide = typeof body.styleGuide === "string" ? body.styleGuide.slice(0, 4000) : "";
+  const label = PRESET_LABELS[preset] || preset;
+  const lines = [
+    `以下の参照画像のドット絵キャラクターの「${label}」アニメーションを、横一列のスプライトシート1枚の画像として描いてください。`,
+    `- コマ数: ${total}（左から第1〜第${total}コマ、等間隔に並べる）`,
+    `- キャラの大きさと足元の位置は全コマで固定する`,
+    `- 背景は単色（発光・フチ・影・グラデーションは付けない）`,
+    `- 画風・頭身・配色・輪郭の太さ・ドット感は参照画像と完全に同じにする（別キャラにしない）`,
+  ];
+  if (preset === "custom" && customText) lines.push(`- 動きの内容: ${customText}`);
+  lines.push("", "各コマのポーズ:");
+  for (let i = 0; i < total; i++) {
+    lines.push(`- 第${i + 1}コマ: ${motionframePhaseHint(preset, i, total)}`);
+  }
+  if (styleGuide) {
+    lines.push("", "スタイルガイド（厳守）:", styleGuide);
+  }
+  const promptText = lines.join("\n");
+  try {
+    const b64 = extractBase64FromDataUrl(typeof body.referencePng === "string" ? body.referencePng : "");
+    if (!b64) throw new Error("referencePng が不正です");
+    await fs.mkdir(EXCHANGE_OUT, { recursive: true });
+    await fs.writeFile(path.join(EXCHANGE_OUT, "reference.png"), Buffer.from(b64, "base64"));
+    await fs.writeFile(path.join(EXCHANGE_OUT, "prompt.txt"), promptText);
+    const out = JSON.stringify({ ok: true, dir: EXCHANGE_OUT, files: ["reference.png", "prompt.txt"], promptText });
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Content-Length": Buffer.byteLength(out) });
+    res.end(out);
+    console.log(`[exchange] キットを書き出しました: ${EXCHANGE_OUT}`);
+  } catch (err) {
+    jsonError(res, 500, `キットの書き出しに失敗しました: ${err.message}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// §25.8-3: GET /api/exchange-inbox — in/ の新規画像を返す（?peek=1 は件数のみ・移動なし）
+// 監視対象は EXCHANGE_IN 固定。シンボリックリンクは追跡しない。20MB 上限。
+// 返したファイルは in/done/ へ移動（再取り込み防止）。
+// ---------------------------------------------------------------------------
+async function handleExchangeInbox(req, res, urlObj) {
+  const peek = urlObj.searchParams.get("peek") === "1";
+  const files = [];
+  try {
+    const names = await fs.readdir(EXCHANGE_IN);
+    for (const name of names) {
+      if (!EXCHANGE_IMAGE_RE.test(name)) continue; // 非画像は無視
+      const fp = path.join(EXCHANGE_IN, name);
+      let st;
+      try {
+        st = await fs.lstat(fp);
+      } catch {
+        continue;
+      }
+      if (!st.isFile() || st.isSymbolicLink()) continue; // シンボリックリンク不追跡
+      if (st.size > EXCHANGE_MAX_BYTES) continue;
+      if (peek) {
+        files.push({ name });
+        continue;
+      }
+      try {
+        const buf = await fs.readFile(fp);
+        const ext = name.toLowerCase().endsWith(".webp") ? "webp" : name.toLowerCase().match(/\.jpe?g$/) ? "jpeg" : "png";
+        files.push({ name, dataUrl: `data:image/${ext};base64,${buf.toString("base64")}` });
+        // done/ へ移動（同名衝突はタイムスタンプ付与）
+        let dest = path.join(EXCHANGE_DONE, name);
+        if (fssync.existsSync(dest)) dest = path.join(EXCHANGE_DONE, `${Date.now()}-${name}`);
+        await fs.rename(fp, dest);
+      } catch (err) {
+        console.error(`[exchange] 取り込みに失敗: ${name}: ${err.message}`);
+      }
+    }
+  } catch {}
+  const out = JSON.stringify({ files, count: files.length });
+  res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Content-Length": Buffer.byteLength(out) });
+  res.end(out);
+}
+
 async function handleRedrawFeedback(req, res) {
   let raw;
   try {
@@ -2285,6 +2402,10 @@ const server = http.createServer(async (req, res) => {
       await handleApiExport(req, res);
     } else if (req.method === "POST" && urlPath === "/api/redraw-feedback") {
       await handleRedrawFeedback(req, res); // §22.10-2
+    } else if (req.method === "POST" && urlPath === "/api/exchange-kit") {
+      await handleExchangeKit(req, res); // §25.6-4.5/§25.8
+    } else if (req.method === "GET" && urlPath === "/api/exchange-inbox") {
+      await handleExchangeInbox(req, res, new URL(req.url, "http://localhost")); // §25.8-3
     } else if (req.method === "GET") {
       await serveStatic(req, res);
     } else {

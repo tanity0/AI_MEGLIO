@@ -878,3 +878,5 @@ aside, #canvasPanel {
 .mc-error { font-size: 11px; color: #f3b3ba; max-width: 130px; word-break: break-all; }
 .mc-confirmed { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; font-size: 12px; padding: 4px 0; }
 .mc-confirmed[hidden] { display: none; }
+.mc-badge { font-size: 10px; color: var(--text-1); }
+.mc-inbox-badge { font-size: 11px; color: var(--accent); border: 1px solid var(--accent); border-radius: 8px; padding: 1px 6px; }

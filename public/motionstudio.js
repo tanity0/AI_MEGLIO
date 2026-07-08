@@ -2,6 +2,7 @@
 // N×K 個の独立した単フレーム生成（mode:"motionframe"）を並列発行し、
 // ギャラリーで採用/削除/描き直し/追加生成 → 全フレーム採用で確定（タグ付きで末尾に追加）。
 import { streamEdit } from "./api.js";
+import { removeBackground, detectComponents, convertImage } from "./convert.js";
 import {
   frameToGridString,
   pixelsToGridString,
@@ -12,6 +13,7 @@ import {
   splitTokens,
   indexForToken,
   addGeneratedTag,
+  hexToRgba,
 } from "./app.js";
 
 const PRESET_LABELS = { walk: "歩き", run: "走り", attack: "攻撃", idle: "待機", jump: "ジャンプ", custom: "カスタム" };
@@ -27,6 +29,11 @@ export function initMotionStudio(store, toast) {
   const confirmedBar = document.getElementById("mcConfirmedBar");
   const generateBtn = document.getElementById("mcGenerateBtn");
   const candCount = document.getElementById("mcCandCount");
+  const imageBtn = document.getElementById("mcImageBtn");
+  const imageInput = document.getElementById("mcImageInput");
+  const mirrorBtn = document.getElementById("mcMirrorBtn");
+  const kitBtn = document.getElementById("mcKitBtn");
+  const inboxBadge = document.getElementById("mcInboxBadge");
   const motionPreset = document.getElementById("motionPreset");
   const motionCustomText = document.getElementById("motionCustomText");
   const motionFrames = document.getElementById("motionFrames");
@@ -181,13 +188,273 @@ export function initMotionStudio(store, toast) {
     const p = project();
     return Math.max(1, Math.floor(120 / Math.max(p.width, p.height)));
   }
-  function drawCand(canvas, pixels) {
+  function drawCand(canvas, pixels, cand = null) {
     const p = project();
     const sc = cellScale();
     canvas.width = p.width * sc;
     canvas.height = p.height * sc;
+    const ctx = canvas.getContext("2d");
     const tmp = { width: p.width, height: p.height, palette: p.palette, frames: [{ pixels }] };
-    drawFrameToContext(canvas.getContext("2d"), tmp, 0, sc);
+    drawFrameToContext(ctx, tmp, 0, sc);
+    // §25.6-2: 整列プレビュー（ベースとの半透明重ね）
+    if (cand && cand.overlayBase && p.baseFrame) {
+      ctx.save();
+      ctx.globalAlpha = 0.35;
+      const tb = { width: p.width, height: p.height, palette: p.palette, frames: [{ pixels: p.baseFrame }] };
+      const off = document.createElement("canvas");
+      off.width = p.width * sc; off.height = p.height * sc;
+      drawFrameToContext(off.getContext("2d"), tb, 0, sc);
+      ctx.drawImage(off, 0, 0);
+      ctx.restore();
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // §25.6: 画像からの候補追加（パレットスナップ・位置合わせ・ミラー補完）
+  // ---------------------------------------------------------------------
+  function nearestPaletteIndex(rgbCache, r, g, b) {
+    let best = 1, bd = Infinity;
+    for (let i = 1; i < rgbCache.length; i++) {
+      const c = rgbCache[i];
+      const d = (c[0] - r) ** 2 + (c[1] - g) ** 2 + (c[2] - b) ** 2;
+      if (d < bd) { bd = d; best = i; }
+    }
+    return best;
+  }
+
+  // 変換結果（独自パレット）をプロジェクトパレットへスナップし、
+  // フルキャンバスへ配置して足元・重心で整列した Uint8Array を返す
+  function snapAndAlign(conv) {
+    const p = project();
+    const rgb = p.palette.map((hex) => hexToRgba(hex));
+    // conv.palette[i] → プロジェクトindex の対応表
+    const map = conv.palette.map((hex, i) => {
+      if (i === 0) return 0;
+      const [r, g, b] = hexToRgba(hex);
+      return nearestPaletteIndex(rgb, r, g, b);
+    });
+    const full = new Uint8Array(p.width * p.height);
+    // まず中央/下寄せで仮配置
+    const ox0 = Math.floor((p.width - conv.width) / 2);
+    const oy0 = p.height - conv.height;
+    for (let y = 0; y < conv.height; y++) {
+      for (let x = 0; x < conv.width; x++) {
+        const v = conv.pixels[y * conv.width + x];
+        if (v === 0) continue;
+        const tx = ox0 + x, ty = oy0 + y;
+        if (tx < 0 || ty < 0 || tx >= p.width || ty >= p.height) continue;
+        full[ty * p.width + tx] = map[v];
+      }
+    }
+    // §25.6-2: (a) 足元基準（最下段の非透明行を一致）(b) 水平は重心一致
+    const stats = (pixels) => {
+      let bottom = -1, sumX = 0, n = 0;
+      for (let y = 0; y < p.height; y++) for (let x = 0; x < p.width; x++) {
+        if (pixels[y * p.width + x] !== 0) {
+          if (y > bottom) bottom = y;
+          sumX += x; n++;
+        }
+      }
+      return { bottom, cx: n ? sumX / n : 0, n };
+    };
+    const base = p.baseFrame || p.frames[0].pixels;
+    const sb = stats(base);
+    const sc = stats(full);
+    if (sc.n === 0) return full;
+    return shiftPixels(full, Math.round(sb.cx - sc.cx), sb.bottom - sc.bottom);
+  }
+
+  function shiftPixels(pixels, dx, dy) {
+    const p = project();
+    const out = new Uint8Array(p.width * p.height);
+    for (let y = 0; y < p.height; y++) {
+      for (let x = 0; x < p.width; x++) {
+        const v = pixels[y * p.width + x];
+        if (v === 0) continue;
+        const tx = x + dx, ty = y + dy;
+        if (tx < 0 || ty < 0 || tx >= p.width || ty >= p.height) continue;
+        out[ty * p.width + tx] = v;
+      }
+    }
+    return out;
+  }
+
+  function flipPixelsH(pixels) {
+    const p = project();
+    const out = new Uint8Array(p.width * p.height);
+    for (let y = 0; y < p.height; y++) {
+      for (let x = 0; x < p.width; x++) out[y * p.width + (p.width - 1 - x)] = pixels[y * p.width + x];
+    }
+    return out;
+  }
+
+  async function fileToImageData(file) {
+    const bmp = await createImageBitmap(file);
+    const cv = document.createElement("canvas");
+    cv.width = bmp.width; cv.height = bmp.height;
+    const ctx = cv.getContext("2d");
+    ctx.drawImage(bmp, 0, 0);
+    return ctx.getImageData(0, 0, bmp.width, bmp.height);
+  }
+
+  async function addImageCandidates(file, opts = {}) {
+    const p = project();
+    if (!session) return 0;
+    let img;
+    try {
+      img = await fileToImageData(file);
+    } catch {
+      toast("画像を読み込めませんでした", "error");
+      return 0;
+    }
+    const data = removeBackground(img.data, img.width, img.height);
+    const comps = detectComponents(data, img.width, img.height);
+    if (!comps.length) {
+      toast("キャラクターを検出できませんでした（背景除去に失敗）", "error");
+      return 0;
+    }
+    let startFrame;
+    if (Number.isInteger(opts.startFrame)) {
+      startFrame = opts.startFrame; // §25.8: 自動取り込みはフレーム1から順に割り当て
+    } else {
+      const ans = window.prompt(`何フレーム目の候補にしますか？（1〜${session.total}。${comps.length}コマ検出 — シートは順に割り当て）`, "1");
+      if (ans === null) return 0;
+      startFrame = Math.max(1, Math.min(session.total, Number(ans) || 1)) - 1;
+    }
+    let added = 0;
+    for (let k = 0; k < comps.length; k++) {
+      const fi = startFrame + k;
+      if (fi >= session.total) break;
+      const box = comps[k];
+      // コマを切り出して §18 変換（プロジェクト高さ指定）→ パレットスナップ → 整列
+      const bw = box.x1 - box.x0 + 1, bh = box.y1 - box.y0 + 1;
+      const crop = new Uint8ClampedArray(bw * bh * 4);
+      for (let y = 0; y < bh; y++) {
+        for (let x = 0; x < bw; x++) {
+          const si = ((box.y0 + y) * img.width + (box.x0 + x)) * 4;
+          const di = (y * bw + x) * 4;
+          crop[di] = data[si]; crop[di + 1] = data[si + 1]; crop[di + 2] = data[si + 2]; crop[di + 3] = data[si + 3];
+        }
+      }
+      let conv;
+      try {
+        conv = convertImage(crop, bw, bh, { targetH: p.height, colors: Math.min(64, Math.max(2, p.palette.length - 1)) });
+      } catch (err) {
+        toast(`コマ${k + 1}の変換に失敗: ${err.message}`, "error");
+        continue;
+      }
+      const pixels = snapAndAlign(conv);
+      const cand = {
+        id: session.nextId++, status: "ok", variant: session.cands[fi].length,
+        source: "image", snapped: true, aligned: true, pixels,
+      };
+      session.cands[fi].push(cand);
+      added++;
+    }
+    renderGrid();
+    if (!opts.quiet) {
+      toast(added ? `画像から${added}個の候補を追加しました（パレットスナップ+足元/重心整列済み）` : "候補を追加できませんでした", added ? "info" : "error");
+    }
+    return added;
+  }
+
+  // ---------------------------------------------------------------------
+  // §25.6-4.5/§25.8: GPT依頼キット（out/ へ reference.png + prompt.txt・依頼文はクリップボードにも）
+  // ---------------------------------------------------------------------
+  async function exportKit() {
+    if (!session) return;
+    const p = project();
+    if (!p.baseFrame) {
+      toast("ベースフレームがありません", "error");
+      return;
+    }
+    // 参照PNG: ベースフレームの8倍最近傍拡大
+    const referencePng = pixelsToPngDataUrl(p.baseFrame, p.width, p.height, p.palette, 8);
+    const style = styleRequestFields(p, store.state.serverConfig);
+    try {
+      const res = await fetch("/api/exchange-kit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          preset: session.preset,
+          customText: session.customText,
+          total: session.total,
+          styleGuide: style.styleGuide || "",
+          referencePng,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      let clip = "";
+      try {
+        await navigator.clipboard.writeText(data.promptText);
+        clip = "依頼文をクリップボードにコピーしました。";
+      } catch {
+        clip = "（クリップボードへのコピーは失敗。prompt.txt を使ってください）";
+      }
+      toast(`GPT依頼キットを書き出しました: ${data.dir}（reference.png + prompt.txt）。${clip}`);
+    } catch (err) {
+      toast(`キットの書き出しに失敗しました: ${err.message}`, "error");
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // §25.8-3: 受信箱ポーリング — ギャラリー表示中は自動取り込み、閉時はバッジ
+  // ---------------------------------------------------------------------
+  async function pollInbox() {
+    try {
+      const open = !modal.hidden && session && !session.confirmed;
+      if (open) {
+        const res = await fetch("/api/exchange-inbox");
+        const data = await res.json();
+        if (data.files?.length) {
+          let total = 0;
+          for (const f of data.files) {
+            const blob = await (await fetch(f.dataUrl)).blob();
+            total += await addImageCandidates(new File([blob], f.name, { type: blob.type }), { startFrame: 0, quiet: true });
+          }
+          if (total > 0) toast(`gpt-exchange/in から新しい候補を取り込みました（${total}個・処理済みは in/done/ へ移動）`);
+          inboxBadge.hidden = true;
+          inboxBadge.textContent = "";
+        }
+      } else {
+        const res = await fetch("/api/exchange-inbox?peek=1");
+        const data = await res.json();
+        if (data.count > 0) {
+          inboxBadge.hidden = false;
+          inboxBadge.textContent = `受信箱に${data.count}枚`;
+        } else {
+          inboxBadge.hidden = true;
+        }
+      }
+    } catch {}
+  }
+  setInterval(pollInbox, 3000);
+
+  // §25.6-4: ミラー補完 — 採用済みフレーム i の左右反転を i+N/2 の候補に（歩き4f: 3=flip(1), 4=flip(2)）
+  function mirrorComplete() {
+    if (!session) return;
+    if (session.total % 2 !== 0) {
+      toast("反転補完はフレーム数が偶数のときに使えます（前半↔後半の対応）", "error");
+      return;
+    }
+    const half = session.total / 2;
+    let added = 0;
+    for (let i = 0; i < half; i++) {
+      const src = session.adopted[i];
+      if (!src) continue;
+      const j = i + half;
+      const cand = {
+        id: session.nextId++, status: "ok", variant: session.cands[j].length,
+        source: "mirror", snapped: true, pixels: flipPixelsH(src.pixels),
+      };
+      session.cands[j].push(cand);
+      added++;
+    }
+    renderGrid();
+    toast(added
+      ? `${added}個の反転候補を追加しました（フレーム${half + 1}〜。武器などの非対称部は確定後に部位修正で直してください）`
+      : "反転元がありません（前半のフレームを採用してから実行してください）", added ? "info" : "error");
   }
 
   function renderCell(i, cand) {
@@ -218,10 +485,17 @@ export function initMotionStudio(store, toast) {
       el.appendChild(retry);
     } else {
       const cv = document.createElement("canvas");
-      cv.title = cand.warn || `候補${cand.variant + 1}`;
-      drawCand(cv, cand.pixels);
+      const srcLabel = cand.source === "image" ? "画像" : cand.source === "mirror" ? "反転" : `候補${cand.variant + 1}`;
+      cv.title = cand.warn || srcLabel;
+      drawCand(cv, cand.pixels, cand);
       cv.addEventListener("click", () => adopt(i, cand));
       el.appendChild(cv);
+      if (cand.source !== "grid") {
+        const badge = document.createElement("div");
+        badge.className = "mc-badge";
+        badge.textContent = cand.source === "image" ? "画像（スナップ+整列済み）" : "反転補完";
+        el.appendChild(badge);
+      }
       const row = document.createElement("div");
       row.className = "mc-cell-actions";
       const adoptBtn = document.createElement("button");
@@ -229,16 +503,18 @@ export function initMotionStudio(store, toast) {
       adoptBtn.textContent = session.adopted[i] === cand ? "採用中" : "採用";
       adoptBtn.addEventListener("click", () => adopt(i, cand));
       row.appendChild(adoptBtn);
-      const redo = document.createElement("button");
-      redo.className = "btn btn-small";
-      redo.textContent = "描き直し";
-      redo.title = "追記指示を添えて単発再生成（採用済みの前後フレームを文脈として同梱）";
-      redo.addEventListener("click", () => {
-        const inst = window.prompt("描き直しの追記指示（例: 腕をもっと大きく振って）", "");
-        if (inst === null) return;
-        runOne(i, cand, { instruction: inst.trim() || undefined, withNeighbors: true });
-      });
-      row.appendChild(redo);
+      if (cand.source === "grid") {
+        const redo = document.createElement("button");
+        redo.className = "btn btn-small";
+        redo.textContent = "描き直し";
+        redo.title = "追記指示を添えて単発再生成（採用済みの前後フレームを文脈として同梱）";
+        redo.addEventListener("click", () => {
+          const inst = window.prompt("描き直しの追記指示（例: 腕をもっと大きく振って）", "");
+          if (inst === null) return;
+          runOne(i, cand, { instruction: inst.trim() || undefined, withNeighbors: true });
+        });
+        row.appendChild(redo);
+      }
       const del = document.createElement("button");
       del.className = "btn btn-small";
       del.textContent = "削除";
@@ -249,6 +525,32 @@ export function initMotionStudio(store, toast) {
       });
       row.appendChild(del);
       el.appendChild(row);
+      // §25.6-2: 画像候補は±ナッジと「ベース重ね」プレビュー
+      if (cand.source === "image") {
+        const nudge = document.createElement("div");
+        nudge.className = "mc-cell-actions";
+        for (const [label, dx, dy] of [["◀", -1, 0], ["▶", 1, 0], ["▲", 0, -1], ["▼", 0, 1]]) {
+          const b = document.createElement("button");
+          b.className = "btn btn-small";
+          b.textContent = label;
+          b.title = "位置を1pxナッジ";
+          b.addEventListener("click", () => {
+            cand.pixels = shiftPixels(cand.pixels, dx, dy);
+            renderCell(i, cand);
+          });
+          nudge.appendChild(b);
+        }
+        const ov = document.createElement("button");
+        ov.className = "btn btn-small" + (cand.overlayBase ? " btn-accent" : "");
+        ov.textContent = "重ね";
+        ov.title = "ベースフレームを半透明で重ねて整列を確認";
+        ov.addEventListener("click", () => {
+          cand.overlayBase = !cand.overlayBase;
+          renderCell(i, cand);
+        });
+        nudge.appendChild(ov);
+        el.appendChild(nudge);
+      }
     }
   }
 
@@ -374,6 +676,14 @@ export function initMotionStudio(store, toast) {
     modal.hidden = true;
   }
   closeBtn.addEventListener("click", closeModal);
+  imageBtn.addEventListener("click", () => imageInput.click());
+  imageInput.addEventListener("change", async () => {
+    const file = imageInput.files?.[0];
+    imageInput.value = "";
+    if (file) await addImageCandidates(file);
+  });
+  mirrorBtn.addEventListener("click", mirrorComplete);
+  kitBtn.addEventListener("click", exportKit);
   abortBtn.addEventListener("click", () => {
     if (abortController) abortController.abort();
   });

@@ -204,6 +204,7 @@
         </label>
         <div class="ai-actions">
           <button id="mcGenerateBtn" class="btn btn-accent">候補を生成（ギャラリー）</button>
+          <span id="mcInboxBadge" class="mc-inbox-badge" hidden></span>
         </div>
         <div class="hint">フレームごとにK個の候補を並列生成し、ギャラリーで選別→確定します。候補生成は codex バックエンド推奨</div>
       </fieldset>
@@ -409,6 +410,10 @@
       <div class="mc-head-actions">
         <span class="mc-preview-wrap"><canvas id="mcPreviewCanvas" width="64" height="64" title="採用中セットの連続再生（プロジェクトfps）"></canvas></span>
         <span id="mcProgress" class="ai-progress" aria-live="polite"></span>
+        <button id="mcKitBtn" class="btn btn-small" title="ChatGPT への依頼キット（参照PNG+依頼文）を gpt-exchange/out/ に書き出し、依頼文をクリップボードへコピー（§25.6/§25.8）">GPT用依頼キットを書き出し</button>
+        <button id="mcImageBtn" class="btn btn-small" title="画像ファイル（単発またはシート）をパレットスナップ+足元/重心整列して候補に追加（§25.6）">画像から候補追加</button>
+        <input id="mcImageInput" type="file" accept="image/*" hidden>
+        <button id="mcMirrorBtn" class="btn btn-small" title="採用済みの前半フレームの左右反転を後半フレームの候補に追加（歩き4f: 3=flip(1), 4=flip(2)）">反転で補完</button>
         <button id="mcAbortBtn" class="btn btn-small" disabled>中断</button>
         <button id="mcConfirmBtn" class="btn btn-small btn-accent" disabled>確定（タイムラインへ追加）</button>
         <button id="mcCloseBtn" class="btn btn-small">閉じる</button>
