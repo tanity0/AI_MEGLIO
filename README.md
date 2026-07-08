@@ -80,6 +80,7 @@ BACKEND=codex npm start
 
 - プロンプト・タイムアウト（`CLI_TIMEOUT`）・同時実行数（`CLI_CONCURRENCY`）・全フレーム分割は Claude Code CLI モードと共通です。画像は渡されません。
 - モデルは `CODEX_MODEL` で指定できます（未指定なら codex 側の既定モデル）。`codex` の実体パスが解決できない場合は `CODEX_PATH` を設定してください。
+- **Windows での注意（spawn EPERM / EINVAL 対策）**: npm でインストールした `codex` / `claude` の実体は `.cmd` シム（バッチファイル）で、Node から直接起動できないことがあります。PowerShell で `(Get-Command codex).Source` を確認し、そのフルパスを `CODEX_PATH` に設定してください（`.cmd` のままで構いません — サーバーが `cmd.exe` 経由で起動します）。それでも失敗する場合は、`npm root -g` 配下の `@openai/codex` 内にある実体の `.exe` を直接指定するか、ウイルス対策ソフトのブロックを確認してください（Claude Code CLI の `CLI_PATH` も同様）。
 - **モデルの得手不得手により、ドット絵パッチの品質・所要時間は Claude バックエンドと異なる場合があります。まずは1セル修正など小さな指示で試してください。**
 
 ### MOCKモード（APIキー無しで動作確認）
@@ -101,8 +102,8 @@ APIを呼ばず、選択範囲（選択が無ければフレーム全体の中�
 | `CLI_MODEL` | `sonnet` | 使用するモデル（BACKEND=cli）。遅い場合は `haiku` を推奨 |
 | `CLI_TIMEOUT` | `300` | CLI呼び出しのタイムアウト秒数（BACKEND=cli / codex 共通） |
 | `CLI_CONCURRENCY` | `2` | CLI呼び出しの同時実行数（BACKEND=cli / codex 共通） |
-| `CLI_PATH` | `claude` | claude CLI 実行ファイルのフルパス。**Windowsで無言タイムアウトする場合は必ず指定**（`Get-Command claude` の Source の値。Node の spawn が PowerShell と異なる実体に解決することがあるため） |
-| `CODEX_PATH` | `codex` | codex CLI 実行ファイルのフルパス（BACKEND=codex。CLI_PATH と同じ動機） |
+| `CLI_PATH` | `claude` | claude CLI 実行ファイルのフルパス。**Windowsで無言タイムアウトする場合は必ず指定**（`Get-Command claude` の Source の値。Node の spawn が PowerShell と異なる実体に解決することがあるため）。`.cmd`/`.bat` を指定した場合は Windows では `cmd.exe` 経由で起動される |
+| `CODEX_PATH` | `codex` | codex CLI 実行ファイルのフルパス（BACKEND=codex。CLI_PATH と同じ動機・`.cmd`/`.bat` のシム対応も同様） |
 | `CODEX_MODEL` | 未設定 | 使用するモデル（BACKEND=codex）。未指定なら codex 側の既定モデル |
 | `CLI_DEBUG` | 未設定 | `1` でCLI呼び出しごとにプロンプト+生stdout/stderrを `./cli-logs/` に保存（cli / codex 共通・空応答などの診断用） |
 | `REDRAW_MAX_CELLS` | `1800` | AI描き直し1リクエストのマスクセル数がこれを超えるとCLI系バックエンドで送信前に確認ダイアログを出す閾値 |

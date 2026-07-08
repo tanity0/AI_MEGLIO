@@ -1437,16 +1437,65 @@ function stripCodeFence(text) {
   return m ? m[1].trim() : t;
 }
 
+// ---------------------------------------------------------------------------
+// §23.4-1: Windows の .cmd/.bat シム対応
+// npm グローバルインストールの codex/claude の実体は .cmd（バッチシム）で、Node の
+// spawn は .cmd/.bat を直接起動できない（セキュリティ修正以降 EINVAL/EPERM）。
+// 起動コマンドが .cmd/.bat で終わる場合、Windows では
+//   cmd.exe /d /s /c ""<path>" <args...>"
+// 形式に組み替える（スペースを含む引数のみ二重引用符で囲む。プロンプトは stdin 渡し）。
+// platform はユニットテストのため引数で上書き可能（既定 process.platform）。
+// ---------------------------------------------------------------------------
+export function buildSpawnCommand(cmd, args, platform = process.platform) {
+  if (platform === "win32" && /\.(cmd|bat)$/i.test(cmd)) {
+    const quote = (a) => (/\s/.test(a) ? `"${a}"` : a);
+    const inner = [`"${cmd}"`, ...args.map(quote)].join(" ");
+    return {
+      cmd: "cmd.exe",
+      args: ["/d", "/s", "/c", `"${inner}"`],
+      // cmd.exe に渡す1本の文字列を Node に再クォートさせない
+      options: { windowsVerbatimArguments: true },
+    };
+  }
+  return { cmd, args, options: {} };
+}
+
+// §23.4-2: spawn 起動失敗の分類（EPERM/EINVAL は .cmd シム起因のガイダンス付き）。
+// テストのため export（メッセージ文字列の単体検証用）。
+export function spawnStartError(err, { label, envVar, pkg, enoentMsg }) {
+  if (err?.code === "ENOENT") return userError(enoentMsg);
+  if (err?.code === "EPERM" || err?.code === "EINVAL") {
+    return userError(
+      `${label} の起動に失敗しました（spawn ${err.code}）。Windows では npm 版 codex/claude の実体が .cmd シム（バッチファイル）のため直接起動できないことが原因の可能性が高いです。` +
+      `環境変数 ${envVar} に .cmd のフルパス（PowerShell で (Get-Command ${envVar === "CODEX_PATH" ? "codex" : "claude"}).Source の値）を設定するか、` +
+      `実体の .exe（\`npm root -g\` 配下の ${pkg} 内の *.exe）を直接指定してください。ウイルス対策ソフトが起動をブロックしている可能性もあります。`
+    );
+  }
+  return userError(`${label} の起動に失敗しました: ${err.message}`);
+}
+const CLAUDE_SPAWN_ERR = {
+  label: "Claude Code CLI",
+  envVar: "CLI_PATH",
+  pkg: "@anthropic-ai/claude-code",
+  enoentMsg: "Claude Code CLI が見つかりません。`npm install -g @anthropic-ai/claude-code` の上 `claude` にログインしてください。",
+};
+const CODEX_SPAWN_ERR = {
+  label: "Codex CLI",
+  envVar: "CODEX_PATH",
+  pkg: "@openai/codex",
+  enoentMsg: "codex が見つかりません。`npm i -g @openai/codex` でインストールし、`codex login` でログインしてください。パスが解決できない場合は環境変数 CODEX_PATH に実体のフルパスを設定してください。",
+};
+
 function spawnClaudeCli(prompt, { registerCancel, mode }) {
   return new Promise((resolve, reject) => {
     let child;
     try {
-      child = spawn(CLI_CMD, ["-p", "--output-format", "json", "--model", CLI_MODEL], {
-        stdio: ["pipe", "pipe", "pipe"],
-        windowsHide: true,
-      });
+      // §23.4-1: CLI_PATH が .cmd/.bat のとき Windows では cmd.exe 経由で起動
+      const sc = buildSpawnCommand(CLI_CMD, ["-p", "--output-format", "json", "--model", CLI_MODEL]);
+      child = spawn(sc.cmd, sc.args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true, ...sc.options });
     } catch (err) {
-      reject(err);
+      // Node は .cmd 直接指定などで同期的に EINVAL を投げることがある（§23.4-2）
+      reject(spawnStartError(err, CLAUDE_SPAWN_ERR));
       return;
     }
     let stdout = "";
@@ -1476,11 +1525,7 @@ function spawnClaudeCli(prompt, { registerCancel, mode }) {
     });
 
     child.on("error", (err) => {
-      if (err && err.code === "ENOENT") {
-        settle(reject, userError("Claude Code CLI が見つかりません。`npm install -g @anthropic-ai/claude-code` の上 `claude` にログインしてください。"));
-      } else {
-        settle(reject, userError(`Claude Code CLI の起動に失敗しました: ${err.message}`));
-      }
+      settle(reject, spawnStartError(err, CLAUDE_SPAWN_ERR)); // §23.4-2: EPERM/EINVAL はシムガイダンス
     });
     child.stdout.on("data", (d) => { stdout += d; });
     child.stderr.on("data", (d) => { stderr += d; });
@@ -1573,9 +1618,12 @@ function spawnCodexCli(prompt, { registerCancel, mode }) {
     args.push("-"); // stdin からプロンプトを読む
     let child;
     try {
-      child = spawn(CODEX_CMD, args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+      // §23.4-1: CODEX_PATH が .cmd/.bat のとき Windows では cmd.exe 経由で起動
+      const sc = buildSpawnCommand(CODEX_CMD, args);
+      child = spawn(sc.cmd, sc.args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true, ...sc.options });
     } catch (err) {
-      reject(err);
+      // Node は .cmd 直接指定などで同期的に EINVAL を投げることがある（§23.4-2）
+      reject(spawnStartError(err, CODEX_SPAWN_ERR));
       return;
     }
     let stdout = "";
@@ -1605,11 +1653,7 @@ function spawnCodexCli(prompt, { registerCancel, mode }) {
     });
 
     child.on("error", (err) => {
-      if (err && err.code === "ENOENT") {
-        settle(reject, userError("codex が見つかりません。`npm i -g @openai/codex` でインストールし、`codex login` でログインしてください。パスが解決できない場合は環境変数 CODEX_PATH に実体のフルパスを設定してください。"));
-      } else {
-        settle(reject, userError(`Codex CLI の起動に失敗しました: ${err.message}`));
-      }
+      settle(reject, spawnStartError(err, CODEX_SPAWN_ERR)); // §23.4-2: EPERM/EINVAL はシムガイダンス
     });
     child.stdout.on("data", (d) => { stdout += d; });
     child.stderr.on("data", (d) => { stderr += d; });
