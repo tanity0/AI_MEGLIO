@@ -888,3 +888,4 @@ aside, #canvasPanel {
 .mc-chip { border-width: 2px; }
 .mc-merge-canvas-wrap { overflow: auto; max-height: 60vh; }
 .mc-merge-canvas-wrap canvas { image-rendering: pixelated; cursor: crosshair; }
+.mc-chip-partial { border-style: dashed; color: var(--accent); }

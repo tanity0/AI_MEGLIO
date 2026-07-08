@@ -108,7 +108,7 @@ export function initMotionStudio(store, toast) {
   const mergeTitle = document.getElementById("mcMergeTitle");
   const mergeChips = document.getElementById("mcMergeChips");
   const mergeCanvas = document.getElementById("mcMergeCanvas");
-  const mergeBrush = document.getElementById("mcMergeBrush");
+  const mergeParts = document.getElementById("mcMergeParts");
   const mergeApplyBtn = document.getElementById("mcMergeApply");
   const mergeCancelBtn = document.getElementById("mcMergeCancel");
   const motionPreset = document.getElementById("motionPreset");
@@ -483,17 +483,54 @@ export function initMotionStudio(store, toast) {
       toast("この候補と比較先に差分がありません", "error");
       return;
     }
+    // §25.10: 矩形・パーツチップ用の差分マップ（ref≠cand のセル）
+    const diffMap = new Uint8Array(p.width * p.height);
+    for (let k = 0; k < diffMap.length; k++) if (ref[k] !== cand.pixels[k]) diffMap[k] = 1;
     merge = {
       i, cand, refKind,
       ref: Uint8Array.from(ref),
       blobs,
+      diffMap,
       adopted: new Set(),
       mask: new Uint8Array(p.width * p.height),
+      rectDrag: null,
     };
     const refLabel = refKind === "adopted" ? "採用中の候補" : refKind === "frame" ? `確定済みフレーム${session.insertedAt + i}` : "ベースフレーム";
-    mergeTitle.textContent = `差分採用マージ — フレーム${i + 1}の候補 vs ${refLabel}（${blobs.length}塊）`;
-    mergeBrush.checked = false;
+    mergeTitle.textContent = `部位取り込み — フレーム${i + 1}の候補 vs ${refLabel}（${blobs.length}塊）`;
+    const rectTool = document.querySelector('input[name="mcMergeTool"][value="rect"]');
+    if (rectTool) rectTool.checked = true;
     mergePanel.hidden = false;
+    renderMerge();
+  }
+
+  // §25.10-2: リグのパーツ矩形を「取り込み範囲のテンプレート」として使う。
+  // パーツ矩形内の差分セル集合に対する採用状態（全/一部/未）を返す
+  function partDiffState(part) {
+    const p = project();
+    const r = part.patch;
+    let total = 0, sel = 0;
+    for (let y = r.y; y < r.y + r.h && y < p.height; y++) {
+      for (let x = r.x; x < r.x + r.w && x < p.width; x++) {
+        const idx = y * p.width + x;
+        if (!merge.diffMap[idx]) continue;
+        total++;
+        if (merge.mask[idx]) sel++;
+      }
+    }
+    return { total, sel, state: total === 0 ? "none" : sel === 0 ? "off" : sel === total ? "full" : "partial" };
+  }
+  function togglePart(part) {
+    const p = project();
+    const st = partDiffState(part);
+    if (st.total === 0) return;
+    const on = st.state !== "full"; // 全採用でなければ全部入れる・全採用なら外す
+    const r = part.patch;
+    for (let y = r.y; y < r.y + r.h && y < p.height; y++) {
+      for (let x = r.x; x < r.x + r.w && x < p.width; x++) {
+        const idx = y * p.width + x;
+        if (merge.diffMap[idx]) merge.mask[idx] = on ? 1 : 0;
+      }
+    }
     renderMerge();
   }
 
@@ -529,6 +566,40 @@ export function initMotionStudio(store, toast) {
         }
       }
     });
+    // §25.10-1: 矩形選択のラバーバンド
+    if (merge.rectDrag) {
+      const d = merge.rectDrag;
+      const x0 = Math.min(d.x0, d.x1), y0 = Math.min(d.y0, d.y1);
+      const x1 = Math.max(d.x0, d.x1), y1 = Math.max(d.y0, d.y1);
+      ctx.save();
+      ctx.strokeStyle = d.erase ? "#ef6d7a" : "#6ee7c8";
+      ctx.lineWidth = 2;
+      ctx.setLineDash([5, 4]);
+      ctx.strokeRect(x0 * sc + 1, y0 * sc + 1, (x1 - x0 + 1) * sc - 2, (y1 - y0 + 1) * sc - 2);
+      ctx.restore();
+    }
+    // §25.10-2: パーツチップ（リグにパーツ定義があるときだけ表示）
+    const parts = p.rig?.parts?.length ? p.rig.parts : null;
+    mergeParts.hidden = !parts;
+    mergeParts.innerHTML = "";
+    if (parts) {
+      const label = document.createElement("span");
+      label.className = "hint";
+      label.textContent = "パーツで取り込み:";
+      mergeParts.appendChild(label);
+      for (const part of parts) {
+        const st = partDiffState(part);
+        const b = document.createElement("button");
+        b.className = "btn btn-small mc-chip"
+          + (st.state === "full" ? " btn-accent" : "")
+          + (st.state === "partial" ? " mc-chip-partial" : "");
+        b.disabled = st.state === "none";
+        b.textContent = `${part.name}${st.state === "full" ? " ✓" : st.state === "partial" ? ` ${st.sel}/${st.total}` : st.state === "none" ? "（差分なし）" : ""}`;
+        b.title = st.state === "none" ? "このパーツ矩形に差分はありません" : "パーツ矩形内の差分セルを一括で採用/解除";
+        b.addEventListener("click", () => togglePart(part));
+        mergeParts.appendChild(b);
+      }
+    }
     // チップ（塊A 214セル）
     mergeChips.innerHTML = "";
     merge.blobs.forEach((blob, k) => {
@@ -567,11 +638,29 @@ export function initMotionStudio(store, toast) {
   function brushMode() {
     return document.querySelector('input[name="mcBrushMode"]:checked')?.value || "add";
   }
+  function mergeTool() {
+    return document.querySelector('input[name="mcMergeTool"]:checked')?.value || "rect";
+  }
+  function mergeXyFromEvent(ev) {
+    const r = mergeCanvas.getBoundingClientRect();
+    const p = project();
+    const x = Math.max(0, Math.min(p.width - 1, Math.floor((ev.clientX - r.left) / merge.sc)));
+    const y = Math.max(0, Math.min(p.height - 1, Math.floor((ev.clientY - r.top) / merge.sc)));
+    return { x, y };
+  }
   mergeCanvas.addEventListener("mousedown", (ev) => {
     if (!merge) return;
+    const tool = mergeTool();
+    if (tool === "rect") {
+      // §25.10-1: 矩形モード — 囲んだ範囲の差分セルを追加（Shift または「引く」で解除）
+      const { x, y } = mergeXyFromEvent(ev);
+      merge.rectDrag = { x0: x, y0: y, x1: x, y1: y, erase: ev.shiftKey || brushMode() === "del" };
+      renderMerge();
+      return;
+    }
     const idx = mergeCellFromEvent(ev);
     if (idx < 0) return;
-    if (mergeBrush.checked) {
+    if (tool === "brush") {
       mergeDrag = true;
       merge.mask[idx] = brushMode() === "add" ? 1 : 0;
       renderMerge();
@@ -581,13 +670,38 @@ export function initMotionStudio(store, toast) {
     }
   });
   window.addEventListener("mousemove", (ev) => {
-    if (!merge || !mergeDrag) return;
+    if (!merge) return;
+    if (merge.rectDrag) {
+      const { x, y } = mergeXyFromEvent(ev);
+      merge.rectDrag.x1 = x;
+      merge.rectDrag.y1 = y;
+      renderMerge();
+      return;
+    }
+    if (!mergeDrag) return;
     const idx = mergeCellFromEvent(ev);
     if (idx < 0) return;
     merge.mask[idx] = brushMode() === "add" ? 1 : 0;
     renderMerge();
   });
-  window.addEventListener("mouseup", () => { mergeDrag = false; });
+  window.addEventListener("mouseup", () => {
+    mergeDrag = false;
+    if (merge && merge.rectDrag) {
+      // 矩形確定: 範囲内かつ差分ありのセルだけをマスクへ追加/解除
+      const p = project();
+      const d = merge.rectDrag;
+      const x0 = Math.min(d.x0, d.x1), y0 = Math.min(d.y0, d.y1);
+      const x1 = Math.max(d.x0, d.x1), y1 = Math.max(d.y0, d.y1);
+      for (let y = y0; y <= y1; y++) {
+        for (let x = x0; x <= x1; x++) {
+          const idx = y * p.width + x;
+          if (merge.diffMap[idx]) merge.mask[idx] = d.erase ? 0 : 1;
+        }
+      }
+      merge.rectDrag = null;
+      renderMerge();
+    }
+  });
 
   mergeApplyBtn.addEventListener("click", () => {
     if (!merge) return;
@@ -797,8 +911,8 @@ export function initMotionStudio(store, toast) {
       }
       const mg = document.createElement("button");
       mg.className = "btn btn-small";
-      mg.textContent = "差分採用";
-      mg.title = "この候補の変化を塊ごとに選んで取り込む（§25.7）";
+      mg.textContent = "部位取り込み";
+      mg.title = "この候補から部位ごとに選んで取り込む（矩形/パーツチップ/塊/ブラシ・§25.7/§25.10）";
       mg.addEventListener("click", () => openMerge(i, cand));
       row.appendChild(mg);
       const del = document.createElement("button");
