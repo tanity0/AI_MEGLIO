@@ -806,7 +806,20 @@ export function initAi(store, toast) {
     }
     if (previewFrame < start || previewFrame > end) previewFrame = start;
     const ctx = previewCanvas.getContext("2d");
-    drawFrameToContext(ctx, p, previewFrame, previewCellSize);
+    const smoothToggle = document.getElementById("previewSmoothToggle");
+    if (smoothToggle && smoothToggle.checked) {
+      // linear相当の見え方を再現: 実寸で描いてから補間つきで拡大
+      if (!previewTick._off) previewTick._off = document.createElement("canvas");
+      const off = previewTick._off;
+      off.width = p.width; off.height = p.height;
+      drawFrameToContext(off.getContext("2d"), p, previewFrame, 1);
+      ctx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
+      ctx.imageSmoothingEnabled = true;
+      ctx.drawImage(off, 0, 0, previewCanvas.width, previewCanvas.height);
+    } else {
+      ctx.imageSmoothingEnabled = false;
+      drawFrameToContext(ctx, p, previewFrame, previewCellSize);
+    }
   }
   requestAnimationFrame(previewTick);
 

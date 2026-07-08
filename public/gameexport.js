@@ -473,11 +473,15 @@ export function initGameView(store) {
       ctx.fillStyle = "#20222e";
       ctx.fillRect(0, canvas.height - 24, canvas.width, 24);
     }
-    // スプライト（左移動時は反転）
+    // スプライト（左移動時は反転）。滲み表示トグルでlinear描画を再現
+    const smoothEl = document.getElementById("previewSmoothToggle");
+    const smooth = !!(smoothEl && smoothEl.checked);
     const sprite = renderPixelsToCanvas(
-      p.frames[frameIdx].pixels, p.width, p.height, p.palette, scale, dir < 0
+      p.frames[frameIdx].pixels, p.width, p.height, p.palette, smooth ? 1 : scale, dir < 0
     );
-    ctx.drawImage(sprite, Math.round(x), canvas.height - sprite.height - 8);
+    ctx.imageSmoothingEnabled = smooth;
+    const dw = p.width * scale, dh = p.height * scale;
+    ctx.drawImage(sprite, Math.round(x), canvas.height - dh - 8, dw, dh);
   }
   requestAnimationFrame(tick);
 }
