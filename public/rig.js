@@ -1058,6 +1058,11 @@ export function initRig(store, toast) {
     const errs = results.filter((r) => r.status === "rejected").map((r) => r.reason?.message || String(r.reason));
     if (okResults.length) {
       store.pushUndo();
+      // §22.9-2: 事後チェック用に、適用前のフレーム（=ラフ）を退避
+      const roughByFrame = new Map();
+      for (const job of jobs) {
+        if (!roughByFrame.has(job.fi)) roughByFrame.set(job.fi, Uint8Array.from(p.frames[job.fi].pixels));
+      }
       let cells = 0;
       const warnings = [];
       for (const evt of okResults) {
@@ -1065,6 +1070,34 @@ export function initRig(store, toast) {
         if (evt.patch.warnings?.length) warnings.push(...evt.patch.warnings);
       }
       store.notify();
+      // §22.9-2: ポーズ逆戻りの事後チェック（警告のみ・AI追加呼び出しなし）。
+      // マスク領域のうち「ラフとベースが異なるセル」だけで一致率を比較し、
+      // 結果がラフよりベースに近い かつ 差が有意（REVERT_MIN_DIFF セル超）なら警告する。
+      const REVERT_MIN_DIFF = 30;
+      {
+        const base = basePixels(p);
+        let diffCells = 0, matchBase = 0, matchRough = 0;
+        for (const job of jobs) {
+          const rough = roughByFrame.get(job.fi);
+          const cur = p.frames[job.fi]?.pixels;
+          if (!rough || !cur) continue;
+          const maskRows = job.mask.split("\n");
+          const { x, y, w, h } = job.cropRect;
+          for (let yy = y; yy < y + h && yy < p.height; yy++) {
+            for (let xx = x; xx < x + w && xx < p.width; xx++) {
+              if (maskRows[yy][xx] !== "1") continue;
+              const i = yy * p.width + xx;
+              if (rough[i] === base[i]) continue; // ラフ=ベースのセルは判別に使えない
+              diffCells++;
+              if (cur[i] === base[i]) matchBase++;
+              else if (cur[i] === rough[i]) matchRough++;
+            }
+          }
+        }
+        if (cells > 0 && diffCells > REVERT_MIN_DIFF && matchBase > matchRough) {
+          warnings.push("ポーズがベースに戻された可能性があります。指示欄に補足を書いて再実行してください");
+        }
+      }
       if (errs.length) warnings.push(`${errs.length}領域の描き直しに失敗: ${errs[0]}`);
       const warnText = warnings.length ? ` / 警告: ${[...new Set(warnings)].join(" / ")}` : "";
       if (cells === 0) {
