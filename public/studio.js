@@ -1,7 +1,10 @@
 // studio.js — §18.2 変換スタジオ（インポートウィザードv2）UI
 // 候補ギャラリー → つまみでリアルタイム再変換 → 元画像との同期ズーム比較 → 確定
-import { removeBackground, estimateGrid, convertImage, convertSheetImage, detectComponents, extractMainPalette } from "./convert.js";
+import { removeBackground, estimateGrid, convertImage, convertSheetImage, convertFramesShared, detectComponents, extractMainPalette } from "./convert.js";
 import { hexToRgba, defaultTags } from "./app.js";
+
+// §30: フレーム別に持つつまみ（サイズ・共有パレット以外＝サンプリング/背景除去系）
+const PER_FRAME_KEYS = ["bgThreshold", "glowWidth", "domBlend", "centerWeight", "edgeProtect", "satProtect", "offsetDX", "offsetDY"];
 
 let store = null;
 let toast = null;
@@ -17,8 +20,43 @@ let convertGen = 0;
 let knobs = null;
 // §20: マルチポーズ分割
 let split = { mode: "single", boxes: [], align: "bottom", gridCols: 3, gridRows: 1 };
+// §30: フレーム別つまみの配列（多フレーム時のみ使用）+ アクティブフレーム
+let frameParams = []; // [{ ...PER_FRAME_KEYS }]
+let activeFrame = 0;
 
 const $ = (id) => document.getElementById(id);
+
+// §30: 現在の分割ボックス（doConvertWith と同じ条件）。多フレームなら配列、単一なら null。
+function currentBoxes() {
+  if (split.mode !== "single" && split.boxes.length >= 2) {
+    const boxes = split.mode === "grid" ? gridBoxes(split.gridCols, split.gridRows) : split.boxes;
+    if (boxes.length >= 2) return boxes;
+  }
+  return null;
+}
+function isMulti() {
+  return currentBoxes() !== null;
+}
+
+// アクティブフレームのつまみ（knobs）を frameParams[activeFrame] へ書き戻し
+function saveActiveFrameParams() {
+  if (!frameParams[activeFrame]) frameParams[activeFrame] = {};
+  for (const k of PER_FRAME_KEYS) frameParams[activeFrame][k] = knobs[k];
+}
+// frameParams をフレーム数に合わせる（不足分は現在の knobs のフレーム別サブセットで埋める）
+function ensureFrameParams(n) {
+  const base = {};
+  for (const k of PER_FRAME_KEYS) base[k] = knobs[k];
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const src = frameParams[i] || base;
+    const pf = {};
+    for (const k of PER_FRAME_KEYS) pf[k] = src[k];
+    out.push(pf);
+  }
+  frameParams = out;
+  if (activeFrame >= n) activeFrame = 0;
+}
 
 function defaultKnobs() {
   return {
@@ -150,18 +188,36 @@ async function runConvert() {
     if (gen !== convertGen) return;
     $("studioStatus").textContent = "変換中…";
     await new Promise((r) => setTimeout(r, 0));
-    const res = doConvertWith(knobsToParams());
+    const boxes = currentBoxes();
+    let res;
+    if (boxes) {
+      // §30: 多フレーム = フレーム別つまみ + 共有パレット（二段構え）
+      saveActiveFrameParams();
+      ensureFrameParams(boxes.length);
+      const global = { targetH: knobs.oneToOne ? 0 : knobs.targetH, colors: knobs.colors, oneToOne: knobs.oneToOne, s: grid.s + knobs.sizeDelta };
+      res = convertFramesShared(srcData.data, srcData.w, srcData.h, global, boxes, frameParams, split.align);
+      // プレビューはアクティブフレーム
+      if (res.framesPixels && res.framesPixels[activeFrame]) {
+        res.pixels = res.framesPixels[activeFrame];
+        const bb = res.frameBBoxes && res.frameBBoxes[activeFrame];
+        if (bb) { res.originX = bb.x0; res.originY = bb.y0; }
+      }
+    } else {
+      res = doConvertWith(knobsToParams());
+    }
     if (gen !== convertGen) return;
     result = res;
     const nf = res.framesPixels ? res.framesPixels.length : 1;
     $("studioStatus").textContent =
       `出力: ${res.width}×${res.height}・${res.palette.length - 1}色（+透明）` +
-      (nf > 1 ? `・${nf}フレーム（プレビューは1体目）` : "");
+      (nf > 1 ? `・${nf}フレーム（プレビュー: フレーム${activeFrame + 1}）・共有パレット` : "");
+    renderFrameBar();
     renderCompare();
   } catch (err) {
     if (gen !== convertGen) return;
     result = null;
     $("studioStatus").textContent = `エラー: ${err.message}`;
+    renderFrameBar();
     renderCompare();
   }
 }
@@ -349,6 +405,54 @@ async function generateCandidates() {
 }
 
 // ---------------------------------------------------------------------------
+// §30: フレーム選択バー（多フレーム時のみ）
+// ---------------------------------------------------------------------------
+function renderFrameBar() {
+  const bar = $("studioFrameBar");
+  const multi = isMulti() && result && result.framesPixels && result.framesPixels.length > 1;
+  bar.hidden = !multi;
+  $("studioApplyAllFramesBtn").hidden = !multi;
+  if (!multi) return;
+  const nf = result.framesPixels.length;
+  if (activeFrame >= nf) activeFrame = 0;
+  bar.innerHTML = "";
+  const label = document.createElement("span");
+  label.className = "hint";
+  label.textContent = "フレーム:";
+  bar.appendChild(label);
+  for (let i = 0; i < nf; i++) {
+    const cell = document.createElement("button");
+    cell.className = "studio-frame-thumb" + (i === activeFrame ? " is-active" : "");
+    cell.title = `フレーム${i + 1}`;
+    const cv = document.createElement("canvas");
+    const tmp = { width: result.width, height: result.height, palette: result.palette, pixels: result.framesPixels[i] };
+    const scale = Math.max(1, Math.floor(48 / Math.max(result.width, result.height)));
+    cv.width = result.width * scale;
+    cv.height = result.height * scale;
+    const cctx = cv.getContext("2d");
+    cctx.imageSmoothingEnabled = false;
+    cctx.drawImage(resultToCanvas(tmp), 0, 0, cv.width, cv.height);
+    cell.appendChild(cv);
+    const num = document.createElement("span");
+    num.textContent = String(i + 1);
+    cell.appendChild(num);
+    cell.addEventListener("click", () => switchFrame(i));
+    bar.appendChild(cell);
+  }
+}
+
+function switchFrame(i) {
+  if (i === activeFrame) return;
+  saveActiveFrameParams(); // 現在のフレームのつまみを退避
+  activeFrame = i;
+  // 新フレームのつまみを knobs（アクティブ作業セット）へ読み込み
+  const pf = frameParams[i] || {};
+  for (const k of PER_FRAME_KEYS) if (pf[k] !== undefined) knobs[k] = pf[k];
+  syncKnobUi();
+  scheduleConvert();
+}
+
+// ---------------------------------------------------------------------------
 // つまみUI
 // ---------------------------------------------------------------------------
 const KNOB_BINDINGS = [
@@ -380,8 +484,14 @@ function attachKnobs() {
     $(id).addEventListener("input", () => {
       knobs[key] = cast($(id).value);
       if (key === "colors") $("studioColorsLabel").textContent = String(knobs.colors);
-      if (key === "bgThreshold" || key === "glowWidth") {
+      // §30: 多フレームでは背景除去はフレーム別に convertFramesShared 内で行うため
+      // bgCache/ボックス検出は無効化しない（フレーム分割を安定させる）。単一時は従来どおり。
+      if ((key === "bgThreshold" || key === "glowWidth") && !isMulti()) {
         bgCache = null; // 背景キャッシュ破棄 → グリッド再推定
+      }
+      // §30: 多フレームの per-frame つまみはアクティブフレームへ即時反映
+      if (isMulti() && PER_FRAME_KEYS.includes(key) && frameParams[activeFrame]) {
+        frameParams[activeFrame][key] = knobs[key];
       }
       scheduleConvert();
     });
@@ -425,6 +535,20 @@ function attachKnobs() {
   };
   $("studioGridCols").addEventListener("input", gridChange);
   $("studioGridRows").addEventListener("input", gridChange);
+
+  // §30: この設定を全フレームに適用（アクティブフレームのフレーム別つまみを全フレームへコピー）
+  $("studioApplyAllFramesBtn").addEventListener("click", () => {
+    if (!isMulti()) return;
+    saveActiveFrameParams();
+    const src = frameParams[activeFrame];
+    for (let i = 0; i < frameParams.length; i++) {
+      const pf = {};
+      for (const k of PER_FRAME_KEYS) pf[k] = src[k];
+      frameParams[i] = pf;
+    }
+    toast(`フレーム${activeFrame + 1}の設定を全${frameParams.length}フレームに適用しました`);
+    scheduleConvert();
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -463,10 +587,13 @@ function confirmStudio() {
   const sctx = sc.getContext("2d");
   sctx.drawImage(srcBitmapCanvas, 0, 0, sc.width, sc.height);
 
-  // §20.2: 複数フレーム（シート分割）対応
+  // §20.2/§30: 複数フレーム（シート分割）対応
   const allFrames = res.framesPixels && res.framesPixels.length > 1
     ? res.framesPixels.map((px) => ({ pixels: padPixels(px, res.width, res.height, W, H) }))
     : [{ pixels }];
+  // §30: 多フレームならアクティブフレームのつまみを退避してからフレーム別配列を保存
+  const multi = isMulti() && allFrames.length > 1;
+  if (multi) saveActiveFrameParams();
   const project = {
     width: W, height: H, fps: 8,
     palette: res.palette,
@@ -478,6 +605,8 @@ function confirmStudio() {
       ...knobs,
       grid: { ...grid },
       split: { mode: split.mode, align: split.align, gridCols: split.gridCols, gridRows: split.gridRows, boxes: split.boxes.map((b) => ({ ...b })) },
+      // §30: フレーム別つまみの配列（多フレーム時のみ。再変換で復元）
+      ...(multi ? { frameParams: frameParams.map((pf) => ({ ...pf })) } : {}),
     },
   };
   project.tags = defaultTags(project);
@@ -513,12 +642,23 @@ export async function openStudio(dataUrl, savedParams = null) {
   result = null;
   split = { mode: "single", boxes: [], align: "bottom", gridCols: 3, gridRows: 1, userChose: false };
   knobs = defaultKnobs();
+  frameParams = [];
+  activeFrame = 0;
   if (savedParams) {
-    const { grid: g, split: sp, ...rest } = savedParams;
+    const { grid: g, split: sp, frameParams: fp, ...rest } = savedParams;
     Object.assign(knobs, rest);
     if (g) grid = { ...g };
     if (sp) {
       split = { ...split, ...sp, boxes: Array.isArray(sp.boxes) ? sp.boxes : [], userChose: true };
+    }
+    // §30: フレーム別つまみの復元。アクティブ（0番）の値は作業セット knobs にも反映。
+    if (Array.isArray(fp) && fp.length) {
+      frameParams = fp.map((pf) => {
+        const o = {};
+        for (const k of PER_FRAME_KEYS) o[k] = (pf && typeof pf[k] === "number") ? pf[k] : knobs[k];
+        return o;
+      });
+      for (const k of PER_FRAME_KEYS) if (frameParams[0][k] !== undefined) knobs[k] = frameParams[0][k];
     }
   }
   $("studioPanel").hidden = false;
@@ -551,4 +691,19 @@ export function initStudio(storeRef, toastRef) {
     }
     openStudio(p.sourceImage, p.conversionParams || null);
   });
+
+  // E2E テスト用フック（UIには影響しない）
+  window.aiMeglioStudio = {
+    debug: () => ({
+      isMulti: isMulti(),
+      activeFrame,
+      frameCount: result && result.framesPixels ? result.framesPixels.length : (result ? 1 : 0),
+      frameParams: frameParams.map((pf) => ({ ...pf })),
+      palette: result ? result.palette.slice() : null,
+      width: result ? result.width : 0,
+      height: result ? result.height : 0,
+      framesPixels: result && result.framesPixels ? result.framesPixels.map((px) => Array.from(px)) : (result ? [Array.from(result.pixels)] : []),
+    }),
+    switchFrame: (i) => switchFrame(i),
+  };
 }

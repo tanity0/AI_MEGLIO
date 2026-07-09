@@ -791,6 +791,40 @@ aside, #canvasPanel {
 }
 .studio-viewport .hint { position: absolute; top: 2px; left: 6px; z-index: 2; text-shadow: 0 0 3px #000; }
 .studio-viewport canvas { display: block; cursor: grab; }
+/* §30: フレーム選択バー */
+.studio-frame-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 4px 0;
+  flex-shrink: 0;
+}
+.studio-frame-bar[hidden] { display: none; }
+/* .btn の display:inline-flex が UA の [hidden] を上書きするため明示的に隠す */
+#studioApplyAllFramesBtn[hidden] { display: none; }
+.studio-frame-thumb {
+  position: relative;
+  display: inline-flex;
+  padding: 2px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  line-height: 0;
+}
+.studio-frame-thumb:hover { border-color: var(--accent-dark); }
+.studio-frame-thumb.is-active { border-color: var(--accent); }
+.studio-frame-thumb canvas { image-rendering: pixelated; background: #202020; }
+.studio-frame-thumb span {
+  position: absolute;
+  bottom: 1px;
+  right: 2px;
+  font-size: 9px;
+  color: var(--text-0);
+  text-shadow: 0 0 3px #000, 0 0 2px #000;
+  line-height: 1;
+}
 .studio-gallery {
   display: grid;
   grid-template-columns: repeat(3, 1fr);

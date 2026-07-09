@@ -496,6 +496,7 @@
       <span class="split-grid-inputs">横<input id="studioGridCols" type="number" min="1" max="12" value="3">×縦<input id="studioGridRows" type="number" min="1" max="12" value="1"></span>
       <label class="check-row inline" data-help="studio.split.align"><input type="checkbox" id="studioAlignCenter"> 中央合わせ（既定: 下端中央）</label>
     </div>
+    <div id="studioFrameBar" class="studio-frame-bar" hidden></div>
     <div id="studioGallery" class="studio-gallery"></div>
     <div class="studio-compare">
       <div class="studio-viewport"><span class="hint">元画像</span><canvas id="studioSrcCanvas"></canvas></div>
@@ -524,6 +525,7 @@
       <label class="form-row">フチ光彩除去 <input id="studioGlowWidth" type="range" min="0" max="3" step="1" value="0"></label>
     </div>
     <div class="ai-actions">
+      <button id="studioApplyAllFramesBtn" class="btn btn-small" hidden title="アクティブフレームの背景除去・サンプリング系つまみを全フレームにコピー（サイズ・共有パレットは常に共通）">この設定を全フレームに適用</button>
       <button id="studioConfirmBtn" class="btn btn-accent">確定（プロジェクト化）</button>
     </div>
     <div id="studioStatus" class="hint" aria-live="polite"></div>

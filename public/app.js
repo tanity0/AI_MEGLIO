@@ -830,7 +830,7 @@ function main() {
   initBackendLabel();
   store.notify();
   // デバッグ/E2Eテスト用フック（UIには影響しない）
-  window.aiMeglio = { store };
+  window.aiMeglio = { store, openStudio };
 }
 
 document.addEventListener("DOMContentLoaded", main);

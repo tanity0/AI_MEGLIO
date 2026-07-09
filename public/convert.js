@@ -555,6 +555,144 @@ export function convertSheetImage(data, w, h, params, boxes, align = "bottom") {
   };
 }
 
+// ---------------------------------------------------------------------------
+// §30: フレーム別変換設定（サイズ・共有パレットは固定）
+// 各フレームは自前の背景除去つまみ + サンプリングつまみを持つ。
+// pass1: 各フレームをそのフレーム別つまみで RGB サンプリング → 全フレーム結合で1つの共有パレット抽出。
+// pass2: 各フレームを共有パレットへ最近色マッピング。
+// → 全フレームのパレット配列が完全一致（アニメのチラつき防止）。
+//
+// rawData: 元画像 RGBA（背景除去前・共通）。boxes: 各フレームの領域（rawData座標）。
+// global: { targetH, colors, oneToOne, s }
+// perFrameParams[i]: { bgThreshold, glowWidth, domBlend, centerWeight, edgeProtect, satProtect, offsetDX, offsetDY }
+// ---------------------------------------------------------------------------
+// 各ボックスを margin だけ広げる。隣接ボックス（垂直/水平で射影が重なるもの）とは
+// 半間隔でクランプして他ポーズ領域に食い込まないようにする。
+function expandBoxesForPerFrame(boxes, w, h) {
+  const maxDim = Math.max(...boxes.map((b) => Math.max(b.x1 - b.x0 + 1, b.y1 - b.y0 + 1)));
+  const M = Math.max(4, Math.round(maxDim * 0.2));
+  return boxes.map((b, i) => {
+    let x0 = Math.max(0, b.x0 - M), y0 = Math.max(0, b.y0 - M);
+    let x1 = Math.min(w - 1, b.x1 + M), y1 = Math.min(h - 1, b.y1 + M);
+    for (let j = 0; j < boxes.length; j++) {
+      if (j === i) continue;
+      const o = boxes[j];
+      const overlapY = !(o.y1 < b.y0 || o.y0 > b.y1);
+      const overlapX = !(o.x1 < b.x0 || o.x0 > b.x1);
+      if (o.x0 > b.x1 && overlapY) x1 = Math.min(x1, Math.floor((b.x1 + o.x0) / 2));
+      if (o.x1 < b.x0 && overlapY) x0 = Math.max(x0, Math.ceil((o.x1 + b.x0) / 2));
+      if (o.y0 > b.y1 && overlapX) y1 = Math.min(y1, Math.floor((b.y1 + o.y0) / 2));
+      if (o.y1 < b.y0 && overlapX) y0 = Math.max(y0, Math.ceil((o.y1 + b.y0) / 2));
+    }
+    return { x0, y0, x1, y1 };
+  });
+}
+
+export function convertFramesShared(rawData, w, h, global, boxes, perFrameParams, align = "bottom") {
+  const { targetH = 64, colors = 64, oneToOne = false, s = 8 } = global || {};
+  const N = boxes.length;
+  if (N < 1) throw new Error("フレームがありません");
+
+  // 各ボックスをマージン分だけ広げる（フレーム別背景除去がポーズ周縁のフリンジに効くように）。
+  // 隣接ボックスとの半間隔でクランプして他ポーズを取り込まない。
+  const regions = expandBoxesForPerFrame(boxes, w, h);
+
+  // pass0: フレームごとに背景除去（フレーム別つまみ）→ その領域内の不透明bbox
+  const frameBg = [];
+  const bboxes = [];
+  for (let i = 0; i < N; i++) {
+    const pf = perFrameParams[i] || {};
+    const bg = removeBackground(rawData, w, h, { threshold: pf.bgThreshold ?? 48, glowWidth: pf.glowWidth ?? 0 });
+    frameBg.push(bg);
+    const reg = regions[i];
+    let x0 = reg.x1 + 1, y0 = reg.y1 + 1, x1 = reg.x0 - 1, y1 = reg.y0 - 1;
+    for (let y = reg.y0; y <= reg.y1; y++) {
+      for (let x = reg.x0; x <= reg.x1; x++) {
+        if (bg[(y * w + x) * 4 + 3] >= 128) {
+          if (x < x0) x0 = x; if (x > x1) x1 = x;
+          if (y < y0) y0 = y; if (y > y1) y1 = y;
+        }
+      }
+    }
+    bboxes.push(x1 >= reg.x0 ? { x0, y0, x1, y1 } : null);
+  }
+  const valid = bboxes.filter(Boolean);
+  if (!valid.length) throw new Error("不透明ピクセルがありません（背景除去の閾値を下げてください）");
+
+  // 共通セルサイズ（最大ポーズ基準）・共通キャンバス（128クランプ・パディング）
+  const maxBoxW = Math.max(...valid.map((b) => b.x1 - b.x0 + 1));
+  const maxBoxH = Math.max(...valid.map((b) => b.y1 - b.y0 + 1));
+  let cs = oneToOne ? s : maxBoxH / targetH;
+  const PAD_X = 2, PAD_TOP = 2, PAD_BOTTOM = 0;
+  cs = Math.max(cs, maxBoxW / (128 - PAD_X * 2), maxBoxH / (128 - PAD_TOP - PAD_BOTTOM));
+  const poseColsMax = Math.ceil(maxBoxW / cs);
+  const poseRowsMax = Math.ceil(maxBoxH / cs);
+  const outW = Math.min(128, poseColsMax + PAD_X * 2);
+  const outH = Math.min(128, poseRowsMax + PAD_TOP + PAD_BOTTOM);
+
+  // pass1: 各フレームをフレーム別つまみでサンプリング（下端揃え・中央x）
+  const poseCells = [];
+  for (let i = 0; i < N; i++) {
+    const bbox = bboxes[i];
+    if (!bbox) { poseCells.push(null); continue; }
+    const pf = perFrameParams[i] || {};
+    const bw = bbox.x1 - bbox.x0 + 1, bh = bbox.y1 - bbox.y0 + 1;
+    const cols = Math.min(poseColsMax, Math.ceil(bw / cs));
+    const rows = Math.min(poseRowsMax, Math.ceil(bh / cs));
+    const gy0 = bbox.y1 + 1 - rows * cs + (pf.offsetDY || 0);
+    const gx0 = (bbox.x0 + bbox.x1 + 1) / 2 - (cols * cs) / 2 + (pf.offsetDX || 0);
+    const cells = sampleCellsRegion(frameBg[i], w, h, {
+      cs, gx0, gy0, cols, rows,
+      domBlend: pf.domBlend ?? 0.15,
+      centerWeight: pf.centerWeight ?? 0.5,
+      edgeProtect: pf.edgeProtect ?? 0.3,
+    });
+    poseCells.push({ cells, cols, rows, bbox });
+  }
+
+  // 共有パレット: 全フレームのセル色を結合して1回だけ k-means（→ 全フレーム同一パレット）
+  const allColors = [];
+  for (const p of poseCells) if (p) for (const c of p.cells) if (c) allColors.push(c);
+  if (!allColors.length) throw new Error("不透明ピクセルがありません（背景除去の閾値を下げてください）");
+  // satProtect は共有パレット抽出に効く。フレーム別に持てるが決定的にするため最大値を採用。
+  const satProtect = Math.max(...perFrameParams.map((pf) => (pf && typeof pf.satProtect === "number") ? pf.satProtect : 0.5));
+  const centroids = quantizeCellColors(allColors, colors, satProtect);
+  const palette = ["#00000000", ...centroids.map((c) => rgbToHex(c[0], c[1], c[2]))];
+  const counts = new Uint32Array(palette.length);
+
+  // pass2: 各フレームを共有パレットへ最近色マッピング → 共通キャンバスへ配置
+  const framesPixels = [];
+  for (const p of poseCells) {
+    const pixels = new Uint8Array(outW * outH);
+    if (p) {
+      const offX = Math.floor((outW - p.cols) / 2);
+      const offY = align === "center" ? Math.floor((outH - p.rows) / 2) : outH - PAD_BOTTOM - p.rows;
+      for (let y = 0; y < p.rows; y++) {
+        for (let x = 0; x < p.cols; x++) {
+          const c = p.cells[y * p.cols + x];
+          if (!c) continue;
+          const tx = offX + x, ty = offY + y;
+          if (tx < 0 || ty < 0 || tx >= outW || ty >= outH) continue;
+          const idx = nearestIdx(centroids, c) + 1;
+          pixels[ty * outW + tx] = idx;
+          counts[idx]++;
+        }
+      }
+    }
+    framesPixels.push(pixels);
+  }
+
+  const firstValid = bboxes.find(Boolean);
+  return {
+    width: outW, height: outH,
+    pixels: framesPixels[0], framesPixels,
+    palette, counts,
+    originX: firstValid.x0, originY: firstValid.y0,
+    srcCellSize: cs,
+    frameBBoxes: bboxes,
+  };
+}
+
 function nearestIdx(centroids, c) {
   let best = 0, bd = Infinity;
   for (let i = 0; i < centroids.length; i++) {
