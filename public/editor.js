@@ -190,6 +190,77 @@ export function initEditor(store, toast) {
     store.notify();
   }
 
+  // ------------------------------------------------------------------ §33
+  // コピー / 切り取り / 貼り付け。セッション内クリップボード（同一プロジェクト＝同一パレット前提）。
+  // 貼り付けは §32 のフローティングとして生成し、移動/反転/回転・確定/取消・アンドゥ経路を再利用。
+  let clipboard = null; // { buf:Uint8Array(w*h), w, h }
+  function updateClipboardUi() {
+    const btn = document.getElementById("selPasteBtn");
+    if (btn) btn.disabled = !clipboard;
+  }
+  // 現在フレームの選択領域をクリップボードへ複製（フレーム未変更）
+  function copySelectionToClipboard() {
+    const sel = currentSelRect();
+    if (!sel) return false;
+    const p = project();
+    const px = p.frames[sel.frameIndex].pixels;
+    const buf = new Uint8Array(sel.w * sel.h);
+    for (let yy = 0; yy < sel.h; yy++) {
+      for (let xx = 0; xx < sel.w; xx++) {
+        const sx = sel.x + xx, sy = sel.y + yy;
+        if (sx >= 0 && sy >= 0 && sx < p.width && sy < p.height) buf[yy * sel.w + xx] = px[sy * p.width + sx];
+      }
+    }
+    clipboard = { buf, w: sel.w, h: sel.h, x: sel.x, y: sel.y }; // x,y = コピー元位置（フレーム間貼付の初期位置に流用）
+    updateClipboardUi();
+    return true;
+  }
+  function doCopy() {
+    if (floating) commitFloating(); // 保留中の変形を確定してから、見えているものをコピー
+    if (!copySelectionToClipboard()) { toast("コピーする範囲を矩形選択してください", "error"); return; }
+    toast(`コピーしました（${clipboard.w}×${clipboard.h}）`);
+  }
+  function doCut() {
+    if (floating) commitFloating();
+    const sel = currentSelRect();
+    if (!sel) { toast("切り取る範囲を矩形選択してください", "error"); return; }
+    copySelectionToClipboard();
+    store.pushUndo();
+    const p = project();
+    const px = p.frames[sel.frameIndex].pixels;
+    for (let yy = 0; yy < sel.h; yy++) {
+      for (let xx = 0; xx < sel.w; xx++) {
+        const dx = sel.x + xx, dy = sel.y + yy;
+        if (dx >= 0 && dy >= 0 && dx < p.width && dy < p.height) px[dy * p.width + dx] = 0;
+      }
+    }
+    store.notify();
+    toast(`切り取りました（${clipboard.w}×${clipboard.h}）`);
+  }
+  function doPaste() {
+    if (!clipboard) { toast("クリップボードが空です", "error"); return; }
+    if (floating) commitFloating();
+    const p = project();
+    const w = clipboard.w, h = clipboard.h;
+    const sel = currentSelRect();
+    // 初期位置: 現在フレームに選択があればその位置、無ければコピー元位置（フレーム間貼付で同位置に揃う）、
+    // それも無ければキャンバス中央。
+    let x, y;
+    if (sel) { x = sel.x; y = sel.y; }
+    else if (Number.isInteger(clipboard.x) && Number.isInteger(clipboard.y)) { x = clipboard.x; y = clipboard.y; }
+    else { x = Math.floor((p.width - w) / 2); y = Math.floor((p.height - h) / 2); }
+    // §32 のフローティングとして生成。copy=true（下地を消さない・新規内容の貼り付け）。
+    floating = {
+      buf: Uint8Array.from(clipboard.buf), w, h, x, y,
+      origX: x, origY: y, origW: w, origH: h,
+      frameIndex: store.state.currentFrame, copy: true,
+    };
+    store.state.tool = "select"; // 直後にドラッグ移動できるように
+    syncSelToFloat();
+    store.notify();
+    toast("貼り付け: ドラッグで配置、変形も可、Enterで確定・Escで取消");
+  }
+
   // ---------------------------------------------------------------------
   // §31.1性能: 重い render() をポインタ移動のたびに同期実行せず、
   // rAFで1フレーム1回にまとめる（高速ドラッグ・カーソル追従のもたつき対策）
@@ -694,6 +765,12 @@ export function initEditor(store, toast) {
     toast(`${deg}°回転しました（最近傍・粗）。Enterで確定、Escで取消`);
   });
 
+  // §33: コピー / 切り取り / 貼り付け ボタン（iPad 等キーボード無し環境用）
+  document.getElementById("selCopyBtn").addEventListener("click", doCopy);
+  document.getElementById("selCutBtn").addEventListener("click", doCut);
+  document.getElementById("selPasteBtn").addEventListener("click", doPaste);
+  updateClipboardUi();
+
   onionToggle.addEventListener("change", () => {
     store.state.onionSkin = onionToggle.checked;
     store.notify();
@@ -756,6 +833,13 @@ export function initEditor(store, toast) {
   window.addEventListener("keydown", (ev) => {
     const tag = document.activeElement?.tagName;
     if (tag === "TEXTAREA" || tag === "INPUT") return;
+    // §33: コピー/切り取り/貼り付け（Ctrl/⌘+C/X/V）。選択orクリップボードがある時のみ横取り。
+    if ((ev.ctrlKey || ev.metaKey) && !ev.altKey && !ev.shiftKey) {
+      const k = ev.key.toLowerCase();
+      if (k === "c" && (currentSelRect() || floating)) { doCopy(); ev.preventDefault(); return; }
+      if (k === "x" && (currentSelRect() || floating)) { doCut(); ev.preventDefault(); return; }
+      if (k === "v" && clipboard) { doPaste(); ev.preventDefault(); return; }
+    }
     // §32: フローティング中の確定/取消・アンドゥ整合
     if (floating) {
       if (ev.key === "Escape") { cancelFloating(); ev.preventDefault(); return; }
