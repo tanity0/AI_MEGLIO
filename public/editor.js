@@ -40,7 +40,155 @@ export function initEditor(store, toast) {
   let lastPaintedCell = null;
   let lastCell = null; // ブレゼンハム補間の直前セル（§31.1: 高速ドラッグでも隙間なし）
 
+  // §32: 選択範囲の変形（フローティング）。持ち上げ中はフレームを直接変更せず、
+  // 確定（commit）時に pushUndo→焼き込み。Esc で取消。move ドラッグ用のグラブ情報も保持。
+  // floating = { buf:Uint8Array(w*h), w, h, x, y, origX, origY, origW, origH, frameIndex, copy }
+  let floating = null;
+  let moveGrabCell = null; // ドラッグ開始セル
+  let moveStartXY = null;  // ドラッグ開始時の floating.x/y
+
   function project() { return store.state.project; }
+
+  // ------------------------------------------------------------------ §32
+  function pointInRect(px, py, r) {
+    return r && px >= r.x && px < r.x + r.w && py >= r.y && py < r.y + r.h;
+  }
+  function currentSelRect() {
+    const sel = store.state.selection;
+    return sel && sel.frameIndex === store.state.currentFrame ? sel : null;
+  }
+  // フローティング中の当たり判定用の矩形（floating 優先、なければ現在フレームの選択）
+  function activeMoveRect() {
+    if (floating && floating.frameIndex === store.state.currentFrame) {
+      return { x: floating.x, y: floating.y, w: floating.w, h: floating.h };
+    }
+    return currentSelRect();
+  }
+  // 現在の選択領域のピクセルをフローティングバッファへ持ち上げる（フレームは未変更）
+  function liftSelection(copy) {
+    const sel = currentSelRect();
+    if (!sel || sel.w <= 0 || sel.h <= 0) return false;
+    const p = project();
+    const buf = new Uint8Array(sel.w * sel.h);
+    const px = p.frames[sel.frameIndex].pixels;
+    for (let yy = 0; yy < sel.h; yy++) {
+      for (let xx = 0; xx < sel.w; xx++) {
+        const sx = sel.x + xx, sy = sel.y + yy;
+        if (sx >= 0 && sy >= 0 && sx < p.width && sy < p.height) {
+          buf[yy * sel.w + xx] = px[sy * p.width + sx];
+        }
+      }
+    }
+    floating = {
+      buf, w: sel.w, h: sel.h, x: sel.x, y: sel.y,
+      origX: sel.x, origY: sel.y, origW: sel.w, origH: sel.h,
+      frameIndex: sel.frameIndex, copy: !!copy,
+    };
+    return true;
+  }
+  // フローティングを現在フレームへ焼き込む（アンドゥ対象）
+  function commitFloating() {
+    if (!floating) return;
+    const f = floating;
+    floating = null; // 二重コミット防止
+    const p = project();
+    store.pushUndo();
+    const px = p.frames[f.frameIndex].pixels;
+    // 元領域をクリア（コピー移動でなければ）
+    if (!f.copy) {
+      for (let yy = 0; yy < f.origH; yy++) {
+        for (let xx = 0; xx < f.origW; xx++) {
+          const dx = f.origX + xx, dy = f.origY + yy;
+          if (dx >= 0 && dy >= 0 && dx < p.width && dy < p.height) px[dy * p.width + dx] = 0;
+        }
+      }
+    }
+    // フローティングを配置（非透明のみ焼く＝形状のみ移動、下地は残す）
+    for (let yy = 0; yy < f.h; yy++) {
+      for (let xx = 0; xx < f.w; xx++) {
+        const v = f.buf[yy * f.w + xx];
+        if (v === 0) continue;
+        const dx = f.x + xx, dy = f.y + yy;
+        if (dx >= 0 && dy >= 0 && dx < p.width && dy < p.height) px[dy * p.width + dx] = v;
+      }
+    }
+    // 新しい選択 = 焼き込み後の矩形（キャンバス内でクランプ）
+    store.state.selection = clampSelToCanvas(f.frameIndex, f.x, f.y, f.w, f.h);
+    store.notify();
+  }
+  // フローティングを破棄（フレーム未変更なので元の選択に戻す）
+  function cancelFloating() {
+    if (!floating) return;
+    const f = floating;
+    floating = null;
+    store.state.selection = clampSelToCanvas(f.frameIndex, f.origX, f.origY, f.origW, f.origH);
+    store.notify();
+  }
+  function clampSelToCanvas(frameIndex, x, y, w, h) {
+    const p = project();
+    const x1 = Math.max(0, x), y1 = Math.max(0, y);
+    const x2 = Math.min(p.width, x + w), y2 = Math.min(p.height, y + h);
+    if (x2 <= x1 || y2 <= y1) return null;
+    return { frameIndex, x: x1, y: y1, w: x2 - x1, h: y2 - y1 };
+  }
+  // 選択の表示矩形をフローティングに追従させる
+  function syncSelToFloat() {
+    if (!floating) return;
+    store.state.selection = { frameIndex: floating.frameIndex, x: floating.x, y: floating.y, w: floating.w, h: floating.h };
+  }
+  // フローティングが無ければ選択から持ち上げる（変形ボタン用）
+  function ensureFloat() {
+    if (floating) return true;
+    if (!currentSelRect()) return false;
+    return liftSelection(false);
+  }
+
+  // 変形（buf/w/h を書き換え）— いずれも「きれい」（回転自由角のみ最近傍）
+  function transformFlipH() {
+    const f = floating, nb = new Uint8Array(f.w * f.h);
+    for (let y = 0; y < f.h; y++) for (let x = 0; x < f.w; x++) nb[y * f.w + x] = f.buf[y * f.w + (f.w - 1 - x)];
+    f.buf = nb;
+  }
+  function transformFlipV() {
+    const f = floating, nb = new Uint8Array(f.w * f.h);
+    for (let y = 0; y < f.h; y++) for (let x = 0; x < f.w; x++) nb[y * f.w + x] = f.buf[(f.h - 1 - y) * f.w + x];
+    f.buf = nb;
+  }
+  function transformRot90() {
+    // 時計回り: (sx,sy) -> (h-1-sy, sx)。寸法は w×h -> h×w。左上を固定してリサイズ。
+    const f = floating, nw = f.h, nh = f.w, nb = new Uint8Array(nw * nh);
+    for (let sy = 0; sy < f.h; sy++) {
+      for (let sx = 0; sx < f.w; sx++) {
+        const dx = f.h - 1 - sy, dy = sx;
+        nb[dy * nw + dx] = f.buf[sy * f.w + sx];
+      }
+    }
+    f.buf = nb; f.w = nw; f.h = nh;
+  }
+  function transformRotFree(deg) {
+    const f = floating, nb = new Uint8Array(f.w * f.h);
+    const rad = (deg * Math.PI) / 180;
+    const cos = Math.cos(rad), sin = Math.sin(rad);
+    const cx = (f.w - 1) / 2, cy = (f.h - 1) / 2;
+    for (let dy = 0; dy < f.h; dy++) {
+      for (let dx = 0; dx < f.w; dx++) {
+        const rx = dx - cx, ry = dy - cy;
+        const sx = Math.round(cos * rx + sin * ry + cx);
+        const sy = Math.round(-sin * rx + cos * ry + cy);
+        if (sx >= 0 && sy >= 0 && sx < f.w && sy < f.h) nb[dy * f.w + dx] = f.buf[sy * f.w + sx];
+      }
+    }
+    f.buf = nb;
+  }
+  function applyTransform(fn) {
+    if (!ensureFloat()) {
+      toast("先に矩形選択ツールで範囲を選んでください", "error");
+      return;
+    }
+    fn();
+    syncSelToFloat();
+    store.notify();
+  }
 
   // ---------------------------------------------------------------------
   // §31.1性能: 重い render() をポインタ移動のたびに同期実行せず、
@@ -306,6 +454,19 @@ export function initEditor(store, toast) {
 
     ev.preventDefault(); // touch/penの互換mouseイベント・既定ジェスチャーを抑止（PointerEventsに一本化）
 
+    // §32: フローティング中の処理。選択ツールでフロート内を押下＝移動継続、
+    // それ以外（フロート外/描画ツール）は焼き込んでから通常処理へ。
+    if (floating) {
+      if (tool === "select" && pointInRect(x, y, activeMoveRect())) {
+        dragging = true;
+        dragTool = "move";
+        moveGrabCell = { x, y };
+        moveStartXY = { x: floating.x, y: floating.y };
+        return;
+      }
+      commitFloating();
+    }
+
     dragging = true;
     dragTool = tool;
     lastPaintedCell = null;
@@ -332,9 +493,22 @@ export function initEditor(store, toast) {
       floodFill(frameIndex, x, y, store.state.colorIndex);
       render();
     } else if (tool === "select") {
-      dragStart = { x, y };
-      store.state.selection = { frameIndex, ...normalizedSelectionRect({ x, y }, { x, y }) };
-      store.notify();
+      // §32: 既存選択の内側を押下＝ピクセルを持ち上げて移動（Alt/⌥ でコピー移動）。
+      // 外側を押下＝新規選択。
+      const sel = currentSelRect();
+      if (sel && pointInRect(x, y, sel)) {
+        if (liftSelection(ev.altKey)) {
+          dragTool = "move";
+          moveGrabCell = { x, y };
+          moveStartXY = { x: floating.x, y: floating.y };
+          syncSelToFloat();
+          store.notify();
+        }
+      } else {
+        dragStart = { x, y };
+        store.state.selection = { frameIndex, ...normalizedSelectionRect({ x, y }, { x, y }) };
+        store.notify();
+      }
     } else if (tool === "eyedropper") {
       pickColorAt(x, y);
     }
@@ -369,6 +543,12 @@ export function initEditor(store, toast) {
     } else if (dragTool === "select" && dragStart) {
       store.state.selection = { frameIndex, ...normalizedSelectionRect(dragStart, { x, y }) };
       store.notify();
+    } else if (dragTool === "move" && floating) {
+      // §32: フローティングをセルスナップで再配置
+      floating.x = moveStartXY.x + (x - moveGrabCell.x);
+      floating.y = moveStartXY.y + (y - moveGrabCell.y);
+      syncSelToFloat();
+      scheduleRender();
     }
   });
 
@@ -387,6 +567,9 @@ export function initEditor(store, toast) {
     } else if (dragging && (dragTool === "pen" || dragTool === "eraser")) {
       // ストローク終了：バッチ中の最終状態を確実に描画
       render();
+    } else if (dragTool === "move") {
+      // §32: 移動ドラッグ終了。フローティングは保持（Enter/ツール切替/枠外クリック/Escで確定or取消）。
+      render();
     }
     pendingPen = null;
     dragging = false;
@@ -394,6 +577,8 @@ export function initEditor(store, toast) {
     dragStart = null;
     lastPaintedCell = null;
     lastCell = null;
+    moveGrabCell = null;
+    moveStartXY = null;
   });
 
   // ---------------------------------------------------------------------
@@ -481,8 +666,32 @@ export function initEditor(store, toast) {
   zoomRange.addEventListener("input", () => setZoom(Number(zoomRange.value)));
 
   clearSelectionBtn.addEventListener("click", () => {
+    if (floating) commitFloating(); // 保留中の変形は焼き込んでから選択解除
     store.state.selection = null;
     store.notify();
+  });
+
+  // --- §32: 選択範囲の変形ボタン ---
+  document.getElementById("selMoveBtn").addEventListener("click", () => {
+    if (floating) { commitFloating(); return; } // 押下でトグル的に確定
+    if (!ensureFloat()) { toast("先に矩形選択ツールで範囲を選んでください", "error"); return; }
+    syncSelToFloat();
+    store.notify();
+    toast("選択を持ち上げました。ドラッグで移動、Enterで確定、Escで取消（Alt/⌥ドラッグでコピー）");
+  });
+  document.getElementById("selFlipHBtn").addEventListener("click", () => applyTransform(transformFlipH));
+  document.getElementById("selFlipVBtn").addEventListener("click", () => applyTransform(transformFlipV));
+  document.getElementById("selRot90Btn").addEventListener("click", () => applyTransform(transformRot90));
+  document.getElementById("selRotFreeBtn").addEventListener("click", () => {
+    if (!floating && !currentSelRect()) { toast("先に矩形選択ツールで範囲を選んでください", "error"); return; }
+    // §32.2: 自由角度回転は最近傍でドットが粗くなる。明示操作時のみ警告。
+    if (!window.confirm("自由角度回転はドットが粗くなります（最近傍）。90°/反転はきれいです。仕上げに部分修正を推奨。続けますか？")) return;
+    const raw = window.prompt("回転角（度・時計回り。例: 15, -30）", "15");
+    if (raw === null) return;
+    const deg = Number(raw);
+    if (!Number.isFinite(deg) || deg === 0) { toast("有効な角度を入力してください", "error"); return; }
+    applyTransform(() => transformRotFree(deg));
+    toast(`${deg}°回転しました（最近傍・粗）。Enterで確定、Escで取消`);
   });
 
   onionToggle.addEventListener("change", () => {
@@ -536,20 +745,29 @@ export function initEditor(store, toast) {
   // ツール切替
   // ---------------------------------------------------------------------
   const TOOL_KEYS = { b: "pen", e: "eraser", f: "fill", s: "select", i: "eyedropper" };
+  function switchTool(tool) {
+    if (floating && tool !== store.state.tool) commitFloating(); // §32: ツール切替で焼き込み
+    store.state.tool = tool;
+    store.notify();
+  }
   toolButtons.forEach((btn) => {
-    btn.addEventListener("click", () => {
-      store.state.tool = btn.dataset.tool;
-      store.notify();
-    });
+    btn.addEventListener("click", () => switchTool(btn.dataset.tool));
   });
   window.addEventListener("keydown", (ev) => {
     const tag = document.activeElement?.tagName;
     if (tag === "TEXTAREA" || tag === "INPUT") return;
-    const tool = TOOL_KEYS[ev.key.toLowerCase()];
-    if (tool) {
-      store.state.tool = tool;
-      store.notify();
+    // §32: フローティング中の確定/取消・アンドゥ整合
+    if (floating) {
+      if (ev.key === "Escape") { cancelFloating(); ev.preventDefault(); return; }
+      if (ev.key === "Enter") { commitFloating(); ev.preventDefault(); return; }
+      // アンドゥ/リドゥはフレーム状態を巻き戻すため、先に保留中フロートを破棄して整合を保つ
+      if ((ev.ctrlKey || ev.metaKey) && (ev.key.toLowerCase() === "z" || ev.key.toLowerCase() === "y")) {
+        cancelFloating();
+        // undo/redo 自体は app.js のグローバルショートカットが処理する
+      }
     }
+    const tool = TOOL_KEYS[ev.key.toLowerCase()];
+    if (tool) switchTool(tool);
   });
 
   // ---------------------------------------------------------------------
@@ -648,6 +866,30 @@ export function initEditor(store, toast) {
     canvas.style.height = canvas.height + "px";
 
     drawFrameToContext(ctx, p, store.state.currentFrame, cellSize, { onion: store.state.onionSkin });
+
+    // §32: フローティング（持ち上げ中の選択ピクセル）を合成表示。
+    // コピー移動でなければ元領域を透明の「穴」として見せてから、フロートを上に描く。
+    if (floating && floating.frameIndex === store.state.currentFrame) {
+      const f = floating;
+      if (!f.copy) {
+        ctx.clearRect(f.origX * cellSize, f.origY * cellSize, f.origW * cellSize, f.origH * cellSize);
+      }
+      const pal = p.palette;
+      for (let yy = 0; yy < f.h; yy++) {
+        for (let xx = 0; xx < f.w; xx++) {
+          const v = f.buf[yy * f.w + xx];
+          if (v === 0) continue;
+          const hex = pal[v];
+          if (!hex) continue;
+          const [r, g, b, a] = hexToRgba(hex);
+          if (a === 0) continue;
+          const dx = f.x + xx, dy = f.y + yy;
+          if (dx < 0 || dy < 0 || dx >= p.width || dy >= p.height) continue;
+          ctx.fillStyle = a === 255 ? `rgb(${r},${g},${b})` : `rgba(${r},${g},${b},${a / 255})`;
+          ctx.fillRect(dx * cellSize, dy * cellSize, cellSize, cellSize);
+        }
+      }
+    }
 
     // グリッド線（ある程度ズームしているときのみ）
     if (cellSize >= 6) {
@@ -804,6 +1046,7 @@ export function initEditor(store, toast) {
     zoomLabel.textContent = `${store.state.zoom}x`;
     toolButtons.forEach((btn) => btn.classList.toggle("is-active", btn.dataset.tool === store.state.tool));
     brushSizeButtons.forEach((btn) => btn.classList.toggle("is-active", Number(btn.dataset.size) === store.state.brushSize));
+    document.getElementById("selMoveBtn")?.classList.toggle("is-active", !!floating); // §32
     renderCursorOverlay();
   }
 

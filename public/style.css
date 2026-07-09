@@ -957,6 +957,12 @@ aside, #canvasPanel {
 .undo-row { display: flex; gap: 4px; }
 .undo-row .btn { flex: 1; }
 
+/* §32: 選択範囲の変形 */
+.sel-transform { display: flex; flex-direction: column; gap: 4px; }
+.sel-transform-btns { display: flex; flex-wrap: wrap; gap: 4px; }
+.sel-transform-btns .btn { flex: 1 1 auto; min-width: 44px; padding-left: 6px; padding-right: 6px; }
+#selMoveBtn.is-active { border-color: var(--accent); background: var(--bg-3); color: var(--text-0); }
+
 .part-item.is-hidden-part { opacity: 0.45; }
 .part-item.is-hidden-part .part-name { text-decoration: line-through; }
 

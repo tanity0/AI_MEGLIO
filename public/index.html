@@ -81,6 +81,16 @@
       <button id="clearSelectionBtn" class="btn btn-small">選択解除</button>
       <button id="lockSelectionBtn" class="btn btn-small" title="選択中の矩形を変更禁止のロック領域にする">この範囲をロック</button>
       <button id="clearLocksBtn" class="btn btn-small" title="すべてのロック領域を解除">全ロック解除 (<span id="lockCount">0</span>)</button>
+      <div class="sel-transform" title="選択ピクセルの変形（§32・現在フレーム・パレット不変）">
+        <span class="hint">選択の変形</span>
+        <div class="sel-transform-btns">
+          <button id="selMoveBtn" class="btn btn-small" title="選択ピクセルを持ち上げてドラッグ移動（選択内をドラッグでも可・Alt/⌥でコピー）">移動</button>
+          <button id="selFlipHBtn" class="btn btn-small" title="左右反転（きれい）">⇄反転</button>
+          <button id="selFlipVBtn" class="btn btn-small" title="上下反転（きれい）">⇅反転</button>
+          <button id="selRot90Btn" class="btn btn-small" title="時計回り90°回転（きれい・枠をリサイズ）">⟳90°</button>
+          <button id="selRotFreeBtn" class="btn btn-small" title="自由角度回転（最近傍・ドットが粗くなる）">⟳自由</button>
+        </div>
+      </div>
     </div>
 
     <h2 class="panel-title">パレット</h2>
