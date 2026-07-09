@@ -5,3 +5,6 @@ redraw-feedback/
 npm-debug.log*
 .DS_Store
 gpt-exchange/
+
+# エージェント隔離ワークツリー等
+.claude/
