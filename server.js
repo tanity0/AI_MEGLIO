@@ -46,6 +46,10 @@ const EXCHANGE_OUT = path.join(EXCHANGE_DIR, "out");
 const EXCHANGE_IN = path.join(EXCHANGE_DIR, "in");
 const EXCHANGE_DONE = path.join(EXCHANGE_IN, "done");
 const EXCHANGE_MAX_BYTES = 20 * 1024 * 1024; // 画像1ファイル20MB上限
+// §29: ライブプロジェクト同期。Codex ⇄ GUI の往復編集で共有する単一のプロジェクトJSON。
+// EXCHANGE_DIR 直下に固定（パストラバーサル不可）。
+const LIVE_PROJECT_FILE = path.join(EXCHANGE_DIR, "live_project.json");
+const LIVE_PROJECT_MAX_BYTES = 20 * 1024 * 1024; // §29.2: 20MB上限
 const EXCHANGE_IMAGE_RE = /\.(png|jpe?g|webp)$/i;
 try {
   fssync.mkdirSync(EXCHANGE_OUT, { recursive: true });
@@ -2243,6 +2247,107 @@ async function handleExchangeInbox(req, res, urlObj) {
   res.end(out);
 }
 
+// ---------------------------------------------------------------------------
+// §29: ライブプロジェクト同期。EXCHANGE_DIR/live_project.json を Codex ⇄ GUI で共有。
+// パスは固定（LIVE_PROJECT_FILE）でユーザー入力を受けないためトラバーサルは構造的に不可能だが、
+// 念のため EXCHANGE_DIR 配下に収まることを実行時にも確認する（許可ディレクトリ外なら 403）。
+// ---------------------------------------------------------------------------
+function liveProjectPathSafe() {
+  // path.resolve 済みの EXCHANGE_DIR 配下であることを保証（シンボリックリンク等での逸脱を拒否）
+  const dir = EXCHANGE_DIR;
+  const resolved = path.resolve(LIVE_PROJECT_FILE);
+  const rel = path.relative(dir, resolved);
+  return rel && !rel.startsWith("..") && !path.isAbsolute(rel);
+}
+
+// GET /api/live-project           → { exists, mtime, project }
+// GET /api/live-project?meta=1    → { exists, mtime }（軽量ポーリング）
+async function handleLiveProjectGet(req, res, urlObj) {
+  if (!liveProjectPathSafe()) {
+    jsonError(res, 403, "ライブプロジェクトのパスが許可ディレクトリ外です");
+    return;
+  }
+  const metaOnly = urlObj.searchParams.get("meta") === "1";
+  let st;
+  try {
+    st = await fs.lstat(LIVE_PROJECT_FILE);
+  } catch {
+    // 未作成 = まだ誰も書いていない（エラーではない）
+    const out = JSON.stringify(metaOnly ? { exists: false, mtime: 0 } : { exists: false, mtime: 0, project: null });
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Content-Length": Buffer.byteLength(out) });
+    res.end(out);
+    return;
+  }
+  if (!st.isFile() || st.isSymbolicLink()) {
+    jsonError(res, 403, "ライブプロジェクトが通常ファイルではありません");
+    return;
+  }
+  const mtime = Math.floor(st.mtimeMs);
+  if (metaOnly) {
+    const out = JSON.stringify({ exists: true, mtime });
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Content-Length": Buffer.byteLength(out) });
+    res.end(out);
+    return;
+  }
+  if (st.size > LIVE_PROJECT_MAX_BYTES) {
+    jsonError(res, 413, "ライブプロジェクトのサイズが上限（20MB）を超えています");
+    return;
+  }
+  let project = null;
+  try {
+    const raw = await fs.readFile(LIVE_PROJECT_FILE, "utf8");
+    project = JSON.parse(raw);
+  } catch (err) {
+    // Codex が書き込み途中など、壊れたJSONは exists:true / project:null で返す（クライアントはリロードしない）
+    const out = JSON.stringify({ exists: true, mtime, project: null, parseError: true });
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Content-Length": Buffer.byteLength(out) });
+    res.end(out);
+    return;
+  }
+  const out = JSON.stringify({ exists: true, mtime, project });
+  res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Content-Length": Buffer.byteLength(out) });
+  res.end(out);
+}
+
+// POST /api/live-project（body=プロジェクトJSON）→ アトミック書き込み（temp→rename）→ { ok, mtime }
+async function handleLiveProjectPost(req, res) {
+  if (!liveProjectPathSafe()) {
+    jsonError(res, 403, "ライブプロジェクトのパスが許可ディレクトリ外です");
+    return;
+  }
+  let raw;
+  try {
+    raw = await readBody(req, LIVE_PROJECT_MAX_BYTES);
+  } catch {
+    jsonError(res, 413, "ライブプロジェクトのサイズが上限（20MB）を超えています");
+    return;
+  }
+  // JSONとして妥当か検証（壊れたものは書き込まない）
+  let text;
+  try {
+    text = raw.toString("utf8");
+    JSON.parse(text);
+  } catch {
+    jsonError(res, 400, "リクエストが不正なJSONです");
+    return;
+  }
+  try {
+    await fs.mkdir(EXCHANGE_DIR, { recursive: true });
+    // temp→rename でアトミックに（Codex が途中の壊れたJSONを読まないように）
+    const tmp = path.join(EXCHANGE_DIR, `.live_project.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`);
+    await fs.writeFile(tmp, text, "utf8");
+    await fs.rename(tmp, LIVE_PROJECT_FILE);
+    const st = await fs.stat(LIVE_PROJECT_FILE);
+    const mtime = Math.floor(st.mtimeMs);
+    const out = JSON.stringify({ ok: true, mtime });
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Content-Length": Buffer.byteLength(out) });
+    res.end(out);
+    console.log(`[live] プロジェクトを書き込みました: ${LIVE_PROJECT_FILE} (mtime=${mtime})`);
+  } catch (err) {
+    jsonError(res, 500, `ライブプロジェクトの書き込みに失敗しました: ${err.message}`);
+  }
+}
+
 async function handleRedrawFeedback(req, res) {
   let raw;
   try {
@@ -2408,6 +2513,10 @@ const server = http.createServer(async (req, res) => {
       await handleExchangeKit(req, res); // §25.6-4.5/§25.8
     } else if (req.method === "GET" && urlPath === "/api/exchange-inbox") {
       await handleExchangeInbox(req, res, new URL(req.url, "http://localhost")); // §25.8-3
+    } else if (req.method === "GET" && urlPath === "/api/live-project") {
+      await handleLiveProjectGet(req, res, new URL(req.url, "http://localhost")); // §29
+    } else if (req.method === "POST" && urlPath === "/api/live-project") {
+      await handleLiveProjectPost(req, res); // §29
     } else if (req.method === "GET") {
       await serveStatic(req, res);
     } else {

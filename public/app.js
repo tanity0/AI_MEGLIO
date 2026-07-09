@@ -11,6 +11,7 @@ import { initStudio, openStudio } from "./studio.js";
 import { initMotionStudio } from "./motionstudio.js";
 import { initHelp } from "./help.js";
 import { initCanvasResize } from "./canvasresize.js"; // §28 キャンバスのリサイズ
+import { initLiveSync } from "./livesync.js"; // §29 ライブプロジェクト同期
 
 // ---------------------------------------------------------------------------
 // テキストグリッド文字割当て（サーバー側 server.js と同一の規則）
@@ -824,6 +825,7 @@ function main() {
   initStudio(store, toast);
   initMotionStudio(store, toast); // §25 モーション候補スタジオ
   initCanvasResize(store, toast); // §28 キャンバスのリサイズ
+  initLiveSync(store, toast); // §29 ライブプロジェクト同期
   initHelp();
   initBackendLabel();
   store.notify();

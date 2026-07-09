@@ -29,6 +29,10 @@
     <button id="exportPngBtn" class="btn" title="スプライトシートPNGを書き出し">PNG書き出し</button>
     <button id="exportGifBtn" class="btn btn-accent" title="アニメーションGIFを書き出し">GIF書き出し</button>
     <label class="check-row inline" title="GIFのフレーム列を往復展開して書き出す（端の重複なし）"><input type="checkbox" id="gifPingpongChk"> ピンポン</label>
+    <span class="header-sep" aria-hidden="true"></span>
+    <label class="check-row inline" title="共有ファイル live_project.json とGUIを同期。Codexがファイルを書き換えると自動で反映されます（§29）"><input type="checkbox" id="liveSyncToggle"> ライブ同期</label>
+    <button id="liveSaveBtn" class="btn" title="現在のプロジェクトを共有ファイル live_project.json に書き戻す（Codexが続きを読める）" hidden>ライブ保存</button>
+    <span id="liveSyncStatus" class="live-sync-status" hidden></span>
   </div>
 </header>
 
