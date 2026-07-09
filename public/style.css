@@ -194,6 +194,47 @@ aside, #canvasPanel {
   font-size: 12px;
   padding: 4px 0;
 }
+.canvas-size-btn {
+  appearance: none;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+}
+.canvas-size-btn:hover { color: var(--accent); text-decoration: underline; }
+
+/* ---------- §28: キャンバスリサイズ ---------- */
+.cr-size-row { display: flex; gap: 14px; }
+.cr-anchor-wrap { display: flex; flex-direction: column; gap: 6px; }
+.cr-anchor-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 36px);
+  grid-template-rows: repeat(3, 36px);
+  gap: 4px;
+}
+.cr-anchor-cell {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  position: relative;
+}
+.cr-anchor-cell:hover { background: var(--bg-3); }
+.cr-anchor-cell.is-active { background: var(--accent-dark); border-color: var(--accent); }
+.cr-anchor-cell::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-2);
+}
+.cr-anchor-cell.is-active::after { background: var(--bg-0); }
 
 /* ---------- AI panel ---------- */
 #aiPanel {

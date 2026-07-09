@@ -10,6 +10,7 @@ import { initStyleRef } from "./styleref.js";
 import { initStudio, openStudio } from "./studio.js";
 import { initMotionStudio } from "./motionstudio.js";
 import { initHelp } from "./help.js";
+import { initCanvasResize } from "./canvasresize.js"; // §28 キャンバスのリサイズ
 
 // ---------------------------------------------------------------------------
 // テキストグリッド文字割当て（サーバー側 server.js と同一の規則）
@@ -822,6 +823,7 @@ function main() {
   initStyleRef(store, toast);
   initStudio(store, toast);
   initMotionStudio(store, toast); // §25 モーション候補スタジオ
+  initCanvasResize(store, toast); // §28 キャンバスのリサイズ
   initHelp();
   initBackendLabel();
   store.notify();

@@ -15,6 +15,7 @@
   </div>
   <div class="header-actions">
     <button id="newProjectBtn" class="btn" title="新規プロジェクト">新規</button>
+    <button id="canvasResizeBtn" class="btn" title="キャンバスサイズを変更（アンカー基準で拡大/縮小、16〜128）">キャンバス</button>
     <label class="btn" for="importImageInput" title="ドット絵画像（PNG/GIF/WebP）を読み込み、frame 0 = ベースフレームにする">
       画像を開く
       <input id="importImageInput" type="file" accept="image/png,image/gif,image/webp" hidden>
@@ -87,7 +88,7 @@
       <canvas id="mainCanvas"></canvas>
     </div>
     <div id="canvasStatus">
-      <span id="canvasSizeLabel">32 x 32</span>
+      <button id="canvasSizeLabel" class="canvas-size-btn" title="クリックしてキャンバスサイズを変更">32 x 32</button>
       <span id="cursorPosLabel"></span>
       <span id="backendLabel" title="サーバーのAIバックエンド"></span>
     </div>
@@ -522,6 +523,39 @@
       <button id="studioConfirmBtn" class="btn btn-accent">確定（プロジェクト化）</button>
     </div>
     <div id="studioStatus" class="hint" aria-live="polite"></div>
+  </div>
+</div>
+
+<div id="canvasResizeModal" class="modal-overlay" hidden>
+  <div class="modal cr-modal">
+    <div class="modal-head">
+      <h2>キャンバスのリサイズ</h2>
+      <button id="crCloseBtn" class="btn btn-small">閉じる</button>
+    </div>
+    <div class="hint">現在のサイズ: <span id="crCurrentSize">32 x 32</span></div>
+    <div class="cr-size-row">
+      <label class="form-row">幅 <input id="crWidthInput" type="number" min="16" max="128" step="1" value="32"></label>
+      <label class="form-row">高さ <input id="crHeightInput" type="number" min="16" max="128" step="1" value="32"></label>
+    </div>
+    <div class="cr-anchor-wrap">
+      <div class="hint">アンカー（既存内容が新キャンバスのどこに載るか。既定=下中央＝足元）</div>
+      <div class="cr-anchor-grid" id="crAnchorGrid" role="group" aria-label="アンカー位置">
+        <button type="button" class="cr-anchor-cell" data-anchor="tl" title="左上"></button>
+        <button type="button" class="cr-anchor-cell" data-anchor="tm" title="上中央"></button>
+        <button type="button" class="cr-anchor-cell" data-anchor="tr" title="右上"></button>
+        <button type="button" class="cr-anchor-cell" data-anchor="ml" title="左"></button>
+        <button type="button" class="cr-anchor-cell" data-anchor="mm" title="中央"></button>
+        <button type="button" class="cr-anchor-cell" data-anchor="mr" title="右"></button>
+        <button type="button" class="cr-anchor-cell" data-anchor="bl" title="左下"></button>
+        <button type="button" class="cr-anchor-cell is-active" data-anchor="bm" title="下中央（足元・既定）"></button>
+        <button type="button" class="cr-anchor-cell" data-anchor="br" title="右下"></button>
+      </div>
+    </div>
+    <div class="hint">幅・高さは16〜128の範囲で指定してください。128を超えるとAI編集（サーバー側の検証は8〜128）が通らなくなります。縮小で絵柄が切れる場合は確認ダイアログが出ます。</div>
+    <div class="ai-actions">
+      <button id="crApplyBtn" class="btn btn-accent">適用</button>
+      <button id="crCancelBtn" class="btn">キャンセル</button>
+    </div>
   </div>
 </div>
 
