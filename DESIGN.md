@@ -1038,6 +1038,23 @@ v2.0.0 実機テストの指摘4件への対応。
 
 - Playwright で3タブ+ギャラリーのスクショ（before/after 比較）。縦文字が無いこと（主要ボタンの clientWidth > clientHeight）。折りたたみの開閉と localStorage 復元。旧方式一括生成・リグ生成・描き直しが折りたたみ内で従来どおり動くこと（既存スイートの再実行）。再生プレビューが下部の再生モードに追随（ピンポン実測は既存テスト流用）。ヘルプアイコンの付け直し漏れがないこと。
 
+### 25.13 モーション生成のサーバージョブ化（バックグラウンド放置で結果が消える問題）
+
+実機バグ: モーション候補生成を非アクティブで放置→フォーカスを戻すと大半の完成候補が消えて「生成中」に戻る。原因: 候補生成は完全にクライアント駆動で、ブラウザが N×K 本の SSE を保持し、結果は JS メモリ内のみ（`session.cands[].pixels`）。バックグラウンドでブラウザがタブを throttle/freeze/discard し、discard→refocus で再読込されるとメモリごと消える。「放置して待つ」という intended UX が最も壊れやすい。
+
+**本命: サーバー側バッチジョブ**
+- `POST /api/motion-batch` : { project の必要部分（width/height/palette/baseFrame グリッド・トンマナ・lockedRects 等）, specs: [{ index, variant, preset, presetLabel, customText?, instruction?, prevFrameGrid?, nextFrameGrid? }...] } を受け、**jobId** を返す。サーバーは各 spec を既存の CLI/codex 同時実行キューに投入し、**クライアント接続と無関係に**最後まで実行。各結果を `jobs/<jobId>/<index>-<variant>.json`（rows・status・warnings・error）へ書き出す（`jobs/` は自動作成・.gitignore）。
+- `GET /api/motion-batch/<jobId>` : { total, done, running, items: [{ index, variant, status, rows?, warnings?, error? }...] } を返す（完了ぶんを都度）。
+- `DELETE /api/motion-batch/<jobId>` : 残りの spec をキャンセル（キュー投入前のものを破棄・実行中はベストエフォート）。
+- 保持: 完了ジョブは一定時間（例 24h）または上限件数で古いものから削除。サーバー再起動時は jobs/ の未完は done 扱いにせず、クライアントが再ポーリングで欠けを個別再生成できるよう status を残す。
+
+**クライアント**: 「候補を生成」は batch を POST → jobId を localStorage に保存 → 数秒ごとに GET でポーリングし、届いた結果でセルを埋める。**ブラウザのバックグラウンド化・再読込・別デバイス移動があってもサーバーが進めるので影響しない**。再読込時に未完 jobId があれば自動で復帰（ポーリング再開）。中断は DELETE。単発の「再生成／描き直し」は spec 1件の batch として同じ経路。
+
+**保険: セッションの localStorage 永続化**
+- 候補が1つ完了するたびに session（メタ + 完了候補の pixels を base64/RLE）を localStorage に保存。未確定 session があればロード時に「前回の生成候補を復元しますか？」。容量ガード（例 5MB 超は古い順に破棄）。確定済みはプロジェクトJSON側にあるので対象外。
+
+検証: MOCK バッチで、ポーリングを一時停止（＝バックグラウンド相当）→再開しても全結果が揃うこと。ジョブ実行中にクライアント側 fetch を止めても jobs/ にファイルが揃うこと。再読込→未完ジョブ自動復帰。DELETE で残りが止まること。localStorage 復元。abort・部分失敗・退行（§25 系一式）。実 codex/CLI での1バッチ実測（サーバー継続実行の確認）。README に「候補生成はサーバーが実行するのでブラウザは閉じてよい」を明記。
+
 ## 将来メモ（未設計・アイデア置き場）
 
 - **ChatGPT Apps（Apps SDK）への埋め込み**: ChatGPT のサブスクリプション内で GPT-5.5 系モデルを推論に使う案。実現には (a) 本ツールを公開 MCP サーバーとしてホスティングし OpenAI の審査を通す、(b) AI 操作をチャットターン駆動に作り替える（現行の SSE リアルタイム編集ループと相性が悪い）、(c) ローカル EXPORT_ROOT 連携（zombie リポジトリの public/sprites への直接書き出し）を放棄する、という大きなアーキテクチャ変更が必要。**当面は §23（Codex CLI バックエンド、`codex exec` 経由で ChatGPT サブスク認証のまま GPT モデルを使う）を優先**し、本案は Apps SDK のローカル実行・私的配布が緩和されたら再検討する。
