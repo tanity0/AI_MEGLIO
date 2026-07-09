@@ -59,6 +59,16 @@
     <div class="tool-options">
       <label class="check-row"><input type="checkbox" id="onionSkinToggle"> オニオンスキン</label>
       <label class="check-row"><input type="checkbox" id="diffViewToggle"> 差分ビュー（対ベース）</label>
+      <div class="brush-row" title="ペン/消しゴムのブラシサイズ（px）">
+        <span>サイズ</span>
+        <div class="brush-size-group" id="brushSizeGroup">
+          <button type="button" class="brush-size-btn is-active" data-size="1">1</button>
+          <button type="button" class="brush-size-btn" data-size="2">2</button>
+          <button type="button" class="brush-size-btn" data-size="3">3</button>
+          <button type="button" class="brush-size-btn" data-size="4">4</button>
+          <button type="button" class="brush-size-btn" data-size="8">8</button>
+        </div>
+      </div>
       <div class="zoom-row">
         <span>ズーム</span>
         <input type="range" id="zoomRange" min="2" max="32" step="1" value="12">
@@ -89,7 +99,10 @@
 
   <section id="canvasPanel">
     <div id="canvasWrap">
-      <canvas id="mainCanvas"></canvas>
+      <div id="canvasStack">
+        <canvas id="mainCanvas"></canvas>
+        <canvas id="cursorCanvas"></canvas>
+      </div>
     </div>
     <div id="canvasStatus">
       <button id="canvasSizeLabel" class="canvas-size-btn" title="クリックしてキャンバスサイズを変更">32 x 32</button>

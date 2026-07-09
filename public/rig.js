@@ -1381,8 +1381,10 @@ export function initRig(store, toast) {
   });
 
   // キャンバスドラッグでパーツ移動（調整モードON時のみ。editor.jsは調整モード中は無視する）
+  // §31.3: PointerEvents統一（mouse/touch/pen）。editor.js側がpointerdownでpreventDefault
+  // することがあるため、互換mousedown頼みにせずpointer系で直接受ける。
   let dragState = null;
-  mainCanvas.addEventListener("mousedown", (ev) => {
+  mainCanvas.addEventListener("pointerdown", (ev) => {
     if (!store.state.rigAdjustMode) return;
     const kfIdx = currentKeyframeIndex();
     const partId = store.state.rigSelectedPart;
@@ -1398,7 +1400,7 @@ export function initRig(store, toast) {
       kfIdx, partId, cellSize,
     };
   });
-  window.addEventListener("mousemove", (ev) => {
+  window.addEventListener("pointermove", (ev) => {
     if (!dragState) return;
     const rect = mainCanvas.getBoundingClientRect();
     const x = Math.floor((ev.clientX - rect.left) / dragState.cellSize);
@@ -1413,7 +1415,7 @@ export function initRig(store, toast) {
     p.frames[p.rig.generatedAt + dragState.kfIdx].pixels = composeRigFrame(p, kf);
     store.notify();
   });
-  window.addEventListener("mouseup", () => { dragState = null; });
+  window.addEventListener("pointerup", () => { dragState = null; });
 
   // -------------------------------------------------------------------
   // §22.8: パーツ矩形・pivot のドラッグ編集（リグタブ表示中・フロントのみ）

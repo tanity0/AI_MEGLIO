@@ -142,6 +142,22 @@ aside, #canvasPanel {
 .check-row { display: flex; align-items: center; gap: 6px; color: var(--text-1); font-size: 12px; cursor: pointer; }
 .zoom-row { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-1); }
 .zoom-row input[type=range] { flex: 1; }
+.brush-row { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-1); }
+.brush-size-group { display: flex; gap: 4px; }
+.brush-size-btn {
+  appearance: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  color: var(--text-1);
+  font-size: 11px;
+  cursor: pointer;
+}
+.brush-size-btn:hover { border-color: var(--accent-dark); }
+.brush-size-btn.is-active { border-color: var(--accent); background: var(--bg-3); color: var(--text-0); }
 #zoomLabel { width: 32px; text-align: right; color: var(--text-2); }
 
 .palette-grid {
@@ -184,14 +200,25 @@ aside, #canvasPanel {
   min-height: 0;
   overflow: auto;
   cursor: grab;
+  touch-action: none; /* §31.3: 1本指=描画/パン、2本指=パン・ピンチズームをJS側で処理するため既定のタッチ挙動を無効化 */
 }
 #canvasWrap.panning { cursor: grabbing; }
-#canvasWrap > canvas { margin: auto; }
+#canvasWrap > #canvasStack { margin: auto; position: relative; }
+#canvasStack > canvas { display: block; }
 #mainCanvas {
   image-rendering: pixelated;
   border: 1px solid var(--border);
   cursor: crosshair;
   background: #202020;
+  touch-action: none; /* §31.3: iPad/ペンタブで描画中にページスクロールさせない */
+  -webkit-touch-callout: none; /* iOS長押しメニュー抑制 */
+}
+#cursorCanvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none; /* §31.2: ブラシサイズのカーソルプレビュー専用オーバーレイ。描画イベントは下のmainCanvasへ */
+  image-rendering: pixelated;
 }
 #canvasStatus {
   display: flex;

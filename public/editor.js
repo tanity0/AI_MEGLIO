@@ -4,9 +4,12 @@ import { extractMainPalette } from "./convert.js";
 
 const MIN_ZOOM = 2;
 const MAX_ZOOM = 48;
+const BRUSH_SIZES = [1, 2, 3, 4, 8];
 
 export function initEditor(store, toast) {
   const canvas = document.getElementById("mainCanvas");
+  const cursorCanvas = document.getElementById("cursorCanvas");
+  const cctx = cursorCanvas.getContext("2d");
   const wrap = document.getElementById("canvasWrap");
   const ctx = canvas.getContext("2d");
   const onionToggle = document.getElementById("onionSkinToggle");
@@ -26,13 +29,32 @@ export function initEditor(store, toast) {
   const canvasSizeLabel = document.getElementById("canvasSizeLabel");
   const cursorPosLabel = document.getElementById("cursorPosLabel");
   const toolButtons = Array.from(document.querySelectorAll(".tool-btn"));
+  const brushSizeButtons = Array.from(document.querySelectorAll(".brush-size-btn"));
+
+  // §31.2: ブラシサイズ（UIの初期状態が無ければ既定1px）
+  if (!BRUSH_SIZES.includes(store.state.brushSize)) store.state.brushSize = 1;
 
   let dragging = false;
   let dragTool = null;
   let dragStart = null; // {x,y} cell coords for select tool
   let lastPaintedCell = null;
+  let lastCell = null; // ブレゼンハム補間の直前セル（§31.1: 高速ドラッグでも隙間なし）
 
   function project() { return store.state.project; }
+
+  // ---------------------------------------------------------------------
+  // §31.1性能: 重い render() をポインタ移動のたびに同期実行せず、
+  // rAFで1フレーム1回にまとめる（高速ドラッグ・カーソル追従のもたつき対策）
+  // ---------------------------------------------------------------------
+  let renderScheduled = false;
+  function scheduleRender() {
+    if (renderScheduled) return;
+    renderScheduled = true;
+    requestAnimationFrame(() => {
+      renderScheduled = false;
+      render();
+    });
+  }
 
   function computeAutoZoom() {
     const p = project();
@@ -74,6 +96,46 @@ export function initEditor(store, toast) {
     return true;
   }
 
+  // §31.2: サイズ分の正方ブラシで1点を塗る（中心寄せ。size=1は従来どおり1px）
+  function paintBrushAt(frameIndex, cx, cy, colorIndex, size) {
+    const half = Math.floor((size - 1) / 2);
+    let changed = false;
+    for (let dy = 0; dy < size; dy++) {
+      for (let dx = 0; dx < size; dx++) {
+        if (setPixel(frameIndex, cx - half + dx, cy - half + dy, colorIndex)) changed = true;
+      }
+    }
+    return changed;
+  }
+
+  // §31.1: ブレゼンハムのセル列（始点・終点を含む、隙間なし）
+  function bresenhamLine(x0, y0, x1, y1) {
+    const pts = [];
+    const dx = Math.abs(x1 - x0);
+    const dy = -Math.abs(y1 - y0);
+    const sx = x0 < x1 ? 1 : -1;
+    const sy = y0 < y1 ? 1 : -1;
+    let err = dx + dy;
+    let x = x0, y = y0;
+    while (true) {
+      pts.push({ x, y });
+      if (x === x1 && y === y1) break;
+      const e2 = 2 * err;
+      if (e2 >= dy) { err += dy; x += sx; }
+      if (e2 <= dx) { err += dx; y += sy; }
+    }
+    return pts;
+  }
+
+  // 直前セル→現在セルをブレゼンハムで結び、各点にブラシを乗せる
+  function paintStroke(frameIndex, fromCell, toCell, colorIndex, size) {
+    let changed = false;
+    for (const pt of bresenhamLine(fromCell.x, fromCell.y, toCell.x, toCell.y)) {
+      if (paintBrushAt(frameIndex, pt.x, pt.y, colorIndex, size)) changed = true;
+    }
+    return changed;
+  }
+
   function floodFill(frameIndex, startX, startY, colorIndex) {
     const p = project();
     if (!inBounds(startX, startY)) return;
@@ -104,14 +166,15 @@ export function initEditor(store, toast) {
   }
 
   // ---------------------------------------------------------------------
-  // マウス操作
+  // ポインタ操作（§31.3: PointerEvents統一。mouse/touch/pen）
   // ---------------------------------------------------------------------
-  // ペンの長押しスポイト（0.7秒静止で発動、離すと色を拾ってペンに戻る）
+  // ペンの長押しスポイト（0.7秒静止で発動、離すと色を拾ってペンに戻る）。
+  // 3方向ジェスチャー: 即離す=ドット / すぐ動かす=線 / 0.7秒静止=スポイト。
   const HOLD_EYEDROP_MS = 700;
   let holdTimer = null;
   let holdEyedrop = false;
   let holdStartCell = null;
-  let pendingPen = null; // {x, y} 押下直後の未確定ドット（離す=打つ / 動かす=線 / 0.7秒=スポイト）
+  let pendingPen = null; // {x, y} 押下直後の未確定ドット
   function clearHoldTimer() {
     if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
   }
@@ -123,9 +186,87 @@ export function initEditor(store, toast) {
     store.notify();
   }
 
+  // §31.3: 2本指トラッキング（パン・ピンチズーム用）。window捕捉フェーズで
+  // 更新するため、canvas/wrap側のpointerdownハンドラより必ず先に走る。
+  const touchPoints = new Map(); // pointerId -> {x, y}
+  let pinch = null; // {startDist, startZoom, lastMidX, lastMidY}
+  let pendingPinch = null;
+  let pinchRafScheduled = false;
+
+  function touchDist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+  function touchMid(a, b) { return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; }
+
+  function abortStroke() {
+    clearHoldTimer();
+    pendingPen = null;
+    holdEyedrop = false;
+    dragging = false;
+    dragTool = null;
+    dragStart = null;
+    lastPaintedCell = null;
+    lastCell = null;
+    canvas.style.cursor = "";
+  }
+
+  window.addEventListener("pointerdown", (ev) => {
+    if (ev.pointerType !== "touch") return;
+    touchPoints.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+    if (touchPoints.size === 2) {
+      // 2本指ジェスチャー開始：進行中の1本指ストロークやパンは中断してパン/ズームに切替
+      abortStroke();
+      panning = null;
+      wrap.classList.remove("panning");
+      const pts = Array.from(touchPoints.values());
+      const mid = touchMid(pts[0], pts[1]);
+      pinch = { startDist: touchDist(pts[0], pts[1]) || 1, startZoom: store.state.zoom, lastMidX: mid.x, lastMidY: mid.y };
+    } else if (touchPoints.size > 2) {
+      pinch = null; // 3本指以上は無視
+    }
+  }, true);
+
+  // rAFフレーム到達前に指が離れても最後の増分を取りこぼさないよう、
+  // 計算結果（mid/dist）をイベント時点でスナップショットしてから適用する。
+  function flushPinch() {
+    pinchRafScheduled = false;
+    if (!pendingPinch || !pinch) { pendingPinch = null; return; }
+    const { mid, dist } = pendingPinch;
+    pendingPinch = null;
+    wrap.scrollLeft -= mid.x - pinch.lastMidX;
+    wrap.scrollTop -= mid.y - pinch.lastMidY;
+    pinch.lastMidX = mid.x;
+    pinch.lastMidY = mid.y;
+    const nextZoom = Math.round(pinch.startZoom * (dist / pinch.startDist));
+    if (nextZoom !== store.state.zoom) setZoom(nextZoom, { keepAuto: false });
+  }
+
+  window.addEventListener("pointermove", (ev) => {
+    if (ev.pointerType !== "touch" || !touchPoints.has(ev.pointerId)) return;
+    touchPoints.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+    if (touchPoints.size !== 2 || !pinch) return;
+    const pts = Array.from(touchPoints.values());
+    pendingPinch = { mid: touchMid(pts[0], pts[1]), dist: touchDist(pts[0], pts[1]) || 1 };
+    if (pinchRafScheduled) return;
+    pinchRafScheduled = true;
+    requestAnimationFrame(flushPinch);
+  }, true);
+
+  function endTouch(ev) {
+    if (ev.pointerType !== "touch") return;
+    touchPoints.delete(ev.pointerId);
+    if (touchPoints.size < 2) {
+      flushPinch(); // 保留中の最終増分を破棄せず適用してから終了
+      pinch = null;
+    }
+  }
+  window.addEventListener("pointerup", endTouch, true);
+  window.addEventListener("pointercancel", endTouch, true);
+
   // 空き領域の左ドラッグ / どこでも中ボタンドラッグで表示位置をパン
   let panning = null;
+  let pendingPanPos = null;
+  let panRafScheduled = false;
   wrap.addEventListener("pointerdown", (ev) => {
+    if (ev.pointerType === "touch" && touchPoints.size >= 2) return; // 2本指ジェスチャー中はパン開始しない
     const middle = ev.button === 1;
     if (!middle && (ev.button !== 0 || ev.target !== wrap)) return;
     panning = { x: ev.clientX, y: ev.clientY, left: wrap.scrollLeft, top: wrap.scrollTop };
@@ -134,16 +275,24 @@ export function initEditor(store, toast) {
   });
   window.addEventListener("pointermove", (ev) => {
     if (!panning) return;
-    wrap.scrollLeft = panning.left - (ev.clientX - panning.x);
-    wrap.scrollTop = panning.top - (ev.clientY - panning.y);
+    pendingPanPos = { clientX: ev.clientX, clientY: ev.clientY };
+    if (panRafScheduled) return;
+    panRafScheduled = true;
+    requestAnimationFrame(() => {
+      panRafScheduled = false;
+      if (!panning || !pendingPanPos) return;
+      wrap.scrollLeft = panning.left - (pendingPanPos.clientX - panning.x);
+      wrap.scrollTop = panning.top - (pendingPanPos.clientY - panning.y);
+    });
   });
   window.addEventListener("pointerup", () => {
     panning = null;
     wrap.classList.remove("panning");
   });
 
-  canvas.addEventListener("mousedown", (ev) => {
-    if (ev.button !== 0) return; // 描画は左ボタンのみ（中ボタンはパン）
+  canvas.addEventListener("pointerdown", (ev) => {
+    if (ev.button !== 0) return; // 描画は左ボタン/主ボタンのみ（中ボタンはパン）
+    if (ev.pointerType === "touch" && touchPoints.size >= 2) return; // 2本指ジェスチャー中は描画しない
     if (store.state.rigAdjustMode) return; // リグ調整モード中はrig.jsがドラッグを処理する
     const { x, y } = cellFromEvent(ev);
     const tool = store.state.tool;
@@ -155,12 +304,15 @@ export function initEditor(store, toast) {
       return;
     }
 
+    ev.preventDefault(); // touch/penの互換mouseイベント・既定ジェスチャーを抑止（PointerEventsに一本化）
+
     dragging = true;
     dragTool = tool;
     lastPaintedCell = null;
+    lastCell = { x, y };
 
     if (tool === "pen") {
-      // ペンは押下時点では打たない。すぐ離す=ドット / 動かす=線 / 0.7秒静止=スポイト
+      // ペンは押下時点では打たない。すぐ離す=ドット / 動かす=線 / 0.7秒静止=スポイト（3方向ジェスチャー）
       pendingPen = { x, y };
       holdStartCell = `${x},${y}`;
       clearHoldTimer();
@@ -173,8 +325,8 @@ export function initEditor(store, toast) {
       }, HOLD_EYEDROP_MS);
     } else if (tool === "eraser") {
       store.pushUndo();
-      if (setPixel(frameIndex, x, y, 0)) lastPaintedCell = `${x},${y}`;
-      render();
+      if (paintBrushAt(frameIndex, x, y, 0, store.state.brushSize)) scheduleRender();
+      lastPaintedCell = `${x},${y}`;
     } else if (tool === "fill") {
       store.pushUndo();
       floodFill(frameIndex, x, y, store.state.colorIndex);
@@ -184,36 +336,35 @@ export function initEditor(store, toast) {
       store.state.selection = { frameIndex, ...normalizedSelectionRect({ x, y }, { x, y }) };
       store.notify();
     } else if (tool === "eyedropper") {
-      const p = project();
-      if (inBounds(x, y)) {
-        const idx = p.frames[frameIndex].pixels[y * p.width + x];
-        store.state.colorIndex = idx;
-        store.notify();
-      }
+      pickColorAt(x, y);
     }
   });
 
-  window.addEventListener("mousemove", (ev) => {
-    if (!wrap.contains(document.elementFromPoint(ev.clientX, ev.clientY)) && !dragging) {
-      // still update cursor label only when over canvas; handled below via canvas mousemove
-    }
+  window.addEventListener("pointermove", (ev) => {
     if (!dragging) return;
     const { x, y } = cellFromEvent(ev);
     const frameIndex = store.state.currentFrame;
     if (holdTimer && `${x},${y}` !== holdStartCell) clearHoldTimer();
     if (dragTool === "pen" && pendingPen && `${x},${y}` !== `${pendingPen.x},${pendingPen.y}`) {
-      // 保留中のドットを起点に線を開始
+      // 保留中のドットを起点に、動いた瞬間から即座に線を引き始める（移動しきい値=1セルでラグなし）。
+      // 起点→現在点をブレゼンハムで補間するため、高速ドラッグでも隙間が出ない。
       store.pushUndo();
-      setPixel(frameIndex, pendingPen.x, pendingPen.y, store.state.colorIndex);
+      paintStroke(frameIndex, pendingPen, { x, y }, store.state.colorIndex, store.state.brushSize);
       pendingPen = null;
-      lastPaintedCell = null;
+      lastCell = { x, y };
+      lastPaintedCell = `${x},${y}`;
+      scheduleRender();
+      return;
     }
     if ((dragTool === "pen" && !pendingPen) || dragTool === "eraser") {
       const key = `${x},${y}`;
       if (key !== lastPaintedCell) {
         const color = dragTool === "eraser" ? 0 : store.state.colorIndex;
-        if (setPixel(frameIndex, x, y, color)) render();
+        // 直前セル→現在セルをブレゼンハムで結んで塗る（高速ドラッグでも途切れない）
+        const from = lastCell || { x, y };
+        if (paintStroke(frameIndex, from, { x, y }, color, store.state.brushSize)) scheduleRender();
         lastPaintedCell = key;
+        lastCell = { x, y };
       }
     } else if (dragTool === "select" && dragStart) {
       store.state.selection = { frameIndex, ...normalizedSelectionRect(dragStart, { x, y }) };
@@ -221,7 +372,7 @@ export function initEditor(store, toast) {
     }
   });
 
-  window.addEventListener("mouseup", (ev) => {
+  window.addEventListener("pointerup", (ev) => {
     clearHoldTimer();
     if (holdEyedrop) {
       const { x, y } = cellFromEvent(ev);
@@ -231,33 +382,98 @@ export function initEditor(store, toast) {
     } else if (pendingPen && dragTool === "pen") {
       // すぐ離した → ドット確定
       store.pushUndo();
-      setPixel(store.state.currentFrame, pendingPen.x, pendingPen.y, store.state.colorIndex);
+      paintBrushAt(store.state.currentFrame, pendingPen.x, pendingPen.y, store.state.colorIndex, store.state.brushSize);
+      render();
+    } else if (dragging && (dragTool === "pen" || dragTool === "eraser")) {
+      // ストローク終了：バッチ中の最終状態を確実に描画
       render();
     }
     pendingPen = null;
     dragging = false;
     dragTool = null;
     dragStart = null;
+    lastPaintedCell = null;
+    lastCell = null;
   });
 
-  canvas.addEventListener("mousemove", (ev) => {
-    const { x, y } = cellFromEvent(ev);
-    if (inBounds(x, y)) {
-      cursorPosLabel.textContent = `(${x}, ${y})`;
+  // ---------------------------------------------------------------------
+  // §31.2 カーソルプレビュー（軽量オーバーレイ）
+  // 専用の透明canvasに枠だけ描くため、ホバーのたびにキャンバス全体を
+  // 再描画する必要がなく、高ズーム/大キャンバスでもカーソル追従が滑らか。
+  // ---------------------------------------------------------------------
+  let hoverCell = null;
+  let hoverRafScheduled = false;
+  function scheduleHoverUpdate() {
+    if (hoverRafScheduled) return;
+    hoverRafScheduled = true;
+    requestAnimationFrame(() => {
+      hoverRafScheduled = false;
+      updateHoverDisplay();
+    });
+  }
+  function updateHoverDisplay() {
+    if (hoverCell && inBounds(hoverCell.x, hoverCell.y)) {
+      cursorPosLabel.textContent = `(${hoverCell.x}, ${hoverCell.y})`;
     } else {
       cursorPosLabel.textContent = "";
     }
+    renderCursorOverlay();
+  }
+  function syncCursorCanvasSize() {
+    const p = project();
+    const cellSize = store.state.zoom;
+    const w = p.width * cellSize, h = p.height * cellSize;
+    if (cursorCanvas.width !== w || cursorCanvas.height !== h) {
+      cursorCanvas.width = w;
+      cursorCanvas.height = h;
+      cursorCanvas.style.width = w + "px";
+      cursorCanvas.style.height = h + "px";
+    }
+  }
+  function renderCursorOverlay() {
+    syncCursorCanvasSize();
+    cctx.clearRect(0, 0, cursorCanvas.width, cursorCanvas.height);
+    const tool = store.state.tool;
+    if (!hoverCell || (tool !== "pen" && tool !== "eraser")) return;
+    const cellSize = store.state.zoom;
+    const size = store.state.brushSize;
+    const half = Math.floor((size - 1) / 2);
+    const bx = hoverCell.x - half, by = hoverCell.y - half;
+    cctx.save();
+    cctx.strokeStyle = tool === "eraser" ? "#ef6d7a" : "#6ee7c8";
+    cctx.lineWidth = 1.5;
+    cctx.strokeRect(bx * cellSize + 1, by * cellSize + 1, size * cellSize - 2, size * cellSize - 2);
+    cctx.restore();
+  }
+
+  canvas.addEventListener("pointermove", (ev) => {
+    const { x, y } = cellFromEvent(ev);
+    hoverCell = { x, y };
+    scheduleHoverUpdate();
   });
-  canvas.addEventListener("mouseleave", () => { cursorPosLabel.textContent = ""; });
+  canvas.addEventListener("pointerleave", () => {
+    hoverCell = null;
+    scheduleHoverUpdate();
+  });
 
   canvas.addEventListener("contextmenu", (ev) => ev.preventDefault());
 
+  let pendingWheelDir = 0;
+  let wheelRafScheduled = false;
   wrap.addEventListener(
     "wheel",
     (ev) => {
       ev.preventDefault();
-      const dir = ev.deltaY > 0 ? -1 : 1;
-      setZoom(store.state.zoom + dir);
+      pendingWheelDir += ev.deltaY > 0 ? -1 : 1;
+      if (wheelRafScheduled) return;
+      wheelRafScheduled = true;
+      requestAnimationFrame(() => {
+        wheelRafScheduled = false;
+        if (pendingWheelDir !== 0) {
+          setZoom(store.state.zoom + Math.sign(pendingWheelDir));
+          pendingWheelDir = 0;
+        }
+      });
     },
     { passive: false }
   );
@@ -280,6 +496,15 @@ export function initEditor(store, toast) {
       toast("ベースフレームがありません（画像を開くとベースフレームが設定されます）");
     }
     store.notify();
+  });
+
+  // --- ブラシサイズ（§31.2）---
+  brushSizeButtons.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const size = Number(btn.dataset.size) || 1;
+      store.state.brushSize = size;
+      store.notify();
+    });
   });
 
   // --- ロック領域（§13.2-3）---
@@ -578,6 +803,8 @@ export function initEditor(store, toast) {
     zoomRange.value = String(store.state.zoom);
     zoomLabel.textContent = `${store.state.zoom}x`;
     toolButtons.forEach((btn) => btn.classList.toggle("is-active", btn.dataset.tool === store.state.tool));
+    brushSizeButtons.forEach((btn) => btn.classList.toggle("is-active", Number(btn.dataset.size) === store.state.brushSize));
+    renderCursorOverlay();
   }
 
   for (const id of ["tabPatchBtn", "tabMotionBtn", "tabRigBtn"]) {
