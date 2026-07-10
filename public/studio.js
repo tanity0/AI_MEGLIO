@@ -700,7 +700,7 @@ function applyCandidateUi(on) {
   if (h2) h2.textContent = on ? "候補の調整（変換スタジオ）" : "変換スタジオ（ドット絵風 → 本物ドット絵）";
 }
 
-export async function openStudio(dataUrl, savedParams = null) {
+export async function openStudio(dataUrl, savedParams = null, opts = {}) {
   candidateMode = null; // §44.1: 通常モードへ復帰
   candidateAutoNote = "";
   await loadSource(dataUrl);
@@ -713,14 +713,19 @@ export async function openStudio(dataUrl, savedParams = null) {
     if (sp) {
       split = { ...split, ...sp, boxes: Array.isArray(sp.boxes) ? sp.boxes : [], userChose: true };
     }
-    // §30: フレーム別つまみの復元。アクティブ（0番）の値は作業セット knobs にも反映。
+    // §30: フレーム別つまみの復元。アクティブフレームの値は作業セット knobs にも反映。
     if (Array.isArray(fp) && fp.length) {
       frameParams = fp.map((pf) => {
         const o = {};
         for (const k of PER_FRAME_KEYS) o[k] = (pf && typeof pf[k] === "number") ? pf[k] : knobs[k];
         return o;
       });
-      for (const k of PER_FRAME_KEYS) if (frameParams[0][k] !== undefined) knobs[k] = frameParams[0][k];
+      // §47.2: 「再変換」ではタイムラインで選択中のフレームのタブを初期アクティブにする。
+      // フレーム→シートコマの対応は conversionParams.split の boxes 順（=取り込み順=
+      // frameParams 順）。範囲外（後から追加されたフレーム等・対応が取れない）は先頭。
+      const want = Number.isInteger(opts.initialFrame) ? opts.initialFrame : 0;
+      activeFrame = want > 0 && want < frameParams.length ? want : 0;
+      for (const k of PER_FRAME_KEYS) if (frameParams[activeFrame][k] !== undefined) knobs[k] = frameParams[activeFrame][k];
     }
   }
   $("studioPanel").hidden = false;
@@ -824,7 +829,8 @@ export function initStudio(storeRef, toastRef) {
       toast("このプロジェクトには元画像が保存されていません（変換スタジオ経由で読み込むと保存されます）", "error");
       return;
     }
-    openStudio(p.sourceImage, p.conversionParams || null);
+    // §47.2: 現在選択中のフレームに対応するコマのタブを初期アクティブで開く
+    openStudio(p.sourceImage, p.conversionParams || null, { initialFrame: store.state.currentFrame });
   });
 
   // E2E テスト用フック（UIには影響しない）

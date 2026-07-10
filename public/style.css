@@ -644,6 +644,12 @@ aside, #canvasPanel {
   gap: 6px;
   padding: 6px 14px 8px;
 }
+/* §47.1: ギャラリー表示中はタイムラインをモーダル背景より前面にしてフレーム選択
+   （クリック）を可能にする。選択はプール内の対応カードのハイライトに連動する。
+   変換スタジオ（#studioPanel）はさらに前面（700）なので、ギャラリーから候補調整で
+   スタジオを開いている間はタイムラインに覆われない（トースト999/ヘルプ1000未満） */
+body.mc-gallery-open #timelineBar { position: relative; z-index: 600; }
+#studioPanel { z-index: 700; }
 .timeline-main {
   display: flex;
   align-items: center;
@@ -1140,6 +1146,8 @@ aside, #canvasPanel {
 .mc-grid { display: flex; flex-wrap: wrap; gap: 10px; overflow: auto; padding: 8px 2px; align-content: flex-start; }
 .mc-cell { position: relative; border: 2px solid var(--border); border-radius: 6px; padding: 4px; background: var(--bg-0); display: flex; flex-direction: column; gap: 4px; align-items: center; width: 148px; box-sizing: border-box; }
 .mc-cell.is-selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+/* §47.1: タイムラインのフレーム選択と連動した一時ハイライト（選択枠と区別できる暖色の外枠） */
+.mc-cell.is-frame-sync { outline: 3px solid var(--warn); outline-offset: 2px; }
 .mc-cell.is-error { border-color: var(--danger); }
 .mc-cell canvas {
   image-rendering: pixelated; cursor: pointer; max-width: 128px;

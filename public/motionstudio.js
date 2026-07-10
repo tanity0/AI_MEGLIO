@@ -1647,6 +1647,7 @@ export function initMotionStudio(store, toast) {
     stopPreview();
     if (tickTimer) { clearInterval(tickTimer); tickTimer = null; }
     modal.hidden = true;
+    document.body.classList.remove("mc-gallery-open"); // §47.1
   }
   closeBtn.addEventListener("click", closeModal);
 
@@ -1668,6 +1669,30 @@ export function initMotionStudio(store, toast) {
     return true;
   }
   store.subscribe(invalidateStaleSession);
+
+  // §47.1: タイムライン→ギャラリー同期。ギャラリーが開いている間にタイムラインで
+  // フレーム選択（store.state.currentFrame の変化）が起きたら、プール内の対応する
+  // source:"frame" アイテムを一時的な強調枠でハイライトし、可視位置へスクロールする。
+  // 対応アイテムが無いフレーム（新規取り込み候補しか無い等）では何もしない。
+  // 注: §46 の invalidateStaleSession を先に購読しているため、プロジェクト差し替えの
+  // notify では session が null になってからここへ来る（旧候補をハイライトしない）。
+  let lastSyncedFrame = store.state.currentFrame;
+  let frameSyncTimer = null;
+  store.subscribe(() => {
+    const cur = store.state.currentFrame;
+    if (cur === lastSyncedFrame) return;
+    lastSyncedFrame = cur;
+    if (modal.hidden || !session) return;
+    const cand = session.pool.find((c) => c.source === "frame" && c.frameIndex === cur);
+    if (!cand) return;
+    const el = grid.querySelector(`[data-cell="${cand.id}"]`);
+    if (!el) return;
+    grid.querySelectorAll(".mc-cell.is-frame-sync").forEach((e) => e.classList.remove("is-frame-sync"));
+    el.classList.add("is-frame-sync");
+    el.scrollIntoView({ block: "nearest" });
+    clearTimeout(frameSyncTimer);
+    frameSyncTimer = setTimeout(() => el.classList.remove("is-frame-sync"), 1600);
+  });
   imageBtn.addEventListener("click", () => imageInput.click());
   imageInput.addEventListener("change", async () => {
     const file = imageInput.files?.[0];
@@ -1771,6 +1796,7 @@ export function initMotionStudio(store, toast) {
     session.genTotal = total;
     session.k = k;
     modal.hidden = false;
+    document.body.classList.add("mc-gallery-open"); // §47.1: タイムラインを前面化
     const newCands = [];
     for (let i = 0; i < total; i++) {
       for (let kk = 0; kk < k; kk++) {
@@ -1799,6 +1825,7 @@ export function initMotionStudio(store, toast) {
     }
     renderPool();
     modal.hidden = false;
+    document.body.classList.add("mc-gallery-open"); // §47.1: タイムラインを前面化
     startPreview();
     if (inflight === 0) setIdleProgress();
     pollInbox(); // §25.8: 受信箱に画像があれば即自動取り込み
