@@ -26,6 +26,14 @@ export function initEditor(store, toast) {
   const colorReplaceTo = document.getElementById("colorReplaceTo");
   const colorReplaceExecBtn = document.getElementById("colorReplaceExecBtn");
   const colorReplaceCancelBtn = document.getElementById("colorReplaceCancelBtn");
+  const floatPalette = document.getElementById("floatPalette");
+  const floatPaletteTitlebar = document.getElementById("floatPaletteTitlebar");
+  const floatPaletteCloseBtn = document.getElementById("floatPaletteCloseBtn");
+  const floatPaletteToggleBtn = document.getElementById("floatPaletteToggleBtn");
+  const floatPaletteTabs = document.getElementById("floatPaletteTabs");
+  const floatPaletteScopeRow = document.getElementById("floatPaletteScopeRow");
+  const floatPaletteAllFrames = document.getElementById("floatPaletteAllFrames");
+  const floatPaletteGrid = document.getElementById("floatPaletteGrid");
   const lockSelectionBtn = document.getElementById("lockSelectionBtn");
   const clearLocksBtn = document.getElementById("clearLocksBtn");
   const lockCountEl = document.getElementById("lockCount");
@@ -446,6 +454,7 @@ export function initEditor(store, toast) {
     const frameIndex = store.state.currentFrame;
     if (!inBounds(x, y)) return;
     store.state.colorIndex = p.frames[frameIndex].pixels[y * p.width + x];
+    fpPushRecent(store.state.colorIndex); // §37: スポイトで拾った色を「最近」へ
     store.notify();
   }
 
@@ -972,6 +981,185 @@ export function initEditor(store, toast) {
     toast(`色を置換しました（${changed}px・${scopeAll ? "全フレーム" : "現在フレーム"}）`);
   });
 
+  // ------------------------------------------------------------------ §37
+  // フローティングパレット窓: 「使用中（出現数順）/最近/全色」の3タブ。
+  // タイトルバードラッグで移動（画面内クランプ）。位置・表示状態・タブ・
+  // 全フレーム集計トグルは localStorage 保持。スウォッチクリックで描画色に
+  // （左パネルと双方向同期）。窓のイベントは stopPropagation でキャンバス操作と分離。
+  const FP_KEY = "aiMeglio.floatPalette";
+  const FP_RECENT_MAX = 16;
+  let fpState = { x: null, y: null, visible: false, tab: "used", scopeAll: false };
+  try {
+    const saved = JSON.parse(localStorage.getItem(FP_KEY) || "null");
+    if (saved && typeof saved === "object") {
+      if (Number.isFinite(saved.x)) fpState.x = saved.x;
+      if (Number.isFinite(saved.y)) fpState.y = saved.y;
+      if (typeof saved.visible === "boolean") fpState.visible = saved.visible;
+      if (["used", "recent", "all"].includes(saved.tab)) fpState.tab = saved.tab;
+      if (typeof saved.scopeAll === "boolean") fpState.scopeAll = saved.scopeAll;
+    }
+  } catch {}
+  let fpRecent = []; // 最近拾った色（palette index・新しい順・重複除去・最大16）
+  let fpLastSignature = ""; // DOM再構築の抑制用（rAF毎の再集計を軽量に）
+
+  function fpSave() {
+    try { localStorage.setItem(FP_KEY, JSON.stringify(fpState)); } catch {}
+  }
+  function fpClampPosition() {
+    const w = floatPalette.offsetWidth || 196;
+    const h = floatPalette.offsetHeight || 140;
+    const maxX = Math.max(0, window.innerWidth - w);
+    const maxY = Math.max(0, window.innerHeight - h);
+    if (!Number.isFinite(fpState.x)) fpState.x = Math.max(0, maxX - 24); // 既定: 右上寄り
+    if (!Number.isFinite(fpState.y)) fpState.y = Math.min(120, maxY);
+    fpState.x = Math.max(0, Math.min(maxX, fpState.x));
+    fpState.y = Math.max(0, Math.min(maxY, fpState.y));
+    floatPalette.style.left = fpState.x + "px";
+    floatPalette.style.top = fpState.y + "px";
+  }
+  function fpSetVisible(visible) {
+    fpState.visible = !!visible;
+    floatPalette.hidden = !fpState.visible;
+    floatPaletteToggleBtn.classList.toggle("is-active", fpState.visible);
+    if (fpState.visible) {
+      fpClampPosition();
+      fpLastSignature = ""; // 再表示時は必ず再構築
+      updateFloatPalette();
+    }
+    fpSave();
+  }
+  // 選択/スポイトで「拾った」色を履歴へ（新しい順・重複除去・最大16）
+  function fpPushRecent(index) {
+    if (!Number.isInteger(index) || index < 0) return;
+    fpRecent = [index, ...fpRecent.filter((v) => v !== index)].slice(0, FP_RECENT_MAX);
+  }
+
+  // タイトルバーのドラッグ移動。setPointerCapture でポインタを窓に固定し、
+  // stopPropagation でキャンバス側（描画/パン/2本指ジェスチャー）と競合させない。
+  let fpDrag = null; // { dx, dy }
+  floatPaletteTitlebar.addEventListener("pointerdown", (ev) => {
+    if (ev.target === floatPaletteCloseBtn) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    fpDrag = { dx: ev.clientX - fpState.x, dy: ev.clientY - fpState.y };
+    try { floatPaletteTitlebar.setPointerCapture(ev.pointerId); } catch {}
+  });
+  floatPaletteTitlebar.addEventListener("pointermove", (ev) => {
+    if (!fpDrag) return;
+    ev.stopPropagation();
+    fpState.x = ev.clientX - fpDrag.dx;
+    fpState.y = ev.clientY - fpDrag.dy;
+    fpClampPosition();
+  });
+  function fpEndDrag(ev) {
+    if (!fpDrag) return;
+    ev.stopPropagation();
+    fpDrag = null;
+    fpSave();
+  }
+  floatPaletteTitlebar.addEventListener("pointerup", fpEndDrag);
+  floatPaletteTitlebar.addEventListener("pointercancel", fpEndDrag);
+  // 窓内のポインタ操作がキャンバスのwindowレベルハンドラに波及しないように
+  floatPalette.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+
+  floatPaletteCloseBtn.addEventListener("click", () => fpSetVisible(false));
+  floatPaletteToggleBtn.addEventListener("click", () => fpSetVisible(!fpState.visible));
+  floatPaletteTabs.addEventListener("click", (ev) => {
+    const btn = ev.target.closest(".fp-tab");
+    if (!btn) return;
+    fpState.tab = btn.dataset.fptab;
+    fpSave();
+    fpLastSignature = "";
+    updateFloatPalette();
+  });
+  floatPaletteAllFrames.addEventListener("change", () => {
+    fpState.scopeAll = floatPaletteAllFrames.checked;
+    fpSave();
+    fpLastSignature = "";
+    updateFloatPalette();
+  });
+  window.addEventListener("resize", () => {
+    if (fpState.visible) fpClampPosition();
+  });
+
+  // 使用色の自動集計: 現在フレーム（or 全フレーム）の出現数順（index0=透明は除外）
+  function fpUsedEntries() {
+    const p = project();
+    const counts = new Uint32Array(p.palette.length);
+    if (fpState.scopeAll) {
+      for (const f of p.frames) {
+        const px = f.pixels;
+        for (let i = 0; i < px.length; i++) counts[px[i]]++;
+      }
+    } else {
+      const px = p.frames[store.state.currentFrame].pixels;
+      for (let i = 0; i < px.length; i++) counts[px[i]]++;
+    }
+    const entries = [];
+    for (let i = 1; i < counts.length; i++) {
+      if (counts[i] > 0) entries.push({ index: i, count: counts[i] });
+    }
+    entries.sort((a, b) => b.count - a.count || a.index - b.index);
+    return entries;
+  }
+
+  // 表示中のみ集計・シグネチャ一致ならDOM再構築をスキップ（render はrAFバッチ済みなので軽量）
+  function updateFloatPalette() {
+    if (!fpState.visible) return;
+    const p = project();
+    let entries;
+    if (fpState.tab === "used") {
+      entries = fpUsedEntries();
+    } else if (fpState.tab === "recent") {
+      entries = fpRecent.filter((i) => i < p.palette.length).map((i) => ({ index: i, count: null }));
+    } else {
+      entries = p.palette.map((_, i) => ({ index: i, count: null }));
+    }
+    const sig = [
+      fpState.tab, fpState.scopeAll ? 1 : 0, store.state.colorIndex,
+      p.palette.join(","),
+      entries.map((e) => `${e.index}:${e.count}`).join("|"),
+    ].join("§");
+    if (sig === fpLastSignature) return;
+    fpLastSignature = sig;
+
+    for (const btn of floatPaletteTabs.querySelectorAll(".fp-tab")) {
+      btn.classList.toggle("is-active", btn.dataset.fptab === fpState.tab);
+    }
+    floatPaletteScopeRow.hidden = fpState.tab !== "used";
+    floatPaletteAllFrames.checked = !!fpState.scopeAll;
+
+    floatPaletteGrid.innerHTML = "";
+    if (entries.length === 0) {
+      const d = document.createElement("div");
+      d.className = "fp-empty";
+      d.textContent = fpState.tab === "recent" ? "（履歴なし）" : "（使用色なし）";
+      floatPaletteGrid.appendChild(d);
+      return;
+    }
+    for (const e of entries) {
+      const hex = p.palette[e.index];
+      if (hex === undefined) continue;
+      const sw = document.createElement("button");
+      sw.className = "swatch" + (e.index === store.state.colorIndex ? " is-selected" : "");
+      sw.dataset.index = String(e.index);
+      if (e.count !== null) sw.dataset.count = String(e.count);
+      sw.title = e.count !== null ? `index ${e.index}: ${hex}（${e.count}px）` : `index ${e.index}: ${hex}`;
+      const inner = document.createElement("i");
+      inner.style.background = hex;
+      sw.appendChild(inner);
+      sw.addEventListener("click", () => {
+        fpPushRecent(e.index);
+        store.state.colorIndex = e.index;
+        store.notify();
+      });
+      floatPaletteGrid.appendChild(sw);
+    }
+  }
+
+  // 初期表示（localStorage 復元）
+  fpSetVisible(fpState.visible);
+
   // --- ブラシサイズ（§31.2）---
   brushSizeButtons.forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -1038,6 +1226,11 @@ export function initEditor(store, toast) {
         // undo/redo 自体は app.js のグローバルショートカットが処理する
       }
     }
+    // §37: P = フローティングパレット窓のトグル
+    if (ev.key.toLowerCase() === "p" && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+      fpSetVisible(!fpState.visible);
+      return;
+    }
     const tool = TOOL_KEYS[ev.key.toLowerCase()];
     if (tool) switchTool(tool);
   });
@@ -1079,6 +1272,7 @@ export function initEditor(store, toast) {
       inner.style.background = hex;
       sw.appendChild(inner);
       sw.addEventListener("click", () => {
+        fpPushRecent(i); // §37: 選択した色を「最近」へ
         store.state.colorIndex = i;
         store.notify();
       });
@@ -1373,6 +1567,7 @@ export function initEditor(store, toast) {
     toolButtons.forEach((btn) => btn.classList.toggle("is-active", btn.dataset.tool === store.state.tool));
     brushSizeButtons.forEach((btn) => btn.classList.toggle("is-active", Number(btn.dataset.size) === store.state.brushSize));
     document.getElementById("selMoveBtn")?.classList.toggle("is-active", !!floating); // §32
+    updateFloatPalette(); // §37: 編集のたび使用色を再集計（シグネチャ一致ならDOM再構築なし）
     renderCursorOverlay();
   }
 

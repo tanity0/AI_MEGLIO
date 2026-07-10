@@ -188,6 +188,71 @@ aside, #canvasPanel {
 .color-replace-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; }
 .color-replace-row select { max-width: 130px; }
 
+/* ---------- §37 フローティングパレット窓 ---------- */
+.float-palette {
+  position: fixed;
+  z-index: 400; /* モーダル(500)未満・通常UIより上 */
+  width: 196px;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none; /* iPad: 窓ドラッグ中のページスクロール抑止 */
+}
+.float-palette[hidden] { display: none; }
+.float-palette-titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 4px 4px 10px;
+  min-height: 32px; /* iPadでも掴めるサイズ */
+  background: var(--bg-2);
+  border-radius: 8px 8px 0 0;
+  cursor: move;
+  font-size: 12px;
+  color: var(--text-1);
+  touch-action: none;
+}
+.fp-close {
+  appearance: none;
+  width: 30px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-1);
+  font-size: 15px;
+  cursor: pointer;
+}
+.fp-close:hover { border-color: var(--border); background: var(--bg-3); color: var(--text-0); }
+.fp-tabs { display: flex; gap: 2px; padding: 4px 6px 0; }
+.fp-tab {
+  appearance: none;
+  flex: 1;
+  padding: 6px 2px; /* iPadタップ可能なサイズ */
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-2);
+  color: var(--text-1);
+  font-size: 11px;
+  cursor: pointer;
+}
+.fp-tab.is-active { border-color: var(--accent); background: var(--bg-3); color: var(--text-0); }
+.fp-scope { padding: 4px 8px 0; font-size: 11px; }
+.fp-scope[hidden] { display: none; } /* .check-row の display:flex が UA の [hidden] を上書きするため明示 */
+.fp-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 4px;
+  padding: 8px;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+.fp-grid .fp-empty { grid-column: 1 / -1; font-size: 11px; color: var(--text-2); text-align: center; padding: 6px 0; }
+
 .palette-grid {
   display: grid;
   grid-template-columns: repeat(6, 1fr);
