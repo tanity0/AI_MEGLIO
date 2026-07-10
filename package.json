@@ -1,6 +1,6 @@
 {
   "name": "ai-meglio",
-  "version": "2.19.1",
+  "version": "2.20.0",
   "description": "ドット絵アニメーション AI編集スタジオ",
   "type": "module",
   "private": true,
