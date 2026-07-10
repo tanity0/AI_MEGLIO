@@ -114,7 +114,7 @@ export function hexToRgba(hex) {
 // ---------------------------------------------------------------------------
 // 描画共通処理: フレームをコンテキストに cellSize でドット単位に描く
 // ---------------------------------------------------------------------------
-function drawPixels(ctx, pixels, width, height, palette, cellSize) {
+export function drawPixels(ctx, pixels, width, height, palette, cellSize) {
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const idx = pixels[y * width + x];
@@ -315,13 +315,145 @@ export function styleRequestFields(project, serverConfig) {
   return fields;
 }
 
+// ---------------------------------------------------------------------------
+// §35: レイヤー（軽量v1・フレームごと独立）
+// frame = { layers: [{id,name,pixels,visible,opacity}], activeLayer, pixels }
+// frame.pixels は「可視レイヤーの不透明合成」のキャッシュとして常に同期保持し、
+// 既存の全読み手（描画/GIF/PNG/書き出し/オニオン/差分/変換/候補/リグ）は無改修で正しい。
+// opacity は編集画面の表示専用（合成キャッシュ＝書き出しには影響しない）。
+// ---------------------------------------------------------------------------
+let layerIdSeq = 1;
+
+export function makeLayer(pixels, name) {
+  return { id: `layer${layerIdSeq++}`, name: name || "レイヤー", pixels, visible: true, opacity: 1 };
+}
+
+// frame.layers を保証（旧形式 {pixels} のフレームは単一レイヤー化）。
+// 自動生成の単一レイヤーは frame.pixels と同じ Uint8Array を共有する
+// （単一レイヤー時はレイヤー内容＝合成なので、従来コードと完全に同一挙動・ゼロコスト）。
+export function syncFrameLayers(frame) {
+  if (!Array.isArray(frame.layers) || frame.layers.length === 0) {
+    frame.layers = [makeLayer(frame.pixels, "レイヤー1")];
+    frame.activeLayer = 0;
+  }
+  if (!Number.isInteger(frame.activeLayer)) frame.activeLayer = frame.layers.length - 1;
+  frame.activeLayer = Math.max(0, Math.min(frame.layers.length - 1, frame.activeLayer));
+  return frame;
+}
+
+export function frameActiveLayer(frame) {
+  syncFrameLayers(frame);
+  return frame.layers[frame.activeLayer];
+}
+
+export function frameActiveLayerPixels(frame) {
+  return frameActiveLayer(frame).pixels;
+}
+
+// 可視レイヤーの不透明合成（z順=配列末尾が最前面。非透明 index≠0 が上勝ち）で
+// frame.pixels キャッシュを更新。opacity は反映しない（表示専用）。
+export function recompositeFrame(frame) {
+  syncFrameLayers(frame);
+  const layers = frame.layers;
+  if (layers.length === 1 && layers[0].visible !== false) {
+    frame.pixels = layers[0].pixels; // 単一可視レイヤーは共有（従来と同一挙動）
+    return frame;
+  }
+  const n = layers[0].pixels.length;
+  let out = frame.pixels;
+  // 既存バッファを再利用（ただしいずれかのレイヤーと共有中/サイズ不一致なら新規確保）
+  if (!(out instanceof Uint8Array) || out.length !== n || layers.some((l) => l.pixels === out)) {
+    out = new Uint8Array(n);
+  } else {
+    out.fill(0);
+  }
+  for (const l of layers) {
+    if (l.visible === false) continue;
+    const px = l.pixels;
+    for (let i = 0; i < n; i++) if (px[i] !== 0) out[i] = px[i];
+  }
+  frame.pixels = out;
+  return frame;
+}
+
+// フレーム内容を「フラットな結果」で丸ごと差し替える（レイヤーは単一に初期化）。
+// リグ再合成・候補取り込み等、レイヤー構造を持たない生成結果で置き換える経路用。
+export function setFramePixels(frame, pixels) {
+  frame.pixels = pixels;
+  frame.layers = [makeLayer(pixels, "レイヤー1")];
+  frame.activeLayer = 0;
+  return frame;
+}
+
+// フレームのディープコピー（レイヤー構造ごと複製）
+export function cloneFrame(frame) {
+  if (Array.isArray(frame.layers) && frame.layers.length > 0) {
+    const layers = frame.layers.map((l) => {
+      const nl = makeLayer(Uint8Array.from(l.pixels), l.name);
+      nl.visible = l.visible !== false;
+      nl.opacity = Number.isFinite(l.opacity) ? Math.max(0, Math.min(1, l.opacity)) : 1;
+      return nl;
+    });
+    const nf = { layers, activeLayer: Number.isInteger(frame.activeLayer) ? frame.activeLayer : layers.length - 1, pixels: null };
+    recompositeFrame(nf);
+    return nf;
+  }
+  return { pixels: Uint8Array.from(frame.pixels) };
+}
+
+// 直列化: 既定の単一レイヤー（名前/表示/不透明度が初期値）は旧形式（配列）のまま
+// 書き出して後方互換を維持。それ以外は {layers, activeLayer} 形式（pixelsキャッシュは保存しない）。
+function frameToPlain(frame) {
+  const layers = Array.isArray(frame.layers) ? frame.layers : null;
+  const isDefaultSingle =
+    !layers ||
+    (layers.length === 1 &&
+      layers[0].visible !== false &&
+      (!Number.isFinite(layers[0].opacity) || layers[0].opacity === 1) &&
+      layers[0].name === "レイヤー1");
+  if (isDefaultSingle) return Array.from(frame.pixels);
+  return {
+    layers: layers.map((l) => ({
+      name: typeof l.name === "string" ? l.name : "レイヤー",
+      visible: l.visible !== false,
+      opacity: Number.isFinite(l.opacity) ? Math.max(0, Math.min(1, l.opacity)) : 1,
+      pixels: Array.from(l.pixels),
+    })),
+    activeLayer: Number.isInteger(frame.activeLayer) ? frame.activeLayer : layers.length - 1,
+  };
+}
+
+function frameFromPlain(raw, width, height) {
+  if (Array.isArray(raw)) {
+    // 旧形式（pixels配列のみ）→ そのままロード（レイヤーは初回アクセス時に単一レイヤー化）
+    const pixels = Uint8Array.from(raw);
+    if (pixels.length !== width * height) throw new Error("frame のピクセル数が width*height と一致しません");
+    return { pixels };
+  }
+  if (raw && typeof raw === "object" && Array.isArray(raw.layers) && raw.layers.length >= 1) {
+    const layers = raw.layers.map((l, i) => {
+      if (!l || !Array.isArray(l.pixels)) throw new Error("layer が不正です");
+      const px = Uint8Array.from(l.pixels);
+      if (px.length !== width * height) throw new Error("layer のピクセル数が width*height と一致しません");
+      const layer = makeLayer(px, typeof l.name === "string" && l.name.trim() ? l.name.trim().slice(0, 32) : `レイヤー${i + 1}`);
+      layer.visible = l.visible !== false;
+      layer.opacity = Number.isFinite(l.opacity) ? Math.max(0, Math.min(1, l.opacity)) : 1;
+      return layer;
+    });
+    const frame = { layers, activeLayer: Number.isInteger(raw.activeLayer) ? raw.activeLayer : layers.length - 1, pixels: null };
+    recompositeFrame(frame); // pixels キャッシュは読込時に再合成
+    return frame;
+  }
+  throw new Error("frame の形式が不正です");
+}
+
 export function cloneProject(project) {
   return {
     width: project.width,
     height: project.height,
     fps: project.fps,
     palette: project.palette.slice(),
-    frames: project.frames.map((f) => ({ pixels: Uint8Array.from(f.pixels) })),
+    frames: project.frames.map((f) => cloneFrame(f)),
     baseFrame: project.baseFrame ? Uint8Array.from(project.baseFrame) : null,
     lockedRects: (project.lockedRects || []).map((r) => ({ ...r })),
     rig: cloneRig(project.rig, false),
@@ -341,7 +473,7 @@ export function projectToPlain(project) {
     height: project.height,
     fps: project.fps,
     palette: project.palette.slice(),
-    frames: project.frames.map((f) => Array.from(f.pixels)),
+    frames: project.frames.map((f) => frameToPlain(f)), // §35: レイヤーを直列化（既定単一レイヤーは旧形式）
     baseFrame: project.baseFrame ? Array.from(project.baseFrame) : null,
     lockedRects: (project.lockedRects || []).map((r) => ({ ...r })),
     rig: cloneRig(project.rig, true),
@@ -433,11 +565,7 @@ export function projectFromPlain(o) {
   const project = {
     width, height, fps,
     palette: palette.slice(),
-    frames: frames.map((arr) => {
-      const pixels = Uint8Array.from(arr);
-      if (pixels.length !== width * height) throw new Error("frame のピクセル数が width*height と一致しません");
-      return { pixels };
-    }),
+    frames: frames.map((raw) => frameFromPlain(raw, width, height)), // §35: 旧形式（配列）/新形式（layers）両対応
     baseFrame: base,
     lockedRects: locked,
     rig: rigFromPlain(o.rig, width, height),

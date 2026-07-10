@@ -1,5 +1,5 @@
 // timeline.js — フレーム一覧・タグバー（§16.1）・再生（タイムラインバー）
-import { drawFrameToContext, deviationPercent, adjustTagsOnInsert, adjustTagsOnDelete, uniqueTagName } from "./app.js";
+import { drawFrameToContext, deviationPercent, adjustTagsOnInsert, adjustTagsOnDelete, uniqueTagName, cloneFrame } from "./app.js";
 
 const THUMB_SIZE = 48;
 
@@ -52,7 +52,7 @@ export function initTimeline(store, toast) {
     store.pushUndo();
     const src = p.frames[store.state.currentFrame];
     const at = store.state.currentFrame + 1;
-    p.frames.splice(at, 0, { pixels: Uint8Array.from(src.pixels) });
+    p.frames.splice(at, 0, cloneFrame(src)); // §35: レイヤー構造ごと複製
     adjustTagsOnInsert(p, at, 1);
     store.state.currentFrame += 1;
     store.notify();

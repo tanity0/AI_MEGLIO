@@ -17,6 +17,7 @@ import {
   adjustTagsOnDelete,
   addGeneratedTag,
   styleRequestFields,
+  setFramePixels,
 } from "./app.js";
 
 // ---------------------------------------------------------------------------
@@ -1364,7 +1365,7 @@ export function initRig(store, toast) {
     const kf = rig.keyframes[kfIdx];
     const cur = kf[partId] || { dx: 0, dy: 0, rot: 0 };
     kf[partId] = { dx: cur.dx + ddx, dy: cur.dy + ddy, rot: roundRot(cur.rot + drot) };
-    p.frames[store.state.currentFrame].pixels = composeRigFrame(p, kf);
+    setFramePixels(p.frames[store.state.currentFrame], composeRigFrame(p, kf)); // §35: フラットな再合成結果で置換
     store.notify();
   }
 
@@ -1412,7 +1413,7 @@ export function initRig(store, toast) {
       dy: dragState.origDy + (y - dragState.startY),
       rot: dragState.rot,
     };
-    p.frames[p.rig.generatedAt + dragState.kfIdx].pixels = composeRigFrame(p, kf);
+    setFramePixels(p.frames[p.rig.generatedAt + dragState.kfIdx], composeRigFrame(p, kf)); // §35: フラットな再合成結果で置換
     store.notify();
   });
   window.addEventListener("pointerup", () => { dragState = null; });

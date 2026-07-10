@@ -185,6 +185,7 @@ aside, #canvasPanel {
   border-radius: var(--radius);
   background: var(--bg-2);
 }
+.color-replace-panel[hidden] { display: none; } /* display:flex が UA の [hidden] を上書きするため明示（§34修正） */
 .color-replace-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; }
 .color-replace-row select { max-width: 130px; }
 
@@ -255,6 +256,38 @@ aside, #canvasPanel {
 
 /* ---------- §38 フォルダへ保存（隣接する小ボタン） ---------- */
 .btn-folder { padding-left: 6px; padding-right: 6px; margin-left: -4px; }
+
+/* ---------- §35 レイヤーパネル ---------- */
+#layerSection { margin-top: 10px; }
+#layerSection > summary { cursor: pointer; list-style: revert; }
+.layer-actions { display: flex; flex-wrap: wrap; gap: 4px; padding: 6px 0; }
+.layer-actions .btn { flex: 1 1 auto; min-width: 40px; padding-left: 6px; padding-right: 6px; }
+.layer-list { display: flex; flex-direction: column; gap: 4px; }
+.layer-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-2);
+  font-size: 12px;
+  color: var(--text-1);
+  cursor: pointer;
+}
+.layer-row.is-active { border-color: var(--accent); background: var(--bg-3); color: var(--text-0); }
+.layer-row .layer-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.layer-row input[type=range] { width: 56px; }
+.layer-row .layer-rename {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  padding: 2px;
+  font-size: 12px;
+}
+.layer-row .layer-rename:hover { color: var(--text-0); }
 
 .palette-grid {
   display: grid;

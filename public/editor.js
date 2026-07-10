@@ -1,5 +1,14 @@
 // editor.js — キャンバス描画・ツール・選択
-import { drawFrameToContext, hexToRgba } from "./app.js";
+import {
+  drawFrameToContext,
+  drawPixels,
+  hexToRgba,
+  syncFrameLayers,
+  frameActiveLayer,
+  frameActiveLayerPixels,
+  recompositeFrame,
+  makeLayer,
+} from "./app.js";
 import { extractMainPalette } from "./convert.js";
 
 const MIN_ZOOM = 2;
@@ -101,7 +110,7 @@ export function initEditor(store, toast) {
     if (!sel || sel.w <= 0 || sel.h <= 0) return false;
     const p = project();
     const buf = new Uint8Array(sel.w * sel.h);
-    const px = p.frames[sel.frameIndex].pixels;
+    const px = frameActiveLayerPixels(p.frames[sel.frameIndex]); // §35: 変形はアクティブレイヤー対象
     for (let yy = 0; yy < sel.h; yy++) {
       for (let xx = 0; xx < sel.w; xx++) {
         const sx = sel.x + xx, sy = sel.y + yy;
@@ -124,7 +133,8 @@ export function initEditor(store, toast) {
     floating = null; // 二重コミット防止
     const p = project();
     store.pushUndo();
-    const px = p.frames[f.frameIndex].pixels;
+    const frame = p.frames[f.frameIndex];
+    const px = frameActiveLayerPixels(frame); // §35: アクティブレイヤーへ焼き込む
     // 元領域をクリア（コピー移動でなければ）
     if (!f.copy) {
       for (let yy = 0; yy < f.origH; yy++) {
@@ -143,6 +153,7 @@ export function initEditor(store, toast) {
         if (dx >= 0 && dy >= 0 && dx < p.width && dy < p.height) px[dy * p.width + dx] = v;
       }
     }
+    recompositeFrame(frame); // §35: 合成キャッシュ更新
     // 新しい選択 = 焼き込み後の矩形（キャンバス内でクランプ）
     store.state.selection = clampSelToCanvas(f.frameIndex, f.x, f.y, f.w, f.h);
     store.notify();
@@ -234,7 +245,7 @@ export function initEditor(store, toast) {
     const sel = currentSelRect();
     if (!sel) return false;
     const p = project();
-    const px = p.frames[sel.frameIndex].pixels;
+    const px = frameActiveLayerPixels(p.frames[sel.frameIndex]); // §35: コピペはアクティブレイヤー対象
     const buf = new Uint8Array(sel.w * sel.h);
     for (let yy = 0; yy < sel.h; yy++) {
       for (let xx = 0; xx < sel.w; xx++) {
@@ -258,13 +269,15 @@ export function initEditor(store, toast) {
     copySelectionToClipboard();
     store.pushUndo();
     const p = project();
-    const px = p.frames[sel.frameIndex].pixels;
+    const frame = p.frames[sel.frameIndex];
+    const px = frameActiveLayerPixels(frame); // §35: 切り取りはアクティブレイヤー対象
     for (let yy = 0; yy < sel.h; yy++) {
       for (let xx = 0; xx < sel.w; xx++) {
         const dx = sel.x + xx, dy = sel.y + yy;
         if (dx >= 0 && dy >= 0 && dx < p.width && dy < p.height) px[dy * p.width + dx] = 0;
       }
     }
+    recompositeFrame(frame);
     store.notify();
     toast(`切り取りました（${clipboard.w}×${clipboard.h}）`);
   }
@@ -336,13 +349,24 @@ export function initEditor(store, toast) {
     return x >= 0 && y >= 0 && x < p.width && y < p.height;
   }
 
+  // §35: ペン/消しゴムはアクティブレイヤーへ書き、合成キャッシュ（frame.pixels）を
+  // 増分更新する（単一可視レイヤー時は共有参照なので追加コストなし）。
   function setPixel(frameIndex, x, y, colorIndex) {
     if (!inBounds(x, y)) return false;
     const p = project();
     const idx = y * p.width + x;
-    const pixels = p.frames[frameIndex].pixels;
+    const frame = p.frames[frameIndex];
+    const pixels = frameActiveLayerPixels(frame);
     if (pixels[idx] === colorIndex) return false;
     pixels[idx] = colorIndex;
+    if (frame.pixels !== pixels) {
+      // 合成の増分更新: このセルだけ z順で「可視・非透明の最上位」を再決定
+      let v = 0;
+      for (const l of frame.layers) {
+        if (l.visible !== false && l.pixels[idx] !== 0) v = l.pixels[idx];
+      }
+      frame.pixels[idx] = v;
+    }
     return true;
   }
 
@@ -410,7 +434,8 @@ export function initEditor(store, toast) {
   function floodFill(frameIndex, startX, startY, colorIndex) {
     const p = project();
     if (!inBounds(startX, startY)) return;
-    const pixels = p.frames[frameIndex].pixels;
+    const frame = p.frames[frameIndex];
+    const pixels = frameActiveLayerPixels(frame); // §35: 塗りつぶしはアクティブレイヤー対象
     const target = pixels[startY * p.width + startX];
     if (target === colorIndex) return;
     const stack = [[startX, startY]];
@@ -425,6 +450,7 @@ export function initEditor(store, toast) {
       pixels[idx] = colorIndex;
       stack.push([x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]);
     }
+    recompositeFrame(frame); // §35: 合成キャッシュ更新
   }
 
   function normalizedSelectionRect(a, b) {
@@ -969,17 +995,195 @@ export function initEditor(store, toast) {
     if (floating) commitFloating();
     store.pushUndo();
     let changed = 0;
-    const frames = scopeAll ? p.frames : [p.frames[store.state.currentFrame]];
-    for (const f of frames) {
-      const px = f.pixels;
+    // §35: 現在フレームスコープはアクティブレイヤーのみ、全フレームスコープは
+    // 全フレームの全レイヤー（=indexの一括付け替え）を対象にする。
+    if (scopeAll) {
+      for (const f of p.frames) {
+        syncFrameLayers(f);
+        for (const l of f.layers) {
+          const px = l.pixels;
+          for (let i = 0; i < px.length; i++) {
+            if (px[i] === fromIdx) { px[i] = toIdx; changed++; }
+          }
+        }
+        recompositeFrame(f);
+      }
+    } else {
+      const f = p.frames[store.state.currentFrame];
+      const px = frameActiveLayerPixels(f);
       for (let i = 0; i < px.length; i++) {
         if (px[i] === fromIdx) { px[i] = toIdx; changed++; }
       }
+      recompositeFrame(f);
     }
     store.notify();
     colorReplacePanel.hidden = true;
     toast(`色を置換しました（${changed}px・${scopeAll ? "全フレーム" : "現在フレーム"}）`);
   });
+
+  // ------------------------------------------------------------------ §35
+  // レイヤーパネル: 一覧（上=最前面）・アクティブ選択・追加/削除/複製/上下並替/
+  // 名前変更/表示トグル/不透明度（表示専用）/下に結合。すべてアンドゥ対象
+  // （不透明度は操作終了時に1回捕捉）。
+  const layerList = document.getElementById("layerList");
+  const layerCountLabel = document.getElementById("layerCountLabel");
+  let layerOpacityDrag = null; // スライダー操作中はパネル再構築を抑制（DOM差し替えでドラッグが切れないように）
+
+  function currentFrameSynced() {
+    const f = project().frames[store.state.currentFrame];
+    syncFrameLayers(f);
+    return f;
+  }
+
+  document.getElementById("layerAddBtn").addEventListener("click", () => {
+    if (floating) commitFloating();
+    const p = project();
+    const f = currentFrameSynced();
+    store.pushUndo();
+    const nl = makeLayer(new Uint8Array(p.width * p.height), `レイヤー${f.layers.length + 1}`);
+    f.layers.splice(f.activeLayer + 1, 0, nl); // アクティブの上（前面側）に追加
+    f.activeLayer += 1;
+    recompositeFrame(f);
+    store.notify();
+  });
+
+  document.getElementById("layerDupBtn").addEventListener("click", () => {
+    if (floating) commitFloating();
+    const f = currentFrameSynced();
+    const src = f.layers[f.activeLayer];
+    store.pushUndo();
+    const nl = makeLayer(Uint8Array.from(src.pixels), `${src.name}のコピー`.slice(0, 32));
+    nl.visible = src.visible !== false;
+    nl.opacity = Number.isFinite(src.opacity) ? src.opacity : 1;
+    f.layers.splice(f.activeLayer + 1, 0, nl);
+    f.activeLayer += 1;
+    recompositeFrame(f);
+    store.notify();
+  });
+
+  document.getElementById("layerDelBtn").addEventListener("click", () => {
+    if (floating) commitFloating();
+    const f = currentFrameSynced();
+    if (f.layers.length <= 1) { toast("最後の1レイヤーは削除できません", "error"); return; }
+    store.pushUndo();
+    f.layers.splice(f.activeLayer, 1);
+    f.activeLayer = Math.max(0, Math.min(f.layers.length - 1, f.activeLayer));
+    recompositeFrame(f);
+    store.notify();
+  });
+
+  function moveActiveLayer(dir) {
+    if (floating) commitFloating();
+    const f = currentFrameSynced();
+    const i = f.activeLayer, j = i + dir;
+    if (j < 0 || j >= f.layers.length) return;
+    store.pushUndo();
+    [f.layers[i], f.layers[j]] = [f.layers[j], f.layers[i]];
+    f.activeLayer = j;
+    recompositeFrame(f);
+    store.notify();
+  }
+  document.getElementById("layerUpBtn").addEventListener("click", () => moveActiveLayer(+1)); // 前面へ（配列末尾方向）
+  document.getElementById("layerDownBtn").addEventListener("click", () => moveActiveLayer(-1)); // 背面へ
+
+  document.getElementById("layerMergeBtn").addEventListener("click", () => {
+    if (floating) commitFloating();
+    const f = currentFrameSynced();
+    if (f.activeLayer <= 0) { toast("すぐ下のレイヤーがありません", "error"); return; }
+    store.pushUndo();
+    const act = f.layers[f.activeLayer];
+    const below = f.layers[f.activeLayer - 1];
+    const a = act.pixels, b = below.pixels;
+    for (let i = 0; i < a.length; i++) if (a[i] !== 0) b[i] = a[i]; // 非透明が上勝ちで焼き込み
+    f.layers.splice(f.activeLayer, 1);
+    f.activeLayer -= 1;
+    recompositeFrame(f);
+    store.notify();
+  });
+
+  function renderLayerPanel() {
+    const f = currentFrameSynced();
+    layerCountLabel.textContent = f.layers.length > 1 ? `(${f.layers.length})` : "";
+    if (layerOpacityDrag) return; // スライダー操作中は再構築しない
+    layerList.innerHTML = "";
+    for (let i = f.layers.length - 1; i >= 0; i--) {
+      const l = f.layers[i];
+      const row = document.createElement("div");
+      row.className = "layer-row" + (i === f.activeLayer ? " is-active" : "");
+      row.dataset.index = String(i);
+      row.title = `${l.name}（クリックでアクティブに）`;
+
+      const vis = document.createElement("input");
+      vis.type = "checkbox";
+      vis.checked = l.visible !== false;
+      vis.title = "表示/非表示";
+      vis.addEventListener("click", (ev) => ev.stopPropagation());
+      vis.addEventListener("change", () => {
+        store.pushUndo();
+        l.visible = vis.checked;
+        recompositeFrame(f);
+        store.notify();
+      });
+      row.appendChild(vis);
+
+      const name = document.createElement("span");
+      name.className = "layer-name";
+      name.textContent = l.name;
+      row.appendChild(name);
+
+      const ren = document.createElement("button");
+      ren.className = "layer-rename";
+      ren.textContent = "✎";
+      ren.title = "名前を変更";
+      ren.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        const raw = window.prompt("レイヤー名", l.name);
+        if (raw === null) return;
+        const nn = raw.trim().slice(0, 32);
+        if (!nn || nn === l.name) return;
+        store.pushUndo();
+        l.name = nn;
+        store.notify();
+      });
+      row.appendChild(ren);
+
+      const op = document.createElement("input");
+      op.type = "range";
+      op.min = "0"; op.max = "100"; op.step = "5";
+      op.value = String(Math.round((Number.isFinite(l.opacity) ? l.opacity : 1) * 100));
+      op.title = "不透明度（編集画面の表示専用・書き出し/frame.pixelsには影響しない）";
+      op.addEventListener("pointerdown", (ev) => {
+        ev.stopPropagation();
+        layerOpacityDrag = { layer: l, start: Number.isFinite(l.opacity) ? l.opacity : 1 };
+      });
+      op.addEventListener("click", (ev) => ev.stopPropagation());
+      op.addEventListener("input", () => {
+        l.opacity = Number(op.value) / 100;
+        scheduleRender(); // 表示のみ更新（layerOpacityDrag ガードでパネルは再構築されない）
+      });
+      op.addEventListener("change", () => {
+        const final = Number(op.value) / 100;
+        const start = layerOpacityDrag ? layerOpacityDrag.start : (Number.isFinite(l.opacity) ? l.opacity : 1);
+        layerOpacityDrag = null;
+        if (final !== start) {
+          // アンドゥは「変更前の状態」を捕捉してから最終値を適用
+          l.opacity = start;
+          store.pushUndo();
+          l.opacity = final;
+        }
+        store.notify();
+      });
+      row.appendChild(op);
+
+      row.addEventListener("click", () => {
+        if (f.activeLayer === i) return;
+        if (floating) commitFloating();
+        f.activeLayer = i;
+        store.notify();
+      });
+      layerList.appendChild(row);
+    }
+  }
 
   // ------------------------------------------------------------------ §37
   // フローティングパレット窓: 「使用中（出現数順）/最近/全色」の3タブ。
@@ -1378,7 +1582,24 @@ export function initEditor(store, toast) {
     canvas.style.width = canvas.width + "px";
     canvas.style.height = canvas.height + "px";
 
-    drawFrameToContext(ctx, p, store.state.currentFrame, cellSize);
+    // §35: レイヤー表示。単一の不透明可視レイヤーは従来経路（合成キャッシュ描画）。
+    // それ以外はレイヤーを下から順に opacity 付きで重ね描き（opacityは表示専用＝
+    // frame.pixels・書き出しには影響しない）。
+    const curFrame = p.frames[store.state.currentFrame];
+    syncFrameLayers(curFrame);
+    const simpleDraw = curFrame.layers.length === 1 && curFrame.layers[0].visible !== false && curFrame.layers[0].opacity === 1;
+    if (simpleDraw) {
+      drawFrameToContext(ctx, p, store.state.currentFrame, cellSize);
+    } else {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      for (const l of curFrame.layers) {
+        if (l.visible === false || l.opacity <= 0) continue;
+        ctx.save();
+        ctx.globalAlpha = Number.isFinite(l.opacity) ? Math.max(0, Math.min(1, l.opacity)) : 1;
+        drawPixels(ctx, l.pixels, p.width, p.height, p.palette, cellSize);
+        ctx.restore();
+      }
+    }
     renderOnionGhosts(p, cellSize);
 
     // §32: フローティング（持ち上げ中の選択ピクセル）を合成表示。
@@ -1567,6 +1788,7 @@ export function initEditor(store, toast) {
     toolButtons.forEach((btn) => btn.classList.toggle("is-active", btn.dataset.tool === store.state.tool));
     brushSizeButtons.forEach((btn) => btn.classList.toggle("is-active", Number(btn.dataset.size) === store.state.brushSize));
     document.getElementById("selMoveBtn")?.classList.toggle("is-active", !!floating); // §32
+    renderLayerPanel(); // §35
     updateFloatPalette(); // §37: 編集のたび使用色を再集計（シグネチャ一致ならDOM再構築なし）
     renderCursorOverlay();
   }

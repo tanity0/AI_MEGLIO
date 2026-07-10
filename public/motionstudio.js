@@ -15,6 +15,7 @@ import {
   addGeneratedTag,
   hexToRgba,
   maybeOpenServerFolder,
+  setFramePixels,
 } from "./app.js";
 
 const PRESET_LABELS = { walk: "歩き", run: "走り", attack: "攻撃", idle: "待機", jump: "ジャンプ", custom: "カスタム" };
@@ -732,7 +733,7 @@ export function initMotionStudio(store, toast) {
     if (merge.refKind === "frame") {
       // 確定済みフレームへ直接適用（アンドゥ対象）
       store.pushUndo();
-      p.frames[session.insertedAt + merge.i].pixels = composite;
+      setFramePixels(p.frames[session.insertedAt + merge.i], composite); // §35: フラットな取り込み結果で置換
       store.notify();
       toast(`確定済みフレーム${session.insertedAt + merge.i}へ採用塊（${adoptedCells}セル）を取り込みました（Ctrl+Zで戻せます）`);
     } else {

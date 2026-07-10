@@ -138,6 +138,20 @@
       <button id="paletteAddBtn" class="btn btn-small">+ 色を追加</button>
       <button id="colorReplaceBtn" class="btn btn-small" title="パレットindexの一括置換（スウォッチ右クリックでも開始）">色置換</button>
     </div>
+
+    <!-- §35: レイヤーパネル（フレームごと独立・上=最前面。opacityは表示専用） -->
+    <details id="layerSection" data-collapse-key="layers" open>
+      <summary class="panel-title">レイヤー <span id="layerCountLabel" class="hint"></span></summary>
+      <div class="layer-actions">
+        <button id="layerAddBtn" class="btn btn-small" title="アクティブの上に空レイヤーを追加">＋追加</button>
+        <button id="layerDupBtn" class="btn btn-small" title="アクティブレイヤーを複製">複製</button>
+        <button id="layerDelBtn" class="btn btn-small" title="アクティブレイヤーを削除">削除</button>
+        <button id="layerUpBtn" class="btn btn-small" title="アクティブレイヤーを前面へ">▲</button>
+        <button id="layerDownBtn" class="btn btn-small" title="アクティブレイヤーを背面へ">▼</button>
+        <button id="layerMergeBtn" class="btn btn-small" title="アクティブレイヤーをすぐ下のレイヤーに結合">下に結合</button>
+      </div>
+      <div id="layerList" class="layer-list"></div>
+    </details>
     <div id="colorReplacePanel" class="color-replace-panel" hidden>
       <div class="color-replace-row">
         <label>元 <select id="colorReplaceFrom"></select></label>

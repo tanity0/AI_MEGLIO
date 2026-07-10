@@ -1,6 +1,6 @@
 // canvasresize.js — §28 キャンバスのリサイズ
 // 足元アンカー基準でキャンバスを拡大/縮小する。フロント主体（サーバーは width/height 8〜128 のみ関与）。
-import { hexToRgba } from "./app.js";
+import { hexToRgba, recompositeFrame } from "./app.js";
 
 const MIN_SIZE = 16;
 const MAX_SIZE = 128;
@@ -81,7 +81,16 @@ function resizeLockedRects(lockedRects, W2, H2, dx, dy) {
 export function applyResizeToProject(project, W2, H2, anchor) {
   const W = project.width, H = project.height;
   const { dx, dy } = anchorOffset(anchor, W, H, W2, H2);
-  for (const f of project.frames) f.pixels = resizePixelArray(f.pixels, W, H, W2, H2, dx, dy);
+  for (const f of project.frames) {
+    // §35: 全レイヤーをリサイズしてから合成キャッシュを再構築（単一レイヤーは共有再構築）
+    if (Array.isArray(f.layers) && f.layers.length > 0) {
+      for (const l of f.layers) l.pixels = resizePixelArray(l.pixels, W, H, W2, H2, dx, dy);
+      f.pixels = null;
+      recompositeFrame(f);
+    } else {
+      f.pixels = resizePixelArray(f.pixels, W, H, W2, H2, dx, dy);
+    }
+  }
   if (project.baseFrame) project.baseFrame = resizePixelArray(project.baseFrame, W, H, W2, H2, dx, dy);
   project.lockedRects = resizeLockedRects(project.lockedRects, W2, H2, dx, dy);
   if (project.rig && Array.isArray(project.rig.parts)) {

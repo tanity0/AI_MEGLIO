@@ -13,6 +13,8 @@ import {
   adjustTagsOnDelete,
   addGeneratedTag,
   styleRequestFields,
+  frameActiveLayerPixels,
+  recompositeFrame,
 } from "./app.js";
 import { streamEdit } from "./api.js";
 
@@ -164,9 +166,11 @@ export function initAi(store, toast) {
 
     const cw = cellChars(project.palette.length);
     const wide = cw === 2;
+    const touchedFrames = new Set(); // §35: 編集済みフレームの合成キャッシュを更新
     for (const e of patch.edits) {
       const frame = project.frames[e.frame];
       if (!frame) continue;
+      const target = frameActiveLayerPixels(frame); // §35: AI編集はアクティブレイヤーへ書く
       for (let ry = 0; ry < e.rows.length; ry++) {
         const tokens = splitTokens(e.rows[ry], cw);
         const py = e.y + ry;
@@ -177,11 +181,13 @@ export function initAi(store, toast) {
           const px = e.x + rx;
           if (px < 0 || px >= project.width) continue;
           if (idx >= project.palette.length) continue;
-          frame.pixels[py * project.width + px] = idx;
+          target[py * project.width + px] = idx;
           changedCells.push({ frame: e.frame, x: px, y: py });
         }
       }
+      touchedFrames.add(frame);
     }
+    for (const frame of touchedFrames) recompositeFrame(frame);
 
     const sortedNewFrames = [...patch.newFrames].sort((a, b) => b.insertAfter - a.insertAfter);
     let addedFrames = 0;
@@ -253,7 +259,9 @@ export function initAi(store, toast) {
         height: project.height,
         fps: project.fps,
         palette: project.palette,
-        framesGrid: project.frames.map((_, i) => frameToGridString(project, i)),
+        // §35: AI編集(v1)はアクティブレイヤーのグリッドを入出力とする（AIはアクティブレイヤーのみ見る）。
+        // 単一レイヤー時は合成キャッシュと同一なので従来と同じ内容になる。
+        framesGrid: project.frames.map((f) => pixelsToGridString(frameActiveLayerPixels(f), project.width, project.height, project.palette.length)),
       },
       lockedRects: (project.lockedRects || []).map((r) => ({ ...r })),
     };
@@ -283,9 +291,10 @@ export function initAi(store, toast) {
       return;
     }
 
+    // §35: AIはアクティブレイヤーのみ見る（画像もアクティブレイヤーを描画。単一レイヤー時は従来と同一）
     const images = collectImageFrameIndexes(scope, frameIndex).map((i) => ({
       frame: i,
-      dataUrl: frameToPngDataUrl(project, i, 8),
+      dataUrl: pixelsToPngDataUrl(frameActiveLayerPixels(project.frames[i]), project.width, project.height, project.palette, 8),
     }));
 
     const body = {
@@ -551,7 +560,7 @@ export function initAi(store, toast) {
   const outlineRefineBtn = document.getElementById("outlineRefineBtn");
   function buildBoundaryMask(project, frameIndex) {
     const { width, height } = project;
-    const px = project.frames[frameIndex].pixels;
+    const px = frameActiveLayerPixels(project.frames[frameIndex]); // §35: AIの書込先=アクティブレイヤーの境界
     const rows = [];
     for (let y = 0; y < height; y++) {
       let row = "";
@@ -583,7 +592,7 @@ export function initAi(store, toast) {
       frameIndex: fi,
       allowedMask: buildBoundaryMask(project, fi),
       instruction: "変換で甘くなった輪郭とハイライトを、透明境界付近だけ最小差分で清書してください",
-      images: [{ frame: fi, dataUrl: frameToPngDataUrl(project, fi, project.width > 64 ? 4 : 8) }],
+      images: [{ frame: fi, dataUrl: pixelsToPngDataUrl(frameActiveLayerPixels(project.frames[fi]), project.width, project.height, project.palette, project.width > 64 ? 4 : 8) }], // §35: アクティブレイヤー
     };
     await executeEdit(body, "[輪郭リファイン]", (patch) => applyPatch(patch));
   });
@@ -663,7 +672,7 @@ export function initAi(store, toast) {
       allowedMask: mask,
       neighborContext: buildNeighborContext(project, fi, rect),
       instruction,
-      images: [{ frame: fi, dataUrl: frameToPngDataUrl(project, fi, project.width > 64 ? 4 : 8) }],
+      images: [{ frame: fi, dataUrl: pixelsToPngDataUrl(frameActiveLayerPixels(project.frames[fi]), project.width, project.height, project.palette, project.width > 64 ? 4 : 8) }], // §35: アクティブレイヤー
     });
 
     if (frameIndexes.length === 1) {
