@@ -23,6 +23,10 @@ let split = { mode: "single", boxes: [], align: "bottom", gridCols: 3, gridRows:
 // §30: フレーム別つまみの配列（多フレーム時のみ使用）+ アクティブフレーム
 let frameParams = []; // [{ ...PER_FRAME_KEYS }]
 let activeFrame = 0;
+// §44.1: 候補モード — ギャラリー候補の「調整」でスタジオを流用する。
+// { onApply(convResult, paramsSnapshot), autoTune()?: Promise<{params,score,defaultScore,evals}> } | null
+let candidateMode = null;
+let candidateAutoNote = ""; // §43 自動調整の結果表示（変換のたびステータスに併記）
 
 const $ = (id) => document.getElementById(id);
 
@@ -108,6 +112,13 @@ async function ensureBg() {
 function detectSplit() {
   const comps = detectComponents(bgCache, srcData.w, srcData.h);
   const row = $("studioSplitRow");
+  // §44.1: 候補モードは常に1コマとして変換（分割UIは出さない）
+  if (candidateMode) {
+    split.mode = "single";
+    split.boxes = comps;
+    row.hidden = true;
+    return;
+  }
   if (split.mode !== "grid") {
     split.boxes = comps;
     if (comps.length >= 2 && split.mode === "single" && !split.userChose) {
@@ -210,7 +221,8 @@ async function runConvert() {
     const nf = res.framesPixels ? res.framesPixels.length : 1;
     $("studioStatus").textContent =
       `出力: ${res.width}×${res.height}・${res.palette.length - 1}色（+透明）` +
-      (nf > 1 ? `・${nf}フレーム（プレビュー: フレーム${activeFrame + 1}）・共有パレット` : "");
+      (nf > 1 ? `・${nf}フレーム（プレビュー: フレーム${activeFrame + 1}）・共有パレット` : "") +
+      (candidateAutoNote ? ` ｜ ${candidateAutoNote}` : ""); // §43/§44: 自動調整の結果を併記
     renderFrameBar();
     renderCompare();
   } catch (err) {
@@ -345,17 +357,24 @@ async function generateCandidates() {
     note.textContent = "背景除去がすべてのピクセルを消したため、背景除去なし（閾値0）で候補を生成しました。つまみで調整し直せます。";
     gallery.appendChild(note);
   }
-  const oneToOneRows = Math.round((srcData.h / grid.s) * 0.9);
-  const resolutions = [];
-  if (oneToOneRows <= 128) resolutions.push({ label: "1:1", oneToOne: true, targetH: 0 });
-  else resolutions.push({ label: "H96", oneToOne: false, targetH: 96 });
-  resolutions.push({ label: "H64", oneToOne: false, targetH: 64 });
-  resolutions.push({ label: "H48", oneToOne: false, targetH: 48 });
+  // §44.1: 候補モードは解像度固定 → 3×3 の行はサンプリング（セル中心重視）バリエーションにする
+  let rows;
+  if (candidateMode) {
+    rows = [0.2, 0.5, 0.8].map((cw) => ({ label: `中心${cw}`, props: { centerWeight: cw, oneToOne: false, targetH: knobs.targetH } }));
+  } else {
+    const oneToOneRows = Math.round((srcData.h / grid.s) * 0.9);
+    const resolutions = [];
+    if (oneToOneRows <= 128) resolutions.push({ label: "1:1", oneToOne: true, targetH: 0 });
+    else resolutions.push({ label: "H96", oneToOne: false, targetH: 96 });
+    resolutions.push({ label: "H64", oneToOne: false, targetH: 64 });
+    resolutions.push({ label: "H48", oneToOne: false, targetH: 48 });
+    rows = resolutions.map((res) => ({ label: res.label, props: { oneToOne: res.oneToOne, targetH: res.targetH || knobs.targetH } }));
+  }
 
   let done = 0;
-  for (const res of resolutions) {
+  for (const row of rows) {
     for (const style of CANDIDATE_STYLES) {
-      const candKnobs = { ...knobs, ...style, oneToOne: res.oneToOne, targetH: res.targetH || knobs.targetH };
+      const candKnobs = { ...knobs, ...style, ...row.props };
       const saveKnobs = knobs;
       knobs = candKnobs;
       const params = knobsToParams();
@@ -366,7 +385,7 @@ async function generateCandidates() {
         conv = doConvertWith(params);
       } catch (e) {
         convErr = e;
-        console.error("候補の変換に失敗:", res.label, style.label, e);
+        console.error("候補の変換に失敗:", row.label, style.label, e);
       }
       const cell = document.createElement("div");
       cell.className = "cand-cell";
@@ -381,14 +400,14 @@ async function generateCandidates() {
       }
       const label = document.createElement("span");
       label.textContent = conv
-        ? `${res.label}（${conv.width}×${conv.height}）・${candKnobs.colors}色・${style.label}`
-        : `${res.label}・${style.label}（失敗: ${(convErr && convErr.message ? convErr.message : "不明なエラー").slice(0, 60)}）`;
+        ? `${row.label}（${conv.width}×${conv.height}）・${candKnobs.colors}色・${style.label}`
+        : `${row.label}・${style.label}（失敗: ${(convErr && convErr.message ? convErr.message : "不明なエラー").slice(0, 60)}）`;
       cell.appendChild(cv);
       cell.appendChild(label);
       if (conv) {
         cell.addEventListener("click", () => {
           // これをベースにする: 候補のパラメータを全つまみに反映（§18.2-5）
-          knobs = { ...knobs, ...style, oneToOne: res.oneToOne, targetH: res.targetH || knobs.targetH };
+          knobs = { ...knobs, ...style, ...row.props };
           syncKnobUi();
           scheduleConvert();
           gallery.querySelectorAll(".cand-cell").forEach((el) => el.classList.remove("is-active"));
@@ -483,6 +502,7 @@ function attachKnobs() {
   for (const [id, key, cast] of KNOB_BINDINGS) {
     $(id).addEventListener("input", () => {
       knobs[key] = cast($(id).value);
+      candidateAutoNote = ""; // §43: 手動操作で自動調整の表示を解除
       if (key === "colors") $("studioColorsLabel").textContent = String(knobs.colors);
       // §30: 多フレームでは背景除去はフレーム別に convertFramesShared 内で行うため
       // bgCache/ボックス検出は無効化しない（フレーム分割を安定させる）。単一時は従来どおり。
@@ -567,6 +587,16 @@ function confirmStudio() {
     toast("変換結果がありません", "error");
     return;
   }
+  // §44.1: 候補モード — プロジェクト化ではなく候補へ反映（スナップ/整列は呼び出し側=motionstudio が行う）
+  if (candidateMode) {
+    const params = { ...knobs, ...(grid ? { grid: { ...grid } } : {}) };
+    const cb = candidateMode.onApply;
+    $("studioPanel").hidden = true;
+    candidateMode = null;
+    candidateAutoNote = "";
+    cb(result, params);
+    return;
+  }
   const res = result;
   const W = Math.max(8, res.width);
   const H = Math.max(8, res.height);
@@ -632,7 +662,7 @@ function confirmStudio() {
 // ---------------------------------------------------------------------------
 // 公開API
 // ---------------------------------------------------------------------------
-export async function openStudio(dataUrl, savedParams = null) {
+async function loadSource(dataUrl) {
   srcDataUrl = dataUrl;
   const img = new Image();
   await new Promise((resolve, reject) => { img.onload = resolve; img.onerror = reject; img.src = dataUrl; });
@@ -647,10 +677,27 @@ export async function openStudio(dataUrl, savedParams = null) {
   bgCache = null;
   grid = null;
   result = null;
-  split = { mode: "single", boxes: [], align: "bottom", gridCols: 3, gridRows: 1, userChose: false };
-  knobs = defaultKnobs();
   frameParams = [];
   activeFrame = 0;
+}
+
+// §44.1: 候補モードのUI差分（解像度・色数はプロジェクト固定＝無効化・自動調整ボタン表示）
+function applyCandidateUi(on) {
+  $("studioTargetH").disabled = on;
+  $("studioOneToOne").disabled = on;
+  $("studioColors").disabled = on;
+  $("studioAutoTuneBtn").hidden = !on || !(candidateMode && candidateMode.autoTune);
+  $("studioConfirmBtn").textContent = on ? "確定（候補へ反映）" : "確定（プロジェクト化）";
+  const h2 = document.querySelector("#studioPanel h2");
+  if (h2) h2.textContent = on ? "候補の調整（変換スタジオ）" : "変換スタジオ（ドット絵風 → 本物ドット絵）";
+}
+
+export async function openStudio(dataUrl, savedParams = null) {
+  candidateMode = null; // §44.1: 通常モードへ復帰
+  candidateAutoNote = "";
+  await loadSource(dataUrl);
+  split = { mode: "single", boxes: [], align: "bottom", gridCols: 3, gridRows: 1, userChose: false };
+  knobs = defaultKnobs();
   if (savedParams) {
     const { grid: g, split: sp, frameParams: fp, ...rest } = savedParams;
     Object.assign(knobs, rest);
@@ -671,11 +718,41 @@ export async function openStudio(dataUrl, savedParams = null) {
   $("studioPanel").hidden = false;
   $("studioGallery").innerHTML = "";
   $("studioGridInfo").textContent = "";
+  applyCandidateUi(false);
   syncKnobUi();
   fitView();
   if (grid) {
     $("studioGridInfo").textContent = `保存済みグリッド: セル ${grid.s.toFixed(2)}px（再推定で更新可）`;
   }
+  await runConvert();
+  renderCompare();
+}
+
+// §44.1: 候補モードで開く — 入力 = cand.srcRegion（原寸）、初期つまみ = cand.convParams。
+// 解像度=プロジェクト高さ固定・色数=プロジェクトパレット数（確定時に呼び出し側でスナップ）。
+// opts = { convParams, autoTune()?: Promise, onApply(convResult, paramsSnapshot) }
+export async function openStudioForCandidate(dataUrl, opts) {
+  candidateMode = { onApply: opts.onApply, autoTune: opts.autoTune || null };
+  candidateAutoNote = "";
+  await loadSource(dataUrl);
+  const p = store.state.project;
+  split = { mode: "single", boxes: [], align: "bottom", gridCols: 3, gridRows: 1, userChose: true };
+  knobs = defaultKnobs();
+  knobs.oneToOne = false;
+  knobs.targetH = p.height; // 解像度はプロジェクト固定（§44.1）
+  knobs.colors = Math.min(64, Math.max(2, p.palette.length - 1)); // §25.6 の変換フェーズと同じ色数
+  const cp = opts.convParams || {};
+  for (const k of ["bgThreshold", "glowWidth", "edgeProtect", "satProtect", "domBlend", "centerWeight", "sizeDelta", "offsetDX", "offsetDY"]) {
+    if (typeof cp[k] === "number") knobs[k] = cp[k];
+  }
+  if (cp.grid && typeof cp.grid.s === "number") grid = { ...cp.grid };
+  $("studioPanel").hidden = false;
+  $("studioGallery").innerHTML = "";
+  $("studioGridInfo").textContent = "";
+  $("studioSplitRow").hidden = true;
+  applyCandidateUi(true);
+  syncKnobUi();
+  fitView();
   await runConvert();
   renderCompare();
 }
@@ -686,8 +763,40 @@ export function initStudio(storeRef, toastRef) {
   attachKnobs();
   attachViewControls();
   $("studioConfirmBtn").addEventListener("click", confirmStudio);
-  $("studioCancelBtn").addEventListener("click", () => { $("studioPanel").hidden = true; });
+  $("studioCancelBtn").addEventListener("click", () => {
+    $("studioPanel").hidden = true;
+    candidateMode = null; // §44.1: キャンセルで候補へは何も反映しない
+    candidateAutoNote = "";
+  });
   $("studioFitBtn").addEventListener("click", () => { fitView(); renderCompare(); });
+
+  // §43/§44: 自動調整（候補モードのみ表示）— 探索の最良値をスタジオつまみへセット
+  $("studioAutoTuneBtn").addEventListener("click", async () => {
+    if (!candidateMode || !candidateMode.autoTune) return;
+    const btn = $("studioAutoTuneBtn");
+    btn.disabled = true;
+    $("studioStatus").textContent = "自動調整中…（最大40変換）";
+    try {
+      const res = await candidateMode.autoTune();
+      if (!candidateMode) return; // 探索中に閉じられた
+      if (!res || res.score === Infinity) {
+        $("studioStatus").textContent = "自動調整: 有効なパラメータが見つかりませんでした";
+        return;
+      }
+      knobs.bgThreshold = res.params.bgThreshold;
+      knobs.glowWidth = res.params.glowWidth;
+      knobs.edgeProtect = res.params.edgeProtect;
+      knobs.satProtect = res.params.satProtect;
+      bgCache = null; // 背景つまみが変わったので再除去
+      candidateAutoNote = `自動調整: スコア ${res.defaultScore.toFixed(3)} → ${res.score.toFixed(3)}（低いほど元絵に近い・${res.evals}回変換）`;
+      syncKnobUi();
+      scheduleConvert();
+    } catch (err) {
+      if (candidateMode) $("studioStatus").textContent = `自動調整に失敗: ${err.message}`;
+    } finally {
+      btn.disabled = false;
+    }
+  });
 
   // 元画像から再変換（§18.2）
   $("reconvertBtn").addEventListener("click", () => {
@@ -704,6 +813,8 @@ export function initStudio(storeRef, toastRef) {
     debug: () => ({
       isMulti: isMulti(),
       activeFrame,
+      candidateMode: !!candidateMode, // §44.1
+      knobs: { ...knobs },
       srcW: srcData ? srcData.w : 0, // §40: 再変換入力の解像度検証用
       srcH: srcData ? srcData.h : 0,
       frameCount: result && result.framesPixels ? result.framesPixels.length : (result ? 1 : 0),

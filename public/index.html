@@ -560,29 +560,6 @@
         <button id="mcImportCancelBtn" class="btn btn-small">キャンセル</button>
       </div>
     </div>
-    <!-- §41: 候補ごとの変換調整パネル（画像由来候補の「調整」ボタンから開く） -->
-    <div id="mcAdjustPanel" class="mc-adjust" hidden>
-      <div class="mc-adjust-head">
-        <strong id="mcAdjustTitle"></strong>
-        <span class="hint" data-help="motion.candidateAdjust">元画像領域(srcRegion)から再変換 → プロジェクトパレットへスナップ → 足元/重心整列（ナッジ済みオフセットは維持）</span>
-      </div>
-      <div class="mc-adjust-body">
-        <canvas id="mcAdjustCanvas"></canvas>
-        <div class="mc-adjust-knobs">
-          <label class="form-row">背景除去閾値 <input id="mcAdjustBg" type="range" min="8" max="120" step="1" value="48"></label>
-          <label class="form-row">フチ光彩除去 <input id="mcAdjustGlow" type="range" min="0" max="3" step="1" value="0"></label>
-          <label class="form-row">輪郭保護 <input id="mcAdjustEdge" type="range" min="0" max="1" step="0.05" value="0.3"></label>
-          <label class="form-row">彩度保護 <input id="mcAdjustSat" type="range" min="0" max="1" step="0.05" value="0.5"></label>
-          <label class="form-row">セルサイズ微調整 <input id="mcAdjustCell" type="range" min="-8" max="8" step="1" value="0"></label>
-        </div>
-      </div>
-      <div id="mcAdjustStatus" class="hint" aria-live="polite"></div>
-      <div class="ai-actions">
-        <button id="mcAdjustAutoBtn" class="btn btn-small" title="このコマだけ変換つまみを再探索して最良値をセットします（元絵との近さスコアで評価・以降は手で微調整可・§43）">自動</button>
-        <button id="mcAdjustApplyBtn" class="btn btn-small btn-accent">適用</button>
-        <button id="mcAdjustCancelBtn" class="btn btn-small">キャンセル</button>
-      </div>
-    </div>
     <div id="mcMergePanel" class="mc-merge" hidden>
       <div class="mc-merge-head">
         <strong id="mcMergeTitle"></strong>
@@ -613,6 +590,7 @@
     <div class="modal-head">
       <h2>変換スタジオ（ドット絵風 → 本物ドット絵）</h2>
       <div>
+        <button id="studioAutoTuneBtn" class="btn btn-small" hidden data-help="motion.candidateAdjust" title="このコマの変換つまみ（背景除去閾値・フチ光彩・輪郭/彩度保護）を元絵に一番近い見栄えになる値へ自動探索します（1コマ最大40変換・§43/§44）">自動調整</button>
         <button id="studioGalleryBtn" class="btn btn-small">候補を生成（3×3）</button>
         <button id="studioFitBtn" class="btn btn-small">全体表示</button>
         <button id="studioCancelBtn" class="btn btn-small">キャンセル</button>

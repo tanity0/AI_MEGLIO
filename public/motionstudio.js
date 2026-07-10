@@ -2,6 +2,7 @@
 // 画像取り込み・N×K 生成（mode:"motionframe"）・反転コピー・部位合成のすべてを
 // 1つのプールに並べ、クリック選択の順番がそのままフレーム順。確定で選択順にタイムラインへ。
 import { streamEdit } from "./api.js";
+import { openStudioForCandidate } from "./studio.js"; // §44.1: 候補調整=スタジオ流用
 import { removeBackground, detectComponents, convertImage } from "./convert.js";
 import {
   frameToGridString,
@@ -116,19 +117,6 @@ export function initMotionStudio(store, toast) {
   const motionPreset = document.getElementById("motionPreset");
   const motionCustomText = document.getElementById("motionCustomText");
   const motionFrames = document.getElementById("motionFrames");
-  // §41: 候補ごとの変換調整パネル
-  const adjustPanel = document.getElementById("mcAdjustPanel");
-  const adjustTitle = document.getElementById("mcAdjustTitle");
-  const adjustCanvas = document.getElementById("mcAdjustCanvas");
-  const adjustBg = document.getElementById("mcAdjustBg");
-  const adjustGlow = document.getElementById("mcAdjustGlow");
-  const adjustEdge = document.getElementById("mcAdjustEdge");
-  const adjustSat = document.getElementById("mcAdjustSat");
-  const adjustCell = document.getElementById("mcAdjustCell");
-  const adjustStatus = document.getElementById("mcAdjustStatus");
-  const adjustApplyBtn = document.getElementById("mcAdjustApplyBtn");
-  const adjustCancelBtn = document.getElementById("mcAdjustCancelBtn");
-  const adjustAutoBtn = document.getElementById("mcAdjustAutoBtn"); // §43-3: このコマだけ再探索
 
   function project() { return store.state.project; }
 
@@ -904,7 +892,6 @@ export function initMotionStudio(store, toast) {
   // ---------------------------------------------------------------------
   const MERGE_HUES = [200, 30, 300, 120, 0, 60, 260, 170];
   let merge = null; // { cand, ref, refLabel, blobs, diffMap, adopted:Set, mask:Uint8Array, rectDrag }
-  let adjust = null; // §41: { cand, params, preview:{srcPixels,autoOffset,offset,pixels}|null }
 
   function basePixels() {
     const p = project();
@@ -1220,119 +1207,34 @@ export function initMotionStudio(store, toast) {
   });
 
   // ---------------------------------------------------------------------
-  // §41: 候補ごとの変換調整（「調整」ボタン → モーダル内サブパネル + ライブプレビュー）
-  // srcRegion から bgThreshold/glowWidth/edgeProtect/satProtect/セルサイズを変えて再変換 →
-  // プロジェクトパレットへスナップ → 整列。ナッジ済みオフセット（autoOffset との差分）は維持。
-  // 「適用」まで cand 自体は書き換えない（キャンセルで安全に破棄できる）。
+  // §44.1: 候補の「調整」= 本物の変換スタジオ（候補モード）を開く。
+  // 入力 = cand.srcRegion（原寸）、初期つまみ = cand.convParams。
+  // 確定でスタジオから変換結果が返り、プロジェクトパレットへスナップ →
+  // snapAndAlign 再整列（ナッジ済みオフセットの差分は維持）→ 候補へ反映。
+  // §43 の「自動調整」ボタンはスタジオ内に表示される（autoTune フック経由）。
   // ---------------------------------------------------------------------
-  function openAdjust(cand) {
+  function openCandidateStudio(cand) {
     if (!cand.srcRegion) {
       toast("この候補は元画像領域が保持されていないため調整できません", "error");
       return;
     }
-    adjust = { cand, params: { ...(cand.convParams || defaultConvParams()) }, preview: null };
-    const n = session.selected.indexOf(cand);
-    adjustTitle.textContent = n >= 0 ? `候補調整 — 選択#${n + 1}` : "候補調整 — 未選択の候補";
-    adjustBg.value = String(adjust.params.bgThreshold);
-    adjustGlow.value = String(adjust.params.glowWidth);
-    adjustEdge.value = String(adjust.params.edgeProtect);
-    adjustSat.value = String(adjust.params.satProtect);
-    adjustCell.value = String(adjust.params.cellDelta || 0);
-    adjustStatus.textContent = "";
-    adjustPanel.hidden = false;
-    scheduleAdjustPreview();
-  }
-
-  function closeAdjust() {
-    adjustPanel.hidden = true;
-    adjust = null;
-  }
-
-  function readAdjustParams() {
-    return {
-      bgThreshold: Number(adjustBg.value),
-      glowWidth: Number(adjustGlow.value),
-      edgeProtect: Number(adjustEdge.value),
-      satProtect: Number(adjustSat.value),
-      cellDelta: Number(adjustCell.value),
-    };
-  }
-
-  let adjustGen = 0;
-  let adjustTimer = null;
-  function scheduleAdjustPreview() {
-    clearTimeout(adjustTimer);
-    adjustTimer = setTimeout(runAdjustPreview, 120);
-  }
-  async function runAdjustPreview() {
-    if (!adjust) return;
-    const gen = ++adjustGen;
-    const params = readAdjustParams();
-    adjust.params = params;
-    adjustStatus.textContent = "変換中…";
-    try {
-      const { srcPixels, offset: autoOffset } = await reconvertFromRegion(adjust.cand.srcRegion, params);
-      if (gen !== adjustGen || !adjust) return;
-      // ナッジ済みオフセット = 元の offset と元の autoOffset の差分。新しい autoOffset に同じ差分を足して維持する。
-      const nudgeDx = adjust.cand.offset.dx - adjust.cand.autoOffset.dx;
-      const nudgeDy = adjust.cand.offset.dy - adjust.cand.autoOffset.dy;
-      const offset = { dx: autoOffset.dx + nudgeDx, dy: autoOffset.dy + nudgeDy };
-      const pixels = shiftPixels(srcPixels, offset.dx, offset.dy);
-      adjust.preview = { srcPixels, autoOffset, offset, pixels };
-      drawCand(adjustCanvas, pixels, adjust.cand);
-      adjustStatus.textContent = adjust.autoNote || ""; // §43: 自動調整の結果表示は保持
-    } catch (err) {
-      if (gen !== adjustGen || !adjust) return;
-      adjustStatus.textContent = `変換に失敗: ${err.message}`;
-      adjust.preview = null;
-    }
-  }
-  for (const el of [adjustBg, adjustGlow, adjustEdge, adjustSat, adjustCell]) {
-    el.addEventListener("input", () => {
-      if (adjust) adjust.autoNote = null; // 手動操作で自動調整の表示を解除
-      scheduleAdjustPreview();
+    openStudioForCandidate(cand.srcRegion, {
+      convParams: cand.convParams || defaultConvParams(),
+      autoTune: () => autoTuneRegion(cand.srcRegion, {}),
+      onApply: (conv, params) => {
+        const { srcPixels, offset: autoOffset } = snapAndAlign(conv);
+        const nudgeDx = (cand.offset && cand.autoOffset) ? cand.offset.dx - cand.autoOffset.dx : 0;
+        const nudgeDy = (cand.offset && cand.autoOffset) ? cand.offset.dy - cand.autoOffset.dy : 0;
+        cand.srcPixels = srcPixels;
+        cand.autoOffset = autoOffset;
+        cand.offset = { dx: autoOffset.dx + nudgeDx, dy: autoOffset.dy + nudgeDy };
+        cand.pixels = shiftPixels(srcPixels, cand.offset.dx, cand.offset.dy);
+        cand.convParams = { ...params }; // スタジオの全つまみを保存（再オープンで復元）
+        renderCell(cand);
+        toast("候補を再変換しました（プロジェクトパレットへスナップ+整列済み・ナッジは維持）");
+      },
     });
   }
-  adjustApplyBtn.addEventListener("click", () => {
-    if (!adjust || !adjust.preview) { closeAdjust(); return; }
-    const { cand, params, preview } = adjust;
-    cand.srcPixels = preview.srcPixels;
-    cand.autoOffset = preview.autoOffset;
-    cand.offset = preview.offset;
-    cand.pixels = preview.pixels;
-    cand.convParams = params;
-    closeAdjust();
-    renderCell(cand);
-    toast("候補を再変換しました（プロジェクトパレットへスナップ+整列済み・ナッジは維持）");
-  });
-  adjustCancelBtn.addEventListener("click", closeAdjust);
-  // §43-3: 「自動」— このコマだけ再探索して最良値をつまみにセット（以降は手で微調整可）
-  adjustAutoBtn.addEventListener("click", async () => {
-    if (!adjust) return;
-    const cand = adjust.cand;
-    adjustAutoBtn.disabled = true;
-    adjustStatus.textContent = "自動調整中…";
-    try {
-      const res = await autoTuneRegion(cand.srcRegion, { cellDelta: Number(adjustCell.value) || 0 });
-      if (!adjust || adjust.cand !== cand) return; // 探索中に閉じられた/切り替えられた
-      if (res.score === Infinity) {
-        adjustStatus.textContent = "自動調整: 有効なパラメータが見つかりませんでした";
-        return;
-      }
-      adjustBg.value = String(res.params.bgThreshold);
-      adjustGlow.value = String(res.params.glowWidth);
-      adjustEdge.value = String(res.params.edgeProtect);
-      adjustSat.value = String(res.params.satProtect);
-      adjust.autoNote =
-        `自動調整: スコア ${res.defaultScore.toFixed(3)} → ${res.score.toFixed(3)}（低いほど元絵に近い・${res.evals}回変換）。手でさらに微調整できます`;
-      adjustStatus.textContent = adjust.autoNote;
-      scheduleAdjustPreview(); // ライブプレビュー＋「適用」で convParams に入る
-    } catch (err) {
-      if (adjust && adjust.cand === cand) adjustStatus.textContent = `自動調整に失敗: ${err.message}`;
-    } finally {
-      adjustAutoBtn.disabled = false;
-    }
-  });
 
   // ---------------------------------------------------------------------
   // §25.6-4.5/§25.8: GPT依頼キット（out/ へ reference.png + prompt.txt・依頼文はクリップボードにも）
@@ -1466,6 +1368,7 @@ export function initMotionStudio(store, toast) {
       const srcLabel = cand.source === "image" ? "画像"
         : cand.source === "mirror" ? "反転コピー"
         : cand.source === "merge" ? "部位合成"
+        : cand.source === "frame" ? `既存フレーム${cand.frameIndex}` // §44.2
         : `生成${(cand.phase ?? 0) + 1}/${cand.phaseTotal ?? "?"}-${(cand.variant ?? 0) + 1}`;
       cv.title = cand.warn || `${srcLabel}（クリックで選択/解除）`;
       drawCand(cv, cand.pixels, cand);
@@ -1476,6 +1379,7 @@ export function initMotionStudio(store, toast) {
       badge.textContent = cand.source === "image" ? "画像（スナップ+整列済み）"
         : cand.source === "mirror" ? "反転コピー"
         : cand.source === "merge" ? "部位合成"
+        : cand.source === "frame" ? `既存フレーム${cand.frameIndex}`
         : srcLabel;
       el.appendChild(badge);
       const row = document.createElement("div");
@@ -1498,13 +1402,13 @@ export function initMotionStudio(store, toast) {
       mg.title = "この候補から部位ごとに選んで合成候補を作る（比較先=ベース/番号付き候補・矩形/パーツチップ/塊/ブラシ・§25.7/§25.10/§42）";
       mg.addEventListener("click", () => openMerge(cand));
       row.appendChild(mg);
-      // §41: 画像由来の候補のみ「調整」（グリッド生成候補には出さない）
+      // §41/§44: 画像由来の候補のみ「調整」（グリッド生成・フレーム由来には出さない）
       if (cand.source === "image" && cand.srcRegion) {
         const adj = document.createElement("button");
         adj.className = "btn btn-small";
         adj.textContent = "調整";
-        adj.title = "背景除去閾値・フチ光彩・輪郭/彩度保護・セルサイズを個別調整（元画像領域から再変換→パレットスナップ→整列。ナッジ済みオフセットは維持）";
-        adj.addEventListener("click", () => openAdjust(cand));
+        adj.title = "変換スタジオ（候補モード）で調整（元画像領域から再変換→パレットスナップ→整列。ナッジ済みオフセットは維持。§44）";
+        adj.addEventListener("click", () => openCandidateStudio(cand));
         row.appendChild(adj);
       }
       const del = document.createElement("button");
@@ -1617,29 +1521,45 @@ export function initMotionStudio(store, toast) {
   }
 
   // ---------------------------------------------------------------------
-  // 確定（§42: 選択順にフレーム化してタイムライン末尾へ・タグ範囲=選択数）
+  // 確定（§42/§44.2）
+  // - フレーム由来で初期化されたセッション: 選択順の内容で元のタグ範囲を「置き換え」
+  //   （数の増減は splice・後続タグと rig.generatedAt の index 補正・削除/フレーム0 は confirm）
+  // - 新規セッション（フレームなしから開始）: 従来どおり末尾追加+新タグ
   // ---------------------------------------------------------------------
-  confirmBtn.addEventListener("click", () => {
-    if (!session || session.confirmed || session.selected.length === 0) return;
-    const p = project();
-    const n = session.selected.length;
-    store.pushUndo();
-    const start = p.frames.length;
-    for (const cand of session.selected) p.frames.push({ pixels: Uint8Array.from(cand.pixels) });
-    const tag = addGeneratedTag(p, session.preset, start, start + n - 1);
-    tag.fps = p.fps;
-    store.state.activeTagIndex = p.tags.indexOf(tag);
-    session.confirmed = true;
-    store.clampAfterProjectChange();
-    store.state.currentFrame = start;
-    store.notify();
-    toast(`選択${n}件を選択順にフレーム化し、タグ「${tag.name}」として追加しました`);
-    // §25.2: 確定後の各フレームに「エディタで開く」
+  // §44.2: [start..oldEnd] を [start..newEnd] へ置き換えた後のタグ・rig index 補正
+  function remapAfterReplace(p, start, oldEnd, newEnd, replacedTagIndex) {
+    const delta = newEnd - oldEnd;
+    const tags = p.tags || [];
+    for (let i = tags.length - 1; i >= 0; i--) {
+      const t = tags[i];
+      // 明示的に置換対象のタグ、または「全体」モード（tagIndex=-1・特定タグ非選択）で旧範囲と
+      // 完全一致するタグ（＝置換範囲をそのままカバーしていた「全体」用タグ）は新範囲へ更新。
+      // （タグindexが取れないため後段の shift/clamp だけだと、旧終端に一致する側が誤って
+      //   クランプされ、フレーム数が増えてもタグが伸びずに新フレームが宙に浮くバグになる）
+      if (i === replacedTagIndex || (replacedTagIndex === -1 && t.start === start && t.end === oldEnd)) {
+        t.start = start; t.end = newEnd; continue;
+      }
+      // 置換範囲より後ろ → delta シフト。範囲内に食い込む端は新範囲へクランプ。
+      if (t.start > oldEnd) t.start += delta;
+      else if (t.start > start) t.start = Math.min(t.start, newEnd);
+      if (t.end > oldEnd) t.end += delta;
+      else if (t.end >= start) t.end = Math.min(t.end, newEnd);
+      t.start = Math.max(0, Math.min(t.start, p.frames.length - 1));
+      t.end = Math.min(t.end, p.frames.length - 1);
+      if (t.end < t.start) tags.splice(i, 1);
+    }
+    if (p.rig && Number.isInteger(p.rig.generatedAt)) {
+      if (p.rig.generatedAt > oldEnd) p.rig.generatedAt += delta;
+      else if (p.rig.generatedAt > newEnd) p.rig.generatedAt = newEnd;
+    }
+  }
+
+  function showConfirmedBar(start, n, label) {
     confirmedBar.hidden = false;
     confirmedBar.innerHTML = "";
-    const label = document.createElement("span");
-    label.textContent = `確定しました（フレーム${start}〜${start + n - 1}・タグ「${tag.name}」）: `;
-    confirmedBar.appendChild(label);
+    const span = document.createElement("span");
+    span.textContent = label;
+    confirmedBar.appendChild(span);
     for (let i = 0; i < n; i++) {
       const b = document.createElement("button");
       b.className = "btn btn-small";
@@ -1651,6 +1571,56 @@ export function initMotionStudio(store, toast) {
       });
       confirmedBar.appendChild(b);
     }
+  }
+
+  confirmBtn.addEventListener("click", () => {
+    if (!session || session.confirmed || session.selected.length === 0) return;
+    const p = project();
+    const n = session.selected.length;
+    const sel = session.selected;
+    if (session.frameSeed) {
+      // §44.2: タグ範囲の置き換え
+      const { start, end, tagIndex, tagName, candIds } = session.frameSeed;
+      // フレーム由来アイテムが選択から外れて（または削除されて）いれば、そのフレームは消える → confirm
+      const removed = candIds.filter((id) => !sel.some((c) => c.id === id)).length;
+      if (removed > 0
+        && !window.confirm(`${removed}フレームの削除を含む置き換えです。確定しますか？`)) return;
+      // 基準フレーム（frame 0）を含む範囲で frame 0 の内容が変わる場合も confirm
+      if (start === 0) {
+        const first = sel[0];
+        const same = first && first.source === "frame" && first.frameIndex === 0
+          && p.frames[0] && first.pixels.length === p.frames[0].pixels.length
+          && first.pixels.every((v, i) => v === p.frames[0].pixels[i]);
+        if (!same && !window.confirm("フレーム0（基準フレーム）の置き換えを含みます。確定しますか？")) return;
+      }
+      store.pushUndo();
+      const oldN = end - start + 1;
+      const newFrames = sel.map((c) => ({ pixels: Uint8Array.from(c.pixels) }));
+      p.frames.splice(start, oldN, ...newFrames);
+      remapAfterReplace(p, start, end, start + n - 1, tagIndex);
+      session.confirmed = true;
+      store.clampAfterProjectChange();
+      store.state.currentFrame = start;
+      store.notify();
+      const scope = tagName ? `タグ「${tagName}」` : "全フレーム";
+      const deltaN = n - oldN;
+      toast(`${scope}のフレーム${start}〜${end}を選択順の${n}件で置き換えました${deltaN ? `（${deltaN > 0 ? "+" : ""}${deltaN}フレーム）` : ""}`);
+      showConfirmedBar(start, n, `確定しました（${scope}をフレーム${start}〜${start + n - 1}で置き換え）: `);
+    } else {
+      // §42: 末尾追加+新タグ（従来）
+      store.pushUndo();
+      const start = p.frames.length;
+      for (const cand of sel) p.frames.push({ pixels: Uint8Array.from(cand.pixels) });
+      const tag = addGeneratedTag(p, session.preset, start, start + n - 1);
+      tag.fps = p.fps;
+      store.state.activeTagIndex = p.tags.indexOf(tag);
+      session.confirmed = true;
+      store.clampAfterProjectChange();
+      store.state.currentFrame = start;
+      store.notify();
+      toast(`選択${n}件を選択順にフレーム化し、タグ「${tag.name}」として追加しました`);
+      showConfirmedBar(start, n, `確定しました（フレーム${start}〜${start + n - 1}・タグ「${tag.name}」）: `);
+    }
     updateConfirmState();
     progress.textContent = "確定済み。仕上げは矩形選択+指示（修正タブ）やペン+部分仕上げで";
   });
@@ -1661,8 +1631,6 @@ export function initMotionStudio(store, toast) {
   function closeModal() {
     merge = null;
     mergePanel.hidden = true;
-    adjust = null;
-    adjustPanel.hidden = true;
     if (importPreviewAbort) importPreviewAbort(); // §39-4: 保留中の取り込みプレビューはキャンセル扱い
     if (abortController) abortController.abort();
     abortController = null;
@@ -1694,16 +1662,6 @@ export function initMotionStudio(store, toast) {
       renderPool();
       return c.id;
     },
-    // §41 検証用: 開いている調整パネルの現在の下書き（未適用のライブプレビュー）を覗く
-    getAdjustDraft: () => (adjust ? {
-      candId: adjust.cand.id,
-      params: { ...adjust.params },
-      preview: adjust.preview ? {
-        pixels: Array.from(adjust.preview.pixels),
-        offset: { ...adjust.preview.offset },
-        autoOffset: { ...adjust.preview.autoOffset },
-      } : null,
-    } : null),
     // §43 検証用: 自動調整（探索）とスコア関数を直接叩く
     autoTuneRegion: (url, opts) => autoTuneRegion(url, opts || {}),
     async scoreRegionParams(url, params) {
@@ -1715,11 +1673,15 @@ export function initMotionStudio(store, toast) {
     setTuneDelay(ms) { tuneDelayMs = ms; }, // キャンセル検証を決定的にするための遅延注入
   };
 
-  // §42: 新しい空セッション（プールモデル）
-  function newSession() {
+  // §42: 新しいセッション（プールモデル）
+  // §44.2: seedFrames=true（「ギャラリーを開く」/受信箱バッジ経由）のとき、現在のタグ
+  // （「全体」なら全フレーム）の既存フレームを source:"frame" としてプールに並べ、
+  // フレーム順に選択済み（1..N）で初期化する。確定はこの範囲の「置き換え」になる。
+  // 「候補を生成」から始めた新規セッションは従来どおり（末尾追加+新タグ）。
+  function newSession(seedFrames) {
     const preset = motionPreset.value;
     const customText = motionCustomText.value.trim();
-    return {
+    const sess = {
       preset,
       presetLabel: PRESET_LABELS[preset] || preset,
       customText,
@@ -1729,7 +1691,28 @@ export function initMotionStudio(store, toast) {
       pool: [],
       selected: [],
       confirmed: false,
+      frameSeed: null, // { tagIndex, tagName, start, end, candIds } | null
     };
+    if (!seedFrames) return sess;
+    const p = project();
+    const tagIdx = store.state.activeTagIndex;
+    const tag = (tagIdx >= 0 && p.tags && p.tags[tagIdx]) ? p.tags[tagIdx] : null;
+    const start = tag ? Math.max(0, tag.start) : 0;
+    const end = Math.min(tag ? tag.end : p.frames.length - 1, p.frames.length - 1);
+    if (p.frames.length && end >= start) {
+      const candIds = [];
+      for (let i = start; i <= end; i++) {
+        const cand = {
+          id: sess.nextId++, status: "ok", source: "frame", frameIndex: i,
+          snapped: true, pixels: Uint8Array.from(p.frames[i].pixels),
+        };
+        sess.pool.push(cand);
+        sess.selected.push(cand);
+        candIds.push(cand.id);
+      }
+      sess.frameSeed = { tagIndex: tag ? tagIdx : -1, tagName: tag ? tag.name : null, start, end, candIds };
+    }
+    return sess;
   }
 
   generateBtn.addEventListener("click", () => {
@@ -1747,7 +1730,7 @@ export function initMotionStudio(store, toast) {
     const total = Math.max(2, Math.min(12, Number(motionFrames.value) || 4));
     const k = Math.max(1, Math.min(4, Number(candCount.value) || 3));
     if (!session || session.confirmed) {
-      session = newSession();
+      session = newSession(false); // 生成から始めた新規セッションは従来どおり（末尾追加+新タグ）
       confirmedBar.hidden = true;
       confirmedBar.innerHTML = "";
     }
@@ -1773,13 +1756,13 @@ export function initMotionStudio(store, toast) {
   });
 
   // ---------------------------------------------------------------------
-  // §39: ギャラリーを生成なしで開く（画像取り込みの入口）
-  // AI生成を一切走らせず、空のプールでモーダルを開く。
+  // §39/§44: ギャラリーを生成なしで開く（画像取り込みの入口）
+  // AI生成を一切走らせず、現在のタグの既存フレームを選択済み1..Nで並べたプールで開く（§44.2）。
   // 既にセッションがあれば（確定済み含む）プール・選択状態を保持して再表示。
   // ---------------------------------------------------------------------
   function openGalleryWithoutGeneration() {
     if (!session) {
-      session = newSession();
+      session = newSession(true); // §44.2: 既存フレームで初期化
       confirmedBar.hidden = true;
       confirmedBar.innerHTML = "";
     }
