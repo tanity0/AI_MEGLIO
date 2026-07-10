@@ -527,8 +527,13 @@ class Store {
       tool: "pen",
       colorIndex: 1,
       selection: null, // { frameIndex, x, y, w, h }
-      onionSkin: false,
+      onionMode: "none", // §34.4: "none" | "prev" | "both"
+      onionOpacity: 0.35, // §34.4: 0..1
       diffView: false,
+      gridShow: false, // §34.2（editor.js 初期化時に localStorage で上書き）
+      gridMajor: 8, // §34.2: 8 | 16
+      mirrorDraw: false, // §34.3
+      mirrorAxisX: null, // §34.3: null = キャンバス中央（(width-1)/2）
       rigSelectedPart: null,
       rigAdjustMode: false,
       activeTagIndex: -1, // §16.1: 選択中タグ（-1 = 全体）

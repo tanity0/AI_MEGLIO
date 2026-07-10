@@ -57,8 +57,28 @@
     </div>
 
     <div class="tool-options">
-      <label class="check-row"><input type="checkbox" id="onionSkinToggle"> オニオンスキン</label>
+      <div class="onion-row" title="オニオンスキン（前後フレームの薄表示・色付き・書き出しには非影響）">
+        <span class="hint">オニオン</span>
+        <select id="onionModeSelect">
+          <option value="none">なし</option>
+          <option value="prev">前のみ</option>
+          <option value="both">前+次</option>
+        </select>
+        <input type="range" id="onionOpacityRange" min="10" max="80" step="5" value="35" title="不透明度">
+        <span id="onionOpacityLabel">35%</span>
+      </div>
       <label class="check-row"><input type="checkbox" id="diffViewToggle"> 差分ビュー（対ベース）</label>
+      <div class="grid-row" title="グリッド表示（オーバーレイ・書き出しには非影響）">
+        <label class="check-row"><input type="checkbox" id="gridToggle"> グリッド</label>
+        <select id="gridMajorSelect" title="補助線（Nセル毎の太い線）">
+          <option value="8">8セル毎</option>
+          <option value="16">16セル毎</option>
+        </select>
+      </div>
+      <div class="mirror-row" title="左右対称ミラー描画（ペン/消しゴム・縦軸）">
+        <label class="check-row"><input type="checkbox" id="mirrorToggle"> ミラー描画</label>
+        <input type="number" id="mirrorAxisInput" step="0.5" placeholder="中央" title="ミラー軸のX座標（空欄=キャンバス中央）">
+      </div>
       <div class="brush-row" title="ペン/消しゴムのブラシサイズ（px）">
         <span>サイズ</span>
         <div class="brush-size-group" id="brushSizeGroup">
@@ -109,7 +129,24 @@
       <div class="hint">全色</div>
     </div>
     <div class="palette-grid" id="paletteGrid"></div>
-    <button id="paletteAddBtn" class="btn btn-small">+ 色を追加</button>
+    <div class="palette-actions">
+      <button id="paletteAddBtn" class="btn btn-small">+ 色を追加</button>
+      <button id="colorReplaceBtn" class="btn btn-small" title="パレットindexの一括置換（スウォッチ右クリックでも開始）">色置換</button>
+    </div>
+    <div id="colorReplacePanel" class="color-replace-panel" hidden>
+      <div class="color-replace-row">
+        <label>元 <select id="colorReplaceFrom"></select></label>
+        <label>先 <select id="colorReplaceTo"></select></label>
+      </div>
+      <div class="color-replace-row">
+        <label class="check-row"><input type="radio" name="colorReplaceScope" id="colorReplaceScopeCurrent" value="current" checked> 現在フレーム</label>
+        <label class="check-row"><input type="radio" name="colorReplaceScope" id="colorReplaceScopeAll" value="all"> 全フレーム</label>
+      </div>
+      <div class="color-replace-row">
+        <button id="colorReplaceExecBtn" class="btn btn-small btn-accent">置換を実行</button>
+        <button id="colorReplaceCancelBtn" class="btn btn-small">閉じる</button>
+      </div>
+    </div>
   </aside>
 
   <section id="canvasPanel">

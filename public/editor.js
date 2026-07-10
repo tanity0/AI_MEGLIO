@@ -12,8 +12,20 @@ export function initEditor(store, toast) {
   const cctx = cursorCanvas.getContext("2d");
   const wrap = document.getElementById("canvasWrap");
   const ctx = canvas.getContext("2d");
-  const onionToggle = document.getElementById("onionSkinToggle");
+  const onionModeSelect = document.getElementById("onionModeSelect");
+  const onionOpacityRange = document.getElementById("onionOpacityRange");
+  const onionOpacityLabel = document.getElementById("onionOpacityLabel");
   const diffToggle = document.getElementById("diffViewToggle");
+  const gridToggle = document.getElementById("gridToggle");
+  const gridMajorSelect = document.getElementById("gridMajorSelect");
+  const mirrorToggle = document.getElementById("mirrorToggle");
+  const mirrorAxisInput = document.getElementById("mirrorAxisInput");
+  const colorReplaceBtn = document.getElementById("colorReplaceBtn");
+  const colorReplacePanel = document.getElementById("colorReplacePanel");
+  const colorReplaceFrom = document.getElementById("colorReplaceFrom");
+  const colorReplaceTo = document.getElementById("colorReplaceTo");
+  const colorReplaceExecBtn = document.getElementById("colorReplaceExecBtn");
+  const colorReplaceCancelBtn = document.getElementById("colorReplaceCancelBtn");
   const lockSelectionBtn = document.getElementById("lockSelectionBtn");
   const clearLocksBtn = document.getElementById("clearLocksBtn");
   const lockCountEl = document.getElementById("lockCount");
@@ -33,6 +45,17 @@ export function initEditor(store, toast) {
 
   // §31.2: ブラシサイズ（UIの初期状態が無ければ既定1px）
   if (!BRUSH_SIZES.includes(store.state.brushSize)) store.state.brushSize = 1;
+
+  // §34.2: グリッド表示 ON/OFF と補助線Nは localStorage に保持
+  const GRID_SHOW_KEY = "aiMeglio.grid.show";
+  const GRID_MAJOR_KEY = "aiMeglio.grid.major";
+  try {
+    const savedShow = localStorage.getItem(GRID_SHOW_KEY);
+    if (savedShow === "1") store.state.gridShow = true;
+    else if (savedShow === "0") store.state.gridShow = false;
+    const savedMajor = Number(localStorage.getItem(GRID_MAJOR_KEY));
+    if (savedMajor === 8 || savedMajor === 16) store.state.gridMajor = savedMajor;
+  } catch {}
 
   let dragging = false;
   let dragTool = null;
@@ -315,13 +338,34 @@ export function initEditor(store, toast) {
     return true;
   }
 
+  // §34.3: 左右対称ミラー描画。軸は既定=キャンバス中央((width-1)/2)、
+  // store.state.mirrorAxisX が数値なら任意軸。ピクセル座標 x の対称位置を返す。
+  function mirrorAxisX() {
+    const custom = store.state.mirrorAxisX;
+    if (Number.isFinite(custom)) return custom;
+    return (project().width - 1) / 2;
+  }
+  function mirrorX(x, axis) {
+    return Math.round(2 * axis - x);
+  }
+
   // §31.2: サイズ分の正方ブラシで1点を塗る（中心寄せ。size=1は従来どおり1px）
+  // §34.3: mirrorDraw が ON なら、ブラシを構成する各ピクセルを縦軸対称位置にも同時に塗る
+  // （ブラシサイズ・ブレゼンハム補間経由のストロークにも自然に適用される：paintStroke は
+  // 補間した各点でこの関数を呼ぶため）。
   function paintBrushAt(frameIndex, cx, cy, colorIndex, size) {
     const half = Math.floor((size - 1) / 2);
     let changed = false;
+    const mirror = store.state.mirrorDraw;
+    const axis = mirror ? mirrorAxisX() : 0;
     for (let dy = 0; dy < size; dy++) {
       for (let dx = 0; dx < size; dx++) {
-        if (setPixel(frameIndex, cx - half + dx, cy - half + dy, colorIndex)) changed = true;
+        const px = cx - half + dx, py = cy - half + dy;
+        if (setPixel(frameIndex, px, py, colorIndex)) changed = true;
+        if (mirror) {
+          const mx = mirrorX(px, axis);
+          if (mx !== px && setPixel(frameIndex, mx, py, colorIndex)) changed = true;
+        }
       }
     }
     return changed;
@@ -686,9 +730,71 @@ export function initEditor(store, toast) {
       cursorCanvas.style.height = h + "px";
     }
   }
+  // §34.2: グリッド表示（オーバーレイ層=cursorCanvas。書き出しPNG/GIFは別経路で
+  // project.pixelsを読むだけなのでここに描いても混入しない）。1セル格子 + Nセル毎の太い補助線。
+  function drawGridOverlay() {
+    if (!store.state.gridShow) return;
+    const p = project();
+    const cellSize = store.state.zoom;
+    const major = store.state.gridMajor === 16 ? 16 : 8;
+    cctx.save();
+    cctx.strokeStyle = "rgba(255,255,255,0.16)";
+    cctx.lineWidth = 1;
+    for (let x = 0; x <= p.width; x++) {
+      if (x % major === 0) continue;
+      cctx.beginPath();
+      cctx.moveTo(x * cellSize + 0.5, 0);
+      cctx.lineTo(x * cellSize + 0.5, p.height * cellSize);
+      cctx.stroke();
+    }
+    for (let y = 0; y <= p.height; y++) {
+      if (y % major === 0) continue;
+      cctx.beginPath();
+      cctx.moveTo(0, y * cellSize + 0.5);
+      cctx.lineTo(p.width * cellSize, y * cellSize + 0.5);
+      cctx.stroke();
+    }
+    cctx.strokeStyle = "rgba(255,214,102,0.6)";
+    cctx.lineWidth = 1.5;
+    for (let x = 0; x <= p.width; x += major) {
+      cctx.beginPath();
+      cctx.moveTo(x * cellSize + 0.5, 0);
+      cctx.lineTo(x * cellSize + 0.5, p.height * cellSize);
+      cctx.stroke();
+    }
+    for (let y = 0; y <= p.height; y += major) {
+      cctx.beginPath();
+      cctx.moveTo(0, y * cellSize + 0.5);
+      cctx.lineTo(p.width * cellSize, y * cellSize + 0.5);
+      cctx.stroke();
+    }
+    cctx.restore();
+  }
+
+  // §34.3: ミラー軸の可視化（オーバーレイのみ・書き出し非影響）
+  function drawMirrorAxisOverlay() {
+    if (!store.state.mirrorDraw) return;
+    const p = project();
+    const cellSize = store.state.zoom;
+    const axis = mirrorAxisX();
+    const lineX = (axis + 0.5) * cellSize;
+    if (lineX < 0 || lineX > p.width * cellSize) return;
+    cctx.save();
+    cctx.strokeStyle = "rgba(255,100,220,0.7)";
+    cctx.lineWidth = 1.5;
+    cctx.setLineDash([4, 3]);
+    cctx.beginPath();
+    cctx.moveTo(lineX, 0);
+    cctx.lineTo(lineX, p.height * cellSize);
+    cctx.stroke();
+    cctx.restore();
+  }
+
   function renderCursorOverlay() {
     syncCursorCanvasSize();
     cctx.clearRect(0, 0, cursorCanvas.width, cursorCanvas.height);
+    drawGridOverlay(); // §34.2
+    drawMirrorAxisOverlay(); // §34.3
     const tool = store.state.tool;
     if (!hoverCell || (tool !== "pen" && tool !== "eraser")) return;
     const cellSize = store.state.zoom;
@@ -771,9 +877,15 @@ export function initEditor(store, toast) {
   document.getElementById("selPasteBtn").addEventListener("click", doPaste);
   updateClipboardUi();
 
-  onionToggle.addEventListener("change", () => {
-    store.state.onionSkin = onionToggle.checked;
+  // §34.4: オニオンスキン強化（表示モード・不透明度）
+  onionModeSelect.addEventListener("change", () => {
+    store.state.onionMode = onionModeSelect.value;
     store.notify();
+  });
+  onionOpacityRange.addEventListener("input", () => {
+    store.state.onionOpacity = Number(onionOpacityRange.value) / 100;
+    onionOpacityLabel.textContent = `${onionOpacityRange.value}%`;
+    scheduleRender();
   });
 
   diffToggle.addEventListener("change", () => {
@@ -782,6 +894,82 @@ export function initEditor(store, toast) {
       toast("ベースフレームがありません（画像を開くとベースフレームが設定されます）");
     }
     store.notify();
+  });
+
+  // §34.2: グリッド表示 ON/OFF・補助線N（localStorage 保持）
+  gridToggle.addEventListener("change", () => {
+    store.state.gridShow = gridToggle.checked;
+    try { localStorage.setItem(GRID_SHOW_KEY, store.state.gridShow ? "1" : "0"); } catch {}
+    scheduleRender();
+  });
+  gridMajorSelect.addEventListener("change", () => {
+    const n = Number(gridMajorSelect.value) === 16 ? 16 : 8;
+    store.state.gridMajor = n;
+    try { localStorage.setItem(GRID_MAJOR_KEY, String(n)); } catch {}
+    scheduleRender();
+  });
+
+  // §34.3: 左右対称ミラー描画
+  mirrorToggle.addEventListener("change", () => {
+    store.state.mirrorDraw = mirrorToggle.checked;
+    store.notify();
+  });
+  mirrorAxisInput.addEventListener("change", () => {
+    const raw = mirrorAxisInput.value.trim();
+    if (raw === "") {
+      store.state.mirrorAxisX = null;
+    } else {
+      const v = Number(raw);
+      store.state.mirrorAxisX = Number.isFinite(v) ? v : null;
+    }
+    store.notify();
+  });
+
+  // §34.1: 色の入れ替え / 置換（パレット自体は不変・ピクセルindexの付け替えのみ）
+  function fillColorReplaceSelect(sel, selected) {
+    const p = project();
+    sel.innerHTML = "";
+    p.palette.forEach((hex, i) => {
+      const opt = document.createElement("option");
+      opt.value = String(i);
+      opt.textContent = `${i}: ${hex}`;
+      sel.appendChild(opt);
+    });
+    if (Number.isInteger(selected) && selected >= 0 && selected < p.palette.length) sel.value = String(selected);
+  }
+  function openColorReplacePanel(presetFrom) {
+    if (floating) commitFloating(); // §32との整合: 保留中の変形は先に確定
+    const from = Number.isInteger(presetFrom) ? presetFrom : store.state.colorIndex;
+    fillColorReplaceSelect(colorReplaceFrom, from);
+    const toDefault = from === 0 ? 1 : 0;
+    fillColorReplaceSelect(colorReplaceTo, toDefault < project().palette.length ? toDefault : 0);
+    colorReplacePanel.hidden = false;
+  }
+  colorReplaceBtn.addEventListener("click", () => {
+    if (!colorReplacePanel.hidden) { colorReplacePanel.hidden = true; return; }
+    openColorReplacePanel();
+  });
+  colorReplaceCancelBtn.addEventListener("click", () => { colorReplacePanel.hidden = true; });
+  colorReplaceExecBtn.addEventListener("click", () => {
+    const fromIdx = Number(colorReplaceFrom.value);
+    const toIdx = Number(colorReplaceTo.value);
+    if (!Number.isInteger(fromIdx) || !Number.isInteger(toIdx)) return;
+    if (fromIdx === toIdx) { toast("元と先が同じ色です", "error"); return; }
+    const scopeAll = document.getElementById("colorReplaceScopeAll").checked;
+    const p = project();
+    if (floating) commitFloating();
+    store.pushUndo();
+    let changed = 0;
+    const frames = scopeAll ? p.frames : [p.frames[store.state.currentFrame]];
+    for (const f of frames) {
+      const px = f.pixels;
+      for (let i = 0; i < px.length; i++) {
+        if (px[i] === fromIdx) { px[i] = toIdx; changed++; }
+      }
+    }
+    store.notify();
+    colorReplacePanel.hidden = true;
+    toast(`色を置換しました（${changed}px・${scopeAll ? "全フレーム" : "現在フレーム"}）`);
   });
 
   // --- ブラシサイズ（§31.2）---
@@ -894,6 +1082,11 @@ export function initEditor(store, toast) {
         store.state.colorIndex = i;
         store.notify();
       });
+      // §34.1: スウォッチ右クリック→色置換パネルを開く（元=このスウォッチ）
+      sw.addEventListener("contextmenu", (ev) => {
+        ev.preventDefault();
+        openColorReplacePanel(i);
+      });
       sw.addEventListener("dblclick", () => {
         if (i === 0) {
           toast("index 0（透明）は色を変更できません");
@@ -939,6 +1132,48 @@ export function initEditor(store, toast) {
   });
 
   // ---------------------------------------------------------------------
+  // §34.4: オニオンスキン強化（前/前+次・不透明度・方向ティント）。
+  // 現在フレームを描画した後、globalCompositeOperation="destination-over" で
+  // 既存内容の「下」に焼くため、正しいz順（ゴーストは現在フレームの後ろ）を維持しつつ、
+  // mainCanvas はあくまで表示専用（書き出しは frameToPngDataUrl 等の別経路で
+  // project.pixels のみを読むため、このゴーストは混入しない）。
+  // ---------------------------------------------------------------------
+  const ONION_COOL_TINT = [90, 150, 255]; // 前フレーム=寒色
+  const ONION_WARM_TINT = [255, 150, 70]; // 次フレーム=暖色
+  const ONION_TINT_AMOUNT = 0.5;
+  function drawOnionGhost(p, frameIndex, tint, opacity, cellSize) {
+    const frame = p.frames[frameIndex];
+    if (!frame) return;
+    const pixels = frame.pixels;
+    const pal = p.palette;
+    for (let y = 0; y < p.height; y++) {
+      for (let x = 0; x < p.width; x++) {
+        const v = pixels[y * p.width + x];
+        const hex = pal[v];
+        if (!hex) continue;
+        let [r, g, b, a] = hexToRgba(hex);
+        if (a === 0) continue;
+        r = Math.round(r * (1 - ONION_TINT_AMOUNT) + tint[0] * ONION_TINT_AMOUNT);
+        g = Math.round(g * (1 - ONION_TINT_AMOUNT) + tint[1] * ONION_TINT_AMOUNT);
+        b = Math.round(b * (1 - ONION_TINT_AMOUNT) + tint[2] * ONION_TINT_AMOUNT);
+        ctx.fillStyle = `rgba(${r},${g},${b},${(opacity * (a / 255)).toFixed(3)})`;
+        ctx.fillRect(x * cellSize, y * cellSize, cellSize, cellSize);
+      }
+    }
+  }
+  function renderOnionGhosts(p, cellSize) {
+    const mode = store.state.onionMode;
+    if (mode !== "prev" && mode !== "both") return;
+    const cur = store.state.currentFrame;
+    const opacity = store.state.onionOpacity;
+    ctx.save();
+    ctx.globalCompositeOperation = "destination-over";
+    if (mode === "both") drawOnionGhost(p, cur + 1, ONION_WARM_TINT, opacity, cellSize);
+    drawOnionGhost(p, cur - 1, ONION_COOL_TINT, opacity, cellSize);
+    ctx.restore();
+  }
+
+  // ---------------------------------------------------------------------
   // 描画
   // ---------------------------------------------------------------------
   function render() {
@@ -949,7 +1184,8 @@ export function initEditor(store, toast) {
     canvas.style.width = canvas.width + "px";
     canvas.style.height = canvas.height + "px";
 
-    drawFrameToContext(ctx, p, store.state.currentFrame, cellSize, { onion: store.state.onionSkin });
+    drawFrameToContext(ctx, p, store.state.currentFrame, cellSize);
+    renderOnionGhosts(p, cellSize);
 
     // §32: フローティング（持ち上げ中の選択ピクセル）を合成表示。
     // コピー移動でなければ元領域を透明の「穴」として見せてから、フロートを上に描く。
@@ -1125,7 +1361,13 @@ export function initEditor(store, toast) {
     canvasSizeLabel.textContent = `${p.width} x ${p.height}`;
     lockCountEl.textContent = String((p.lockedRects || []).length);
     diffToggle.checked = store.state.diffView;
-    onionToggle.checked = store.state.onionSkin;
+    onionModeSelect.value = store.state.onionMode;
+    onionOpacityRange.value = String(Math.round(store.state.onionOpacity * 100));
+    onionOpacityLabel.textContent = `${Math.round(store.state.onionOpacity * 100)}%`;
+    gridToggle.checked = store.state.gridShow;
+    gridMajorSelect.value = String(store.state.gridMajor);
+    mirrorToggle.checked = store.state.mirrorDraw;
+    mirrorAxisInput.value = Number.isFinite(store.state.mirrorAxisX) ? String(store.state.mirrorAxisX) : "";
     zoomRange.value = String(store.state.zoom);
     zoomLabel.textContent = `${store.state.zoom}x`;
     toolButtons.forEach((btn) => btn.classList.toggle("is-active", btn.dataset.tool === store.state.tool));
