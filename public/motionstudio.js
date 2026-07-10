@@ -1483,6 +1483,15 @@ export function initMotionStudio(store, toast) {
     const n = session ? session.selected.length : 0;
     confirmBtn.disabled = !(session && !session.confirmed && n >= 1);
     if (selCount) selCount.textContent = `選択 ${n}件`;
+    // §44.2: フレーム由来でシードされたセッションは確定=置き換えなので、ボタン表記も変える
+    if (session && session.frameSeed) {
+      const scope = session.frameSeed.tagName ? `タグ「${session.frameSeed.tagName}」` : "全フレーム";
+      confirmBtn.textContent = "確定（選択順で置き換え）";
+      confirmBtn.title = `${scope}のフレーム${session.frameSeed.start}〜${session.frameSeed.end}を選択順の内容で置き換え（数が変われば増減）`;
+    } else {
+      confirmBtn.textContent = "確定（選択順にタイムラインへ追加）";
+      confirmBtn.title = "選択順にフレーム化してタイムライン末尾へ追加（タグ範囲=選択数）";
+    }
   }
 
   // ---------------------------------------------------------------------
