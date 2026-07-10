@@ -43,9 +43,17 @@ export function initSendGpt(store, toast) {
   }
 
   function close() { modal.hidden = true; }
+  let openedEpoch = -1; // §46: ダイアログを開いた時点のプロジェクト世代
   openBtn.addEventListener("click", () => {
     loadPrev();
+    openedEpoch = store.state.projectEpoch;
     modal.hidden = false;
+  });
+  // §46: 開いている間にプロジェクトが差し替わったら安全側で閉じる
+  // （書き出し自体はクリック時の store を読むので壊れないが、Aを送るつもりの
+  //   操作がBに化けるのを防ぐ）
+  store.subscribe(() => {
+    if (!modal.hidden && openedEpoch !== store.state.projectEpoch) close();
   });
   cancelBtn.addEventListener("click", close);
   closeBtn.addEventListener("click", close);

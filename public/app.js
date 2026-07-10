@@ -674,6 +674,10 @@ class Store {
       timelinePlaying: false,
       flashCells: new Map(), // "frame:x:y" -> expiry ms
       aiBusy: false,
+      // §46: プロジェクト世代。resetProject（新規/変換確定のプロジェクト化/JSON読込/
+      // ライブ同期の外部ロード/画像を開くショートカット）で増える。フレーム編集では不変。
+      // ギャラリーセッション等の「旧プロジェクト前提の状態」の失効判定に使う。
+      projectEpoch: 0,
     };
     this.undoStack = [];
     this.redoStack = [];
@@ -746,6 +750,7 @@ class Store {
     this.state.currentFrame = 0;
     this.state.selection = null;
     this.state.colorIndex = Math.min(1, project.palette.length - 1);
+    this.state.projectEpoch++; // §46: プロジェクト差し替え = 世代を進める
     this.notify();
   }
 }

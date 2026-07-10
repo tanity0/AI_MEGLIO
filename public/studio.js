@@ -589,6 +589,14 @@ function confirmStudio() {
   }
   // §44.1: 候補モード — プロジェクト化ではなく候補へ反映（スナップ/整列は呼び出し側=motionstudio が行う）
   if (candidateMode) {
+    // §46: 開いている間にプロジェクトが差し替わっていたら安全側（何も反映せず閉じる）
+    if (candidateMode.epoch !== store.state.projectEpoch) {
+      $("studioPanel").hidden = true;
+      candidateMode = null;
+      candidateAutoNote = "";
+      toast("プロジェクトが変わったため候補への反映を中止しました", "error");
+      return;
+    }
     const params = { ...knobs, ...(grid ? { grid: { ...grid } } : {}) };
     const cb = candidateMode.onApply;
     $("studioPanel").hidden = true;
@@ -732,7 +740,8 @@ export async function openStudio(dataUrl, savedParams = null) {
 // 解像度=プロジェクト高さ固定・色数=プロジェクトパレット数（確定時に呼び出し側でスナップ）。
 // opts = { convParams, autoTune()?: Promise, onApply(convResult, paramsSnapshot) }
 export async function openStudioForCandidate(dataUrl, opts) {
-  candidateMode = { onApply: opts.onApply, autoTune: opts.autoTune || null };
+  // §46: 開いた時点の世代を記録（差し替え後の確定を無効化するため）
+  candidateMode = { onApply: opts.onApply, autoTune: opts.autoTune || null, epoch: store.state.projectEpoch };
   candidateAutoNote = "";
   await loadSource(dataUrl);
   const p = store.state.project;
@@ -755,6 +764,16 @@ export async function openStudioForCandidate(dataUrl, opts) {
   fitView();
   await runConvert();
   renderCompare();
+}
+
+// §46: 候補モードのスタジオが開いたままプロジェクトが差し替わったときに
+// 呼び出し側（motionstudio）から安全に閉じる。通常モードのスタジオには触れない。
+export function cancelCandidateStudio() {
+  if (!candidateMode) return false;
+  $("studioPanel").hidden = true;
+  candidateMode = null;
+  candidateAutoNote = "";
+  return true;
 }
 
 export function initStudio(storeRef, toastRef) {

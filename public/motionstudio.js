@@ -2,7 +2,7 @@
 // 画像取り込み・N×K 生成（mode:"motionframe"）・反転コピー・部位合成のすべてを
 // 1つのプールに並べ、クリック選択の順番がそのままフレーム順。確定で選択順にタイムラインへ。
 import { streamEdit } from "./api.js";
-import { openStudioForCandidate } from "./studio.js"; // §44.1: 候補調整=スタジオ流用
+import { openStudioForCandidate, cancelCandidateStudio } from "./studio.js"; // §44.1: 候補調整=スタジオ流用 / §46: 差し替え時クローズ
 import { removeBackground, detectComponents, convertImage } from "./convert.js";
 import {
   frameToGridString,
@@ -1649,6 +1649,25 @@ export function initMotionStudio(store, toast) {
     modal.hidden = true;
   }
   closeBtn.addEventListener("click", closeModal);
+
+  // §46: プロジェクト差し替え（新規/変換確定/JSON読込/ライブ同期 = projectEpoch++）で
+  // 旧プロジェクト前提のセッションを破棄する。開いていたモーダル・merge パネル・
+  // §44 候補モードスタジオ・確定バーもクリア。受信箱バッジのポーリングは独立して
+  // いるため維持される（in/ のファイルはプロジェクト非依存・§46.2）。
+  // フレーム編集（epoch 不変）では何もしない。
+  function invalidateStaleSession() {
+    if (!session || session.epoch === store.state.projectEpoch) return false;
+    closeModal(); // merge/取り込みプレビュー/進行中生成/プレビュー再生を停止してモーダルを閉じる
+    cancelCandidateStudio(); // §44 候補モードのスタジオが開いたままなら安全に閉じる
+    session = null;
+    confirmedBar.hidden = true;
+    confirmedBar.innerHTML = "";
+    grid.innerHTML = "";
+    setIdleProgress();
+    toast("プロジェクトが変わったため候補をリセットしました");
+    return true;
+  }
+  store.subscribe(invalidateStaleSession);
   imageBtn.addEventListener("click", () => imageInput.click());
   imageInput.addEventListener("change", async () => {
     const file = imageInput.files?.[0];
@@ -1701,6 +1720,7 @@ export function initMotionStudio(store, toast) {
       selected: [],
       confirmed: false,
       frameSeed: null, // { tagIndex, tagName, start, end, candIds } | null
+      epoch: store.state.projectEpoch, // §46: 生成時のプロジェクト世代（差し替えで失効）
     };
     if (!seedFrames) return sess;
     const p = project();
@@ -1738,6 +1758,7 @@ export function initMotionStudio(store, toast) {
     }
     const total = Math.max(2, Math.min(12, Number(motionFrames.value) || 4));
     const k = Math.max(1, Math.min(4, Number(candCount.value) || 3));
+    invalidateStaleSession(); // §46: 差し替え後は旧セッションを引き継がない
     if (!session || session.confirmed) {
       session = newSession(false); // 生成から始めた新規セッションは従来どおり（末尾追加+新タグ）
       confirmedBar.hidden = true;
@@ -1770,6 +1791,7 @@ export function initMotionStudio(store, toast) {
   // 既にセッションがあれば（確定済み含む）プール・選択状態を保持して再表示。
   // ---------------------------------------------------------------------
   function openGalleryWithoutGeneration() {
+    invalidateStaleSession(); // §46: 差し替え後の初回オープンでも確実に作り直す
     if (!session) {
       session = newSession(true); // §44.2: 既存フレームで初期化
       confirmedBar.hidden = true;
