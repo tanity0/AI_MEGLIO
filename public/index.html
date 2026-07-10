@@ -549,6 +549,10 @@
         <label class="form-row inline">背景除去閾値 <input id="mcImportBg" type="range" min="8" max="120" step="1" value="48"></label>
         <label class="form-row inline">フチ光彩除去 <input id="mcImportGlow" type="range" min="0" max="3" step="1" value="0"></label>
         <button id="mcImportReconvertBtn" class="btn btn-small">この設定で変換し直す</button>
+        <!-- §43-3: 自動調整トグル（既定ON・localStorage）。ONなら取り込み確定時に各コマをチューニング -->
+        <label class="check-row inline" title="取り込み確定時、各コマの変換つまみ（背景除去閾値・フチ光彩・輪郭/彩度保護）を元絵に一番近い見栄えになる値へ自動探索します（1コマ最大40変換・§43）">
+          <input type="checkbox" id="mcAutoTuneToggle" checked> 自動調整
+        </label>
       </div>
       <div id="mcImportGrid" class="mc-import-grid"></div>
       <div class="ai-actions">
@@ -574,6 +578,7 @@
       </div>
       <div id="mcAdjustStatus" class="hint" aria-live="polite"></div>
       <div class="ai-actions">
+        <button id="mcAdjustAutoBtn" class="btn btn-small" title="このコマだけ変換つまみを再探索して最良値をセットします（元絵との近さスコアで評価・以降は手で微調整可・§43）">自動</button>
         <button id="mcAdjustApplyBtn" class="btn btn-small btn-accent">適用</button>
         <button id="mcAdjustCancelBtn" class="btn btn-small">キャンセル</button>
       </div>

@@ -128,6 +128,7 @@ export function initMotionStudio(store, toast) {
   const adjustStatus = document.getElementById("mcAdjustStatus");
   const adjustApplyBtn = document.getElementById("mcAdjustApplyBtn");
   const adjustCancelBtn = document.getElementById("mcAdjustCancelBtn");
+  const adjustAutoBtn = document.getElementById("mcAdjustAutoBtn"); // §43-3: このコマだけ再探索
 
   function project() { return store.state.project; }
 
@@ -320,17 +321,22 @@ export function initMotionStudio(store, toast) {
     return best;
   }
 
-  // 変換結果（独自パレット）をプロジェクトパレットへスナップし、
-  // フルキャンバスへ配置して足元・重心で整列した Uint8Array を返す
-  function snapAndAlign(conv) {
+  // conv.palette[i] → プロジェクトパレットindex の対応表（§25.6 スナップ・§43 スコアで共用）
+  function projectSnapMap(convPalette) {
     const p = project();
     const rgb = p.palette.map((hex) => hexToRgba(hex));
-    // conv.palette[i] → プロジェクトindex の対応表
-    const map = conv.palette.map((hex, i) => {
+    return convPalette.map((hex, i) => {
       if (i === 0) return 0;
       const [r, g, b] = hexToRgba(hex);
       return nearestPaletteIndex(rgb, r, g, b);
     });
+  }
+
+  // 変換結果（独自パレット）をプロジェクトパレットへスナップし、
+  // フルキャンバスへ配置して足元・重心で整列した Uint8Array を返す
+  function snapAndAlign(conv) {
+    const p = project();
+    const map = projectSnapMap(conv.palette);
     const full = new Uint8Array(p.width * p.height);
     // まず中央/下寄せで仮配置
     const ox0 = Math.floor((p.width - conv.width) / 2);
@@ -429,22 +435,238 @@ export function initMotionStudio(store, toast) {
     return ctx.getImageData(0, 0, bmp.width, bmp.height);
   }
 
-  // srcRegion から params（bgThreshold/glowWidth/edgeProtect/satProtect/cellDelta）で再変換し、
-  // §25.6 と同じパイプラインでプロジェクトパレットへスナップ・整列した { srcPixels, offset } を返す
-  async function reconvertFromRegion(srcRegionUrl, params) {
+  // region（ImageData 相当）を params で §25.6 パイプラインの変換フェーズまで実行（整列なし）
+  function convertRegion(region, params) {
     const p = project();
-    const region = await dataUrlToImageData(srcRegionUrl);
     const bg = removeBackground(region.data, region.width, region.height, {
       threshold: params.bgThreshold, glowWidth: params.glowWidth,
     });
     const targetH = Math.max(2, p.height + (params.cellDelta || 0));
-    const conv = convertImage(bg, region.width, region.height, {
+    return convertImage(bg, region.width, region.height, {
       targetH,
       colors: Math.min(64, Math.max(2, p.palette.length - 1)),
       edgeProtect: params.edgeProtect,
       satProtect: params.satProtect,
     });
-    return snapAndAlign(conv);
+  }
+
+  // srcRegion から params（bgThreshold/glowWidth/edgeProtect/satProtect/cellDelta）で再変換し、
+  // §25.6 と同じパイプラインでプロジェクトパレットへスナップ・整列した { srcPixels, offset } を返す
+  async function reconvertFromRegion(srcRegionUrl, params) {
+    const region = await dataUrlToImageData(srcRegionUrl);
+    return snapAndAlign(convertRegion(region, params));
+  }
+
+  // ---------------------------------------------------------------------
+  // §43: 取り込み時の自動調整（フレーム別オートチューニング）
+  // srcRegion→変換→srcRegionサイズへ最近傍拡大→元クロップと比較のスコアで
+  // つまみ（bgThreshold/glowWidth/edgeProtect/satProtect）を二段階全探索する。
+  // ---------------------------------------------------------------------
+  // §43.1 スコアの重み（低いほど良い）。gunman 実素材（白背景+紫グロー縁・480x700）と
+  // 人工素材（純色キャラ+ノイズ背景）でチューニングした根拠:
+  //  - COLOR(1.0): 再構成が前景と主張する画素の平均色距離。パレット近似の粗さに加え、
+  //    背景の取り込みすぎ（背景色がキャラ色へ強制スナップされ大距離になる）を検出する主項。
+  //  - EDGE(0.6): 簡易エッジ（隣接輝度差）の Dice 一致率。グロー縁の余計な輪郭や
+  //    輪郭の欠けに反応する。色項より弱く（エッジはセル境界の量子化で常に部分一致のため）。
+  //  - MISS(2.0): 「明らかにキャラ」（背景色から色距離90超）の画素が透明化された率。
+  //    背景除去のしすぎ＝欠けは見た目に最も致命的なので最大の重み。
+  //  - RESIDUE(1.0): 「明らかに背景」（背景色から色距離20以下 or 元から透明）の画素が
+  //    前景として残った率。残りは欠けより修正しやすいので MISS の半分。
+  const TUNE_W = { COLOR: 1.0, EDGE: 0.6, MISS: 2.0, RESIDUE: 1.0 };
+  const TUNE_BG_STEPS = [16, 32, 48, 64, 88, 112]; // 粗探索6点（§43.2）
+  const TUNE_GLOW_STEPS = [0, 1, 2];
+  const TUNE_EDGE_STEPS = [0, 0.3, 0.6];
+  const TUNE_SAT_STEPS = [0.2, 0.5, 0.8];
+  const TUNE_MAX_EVALS = 40; // 1コマあたりの変換回数上限（§43.2）
+  let tuneDelayMs = 0; // テスト用: 1変換ごとの遅延（キャンセル検証を決定的にする）
+
+  // 元クロップの前処理（1コマにつき1回）: 背景色推定・強前景/強背景マスク・簡易エッジ
+  function prepScoreRegion(region) {
+    const { data, width: w, height: h } = region;
+    // 背景色 = 外周の不透明画素の最頻色（removeBackground と同じ発想の16段量子化）
+    const counts = new Map();
+    const consider = (x, y) => {
+      const o = (y * w + x) * 4;
+      if (data[o + 3] < 32) return;
+      const key = `${data[o] >> 4},${data[o + 1] >> 4},${data[o + 2] >> 4}`;
+      const e = counts.get(key) || { n: 0, r: 0, g: 0, b: 0 };
+      e.n++; e.r += data[o]; e.g += data[o + 1]; e.b += data[o + 2];
+      counts.set(key, e);
+    };
+    for (let x = 0; x < w; x++) { consider(x, 0); consider(x, h - 1); }
+    for (let y = 0; y < h; y++) { consider(0, y); consider(w - 1, y); }
+    let bgEntry = null;
+    for (const e of counts.values()) if (!bgEntry || e.n > bgEntry.n) bgEntry = e;
+    const bg = bgEntry ? [bgEntry.r / bgEntry.n, bgEntry.g / bgEntry.n, bgEntry.b / bgEntry.n] : null;
+
+    const strongFg = new Uint8Array(w * h);
+    const strongBg = new Uint8Array(w * h);
+    const lum = new Float32Array(w * h);
+    let strongFgN = 0, strongBgN = 0;
+    for (let i = 0; i < w * h; i++) {
+      const o = i * 4;
+      const a = data[o + 3];
+      if (a < 32) {
+        strongBg[i] = 1; strongBgN++;
+        lum[i] = -1000; // 透明は輝度の番兵（不透明との境界を必ずエッジにする）
+        continue;
+      }
+      lum[i] = 0.299 * data[o] + 0.587 * data[o + 1] + 0.114 * data[o + 2];
+      if (!bg) {
+        if (a >= 128) { strongFg[i] = 1; strongFgN++; }
+        continue;
+      }
+      const d = Math.hypot(data[o] - bg[0], data[o + 1] - bg[1], data[o + 2] - bg[2]);
+      if (d > 90) { strongFg[i] = 1; strongFgN++; }
+      else if (d <= 20) { strongBg[i] = 1; strongBgN++; }
+    }
+    // 簡易エッジ: 右/下隣との輝度差 > 40
+    const edges = new Uint8Array(w * h);
+    let edgeN = 0;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x;
+        if ((x + 1 < w && Math.abs(lum[i] - lum[i + 1]) > 40)
+          || (y + 1 < h && Math.abs(lum[i] - lum[i + w]) > 40)) { edges[i] = 1; edgeN++; }
+      }
+    }
+    return { bg, strongFg, strongFgN, strongBg, strongBgN, edges, edgeN };
+  }
+
+  // §43.1: 変換結果を最近傍で srcRegion サイズへ拡大し、元クロップと比較（低いほど良い）
+  function scoreRecon(region, prep, conv) {
+    const p = project();
+    const { data, width: w, height: h } = region;
+    const rgbLUT = p.palette.map((hex) => hexToRgba(hex));
+    const map = projectSnapMap(conv.palette);
+    const cs = conv.srcCellSize, gx0 = conv.originX, gy0 = conv.originY;
+    // 再構成: 各元画素 → conv セル → プロジェクトパレットindex（0=透明）
+    const recon = new Int16Array(w * h);
+    for (let y = 0; y < h; y++) {
+      const cy = Math.floor((y - gy0) / cs);
+      for (let x = 0; x < w; x++) {
+        const cx = Math.floor((x - gx0) / cs);
+        let idx = 0;
+        if (cx >= 0 && cy >= 0 && cx < conv.width && cy < conv.height) idx = map[conv.pixels[cy * conv.width + cx]];
+        recon[y * w + x] = idx;
+      }
+    }
+    let colorSum = 0, colorN = 0, missN = 0, resN = 0;
+    for (let i = 0; i < w * h; i++) {
+      const idx = recon[i];
+      if (idx > 0) {
+        const c = rgbLUT[idx];
+        const o = i * 4;
+        colorSum += Math.hypot(data[o] - c[0], data[o + 1] - c[1], data[o + 2] - c[2]);
+        colorN++;
+        if (prep.strongBg[i]) resN++;
+      } else if (prep.strongFg[i]) {
+        missN++;
+      }
+    }
+    // 再構成エッジ: 右/下隣とセル値が変わる位置。元エッジとの Dice 一致率
+    let reconEdgeN = 0, inter = 0;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x;
+        const e = (x + 1 < w && recon[i] !== recon[i + 1]) || (y + 1 < h && recon[i] !== recon[i + w]);
+        if (e) { reconEdgeN++; if (prep.edges[i]) inter++; }
+      }
+    }
+    const dice = (prep.edgeN + reconEdgeN) > 0 ? (2 * inter) / (prep.edgeN + reconEdgeN) : 1;
+    const colorTerm = colorN ? colorSum / colorN / 441.7 : 1; // 最大RGB距離√(3·255²)で正規化
+    const missTerm = prep.strongFgN ? missN / prep.strongFgN : 0;
+    const resTerm = prep.strongBgN ? resN / prep.strongBgN : 0;
+    return TUNE_W.COLOR * colorTerm + TUNE_W.EDGE * (1 - dice) + TUNE_W.MISS * missTerm + TUNE_W.RESIDUE * resTerm;
+  }
+
+  // §43.2 キャッシュ: srcRegion（+パレット）→ paramKey → score。直近8リージョンのみ保持
+  const tuneCache = new Map();
+  function tuneCacheFor(regionUrl) {
+    const key = `${regionUrl}::${project().palette.join(",")}`;
+    if (!tuneCache.has(key)) {
+      if (tuneCache.size >= 8) tuneCache.delete(tuneCache.keys().next().value);
+      tuneCache.set(key, new Map());
+    }
+    return tuneCache.get(key);
+  }
+
+  // §43.2: 二段階全探索。戻り値 { params, score, defaultScore, evals }
+  // flag.aborted=true で中断（その時点のベストを返す）
+  async function autoTuneRegion(srcRegionUrl, opts = {}) {
+    const region = await dataUrlToImageData(srcRegionUrl);
+    const prep = prepScoreRegion(region);
+    const cache = tuneCacheFor(srcRegionUrl);
+    const cellDelta = opts.cellDelta || 0;
+    let evals = 0;
+    const evalParams = async (bgT, glow, edge, sat) => {
+      const key = `${bgT}|${glow}|${edge}|${sat}|${cellDelta}`;
+      if (cache.has(key)) return cache.get(key);
+      if (evals >= TUNE_MAX_EVALS) return null; // 上限ガード（§43.2）
+      evals++;
+      let score = Infinity;
+      try {
+        const conv = convertRegion(region, { bgThreshold: bgT, glowWidth: glow, edgeProtect: edge, satProtect: sat, cellDelta });
+        score = scoreRecon(region, prep, conv);
+      } catch { /* 不透明画素なし等 → そのパラメータは不採用 */ }
+      const entry = { params: { bgThreshold: bgT, glowWidth: glow, edgeProtect: edge, satProtect: sat, cellDelta }, score };
+      cache.set(key, entry);
+      if (tuneDelayMs > 0) await new Promise((r) => setTimeout(r, tuneDelayMs));
+      else await new Promise((r) => setTimeout(r, 0)); // UIへ譲る（非同期・§43.2）
+      return entry;
+    };
+    const d = defaultConvParams();
+    const results = [];
+    // 一段目: bgThreshold × glowWidth（edge/sat は既定値）
+    for (const bgT of TUNE_BG_STEPS) {
+      for (const glow of TUNE_GLOW_STEPS) {
+        if (opts.flag?.aborted) break;
+        const r = await evalParams(bgT, glow, d.edgeProtect, d.satProtect);
+        if (r) results.push(r);
+      }
+      if (opts.flag?.aborted) break;
+    }
+    // 既定値のスコア（レポート用・一段目に含まれる）
+    const defEntry = cache.get(`${d.bgThreshold}|${d.glowWidth}|${d.edgeProtect}|${d.satProtect}|${cellDelta}`);
+    // 二段目: 上位2つに対し edgeProtect × satProtect を粗く
+    const top = [...results].sort((a, b) => a.score - b.score).slice(0, 2);
+    for (const t of top) {
+      for (const edge of TUNE_EDGE_STEPS) {
+        for (const sat of TUNE_SAT_STEPS) {
+          if (opts.flag?.aborted) break;
+          const r = await evalParams(t.params.bgThreshold, t.params.glowWidth, edge, sat);
+          if (r) results.push(r);
+        }
+        if (opts.flag?.aborted) break;
+      }
+      if (opts.flag?.aborted) break;
+    }
+    let best = null;
+    for (const r of results) if (r.score !== Infinity && (!best || r.score < best.score)) best = r;
+    if (!best) best = { params: { ...d, cellDelta }, score: Infinity };
+    return {
+      params: { ...best.params },
+      score: best.score,
+      defaultScore: defEntry ? defEntry.score : Infinity,
+      evals,
+      aborted: !!opts.flag?.aborted,
+    };
+  }
+
+  // 候補1つを自動調整: 最良パラメータで再変換し、ナッジ差分を維持して反映（§41 と同じ規約）
+  async function tuneCandidate(cand, opts = {}) {
+    if (!cand.srcRegion) return null;
+    const res = await autoTuneRegion(cand.srcRegion, { ...opts, cellDelta: cand.convParams?.cellDelta || 0 });
+    if (res.score === Infinity) return res; // 全滅（変換不能）→ 何もしない
+    const { srcPixels, offset: autoOffset } = await reconvertFromRegion(cand.srcRegion, res.params);
+    const nudgeDx = (cand.offset && cand.autoOffset) ? cand.offset.dx - cand.autoOffset.dx : 0;
+    const nudgeDy = (cand.offset && cand.autoOffset) ? cand.offset.dy - cand.autoOffset.dy : 0;
+    cand.srcPixels = srcPixels;
+    cand.autoOffset = autoOffset;
+    cand.offset = { dx: autoOffset.dx + nudgeDx, dy: autoOffset.dy + nudgeDy };
+    cand.pixels = shiftPixels(srcPixels, cand.offset.dx, cand.offset.dy);
+    cand.convParams = { ...res.params };
+    return res;
   }
 
   async function addImageCandidates(file, opts = {}) {
@@ -557,6 +779,11 @@ export function initMotionStudio(store, toast) {
   const importBgInput = document.getElementById("mcImportBg");
   const importGlowInput = document.getElementById("mcImportGlow");
   const importReconvertBtn = document.getElementById("mcImportReconvertBtn");
+  const autoTuneToggle = document.getElementById("mcAutoTuneToggle"); // §43-3: 既定ON・localStorage 保持
+  autoTuneToggle.checked = localStorage.getItem("mcAutoTune") !== "0";
+  autoTuneToggle.addEventListener("change", () => {
+    localStorage.setItem("mcAutoTune", autoTuneToggle.checked ? "1" : "0");
+  });
   let importPreviewAbort = null; // モーダルを閉じたとき保留中のプレビューをキャンセル解決する
 
   function showImportPreview(prepared) {
@@ -625,16 +852,42 @@ export function initMotionStudio(store, toast) {
       function cleanup() {
         importPreviewPanel.hidden = true;
         importPreviewAbort = null;
+        importOkBtn.disabled = false;
+        importCancelBtn.textContent = "キャンセル";
         importOkBtn.removeEventListener("click", onOk);
         importCancelBtn.removeEventListener("click", onCancel);
         importReconvertBtn.removeEventListener("click", onReconvert);
       }
-      function onOk() {
+      // §43-3: 「自動調整」ON なら取り込み確定時に各コマをチューニングしてから候補化。
+      // チューニング中の「自動調整を中断」は残りコマをスキップして取り込みを続行する。
+      let tuning = false;
+      const tuneFlag = { aborted: false };
+      async function onOk() {
+        if (tuning) return;
         const picked = prepared.filter((_, idx) => checks[idx].checked);
+        if (autoTuneToggle.checked && picked.length) {
+          tuning = true;
+          importOkBtn.disabled = true;
+          importReconvertBtn.disabled = true;
+          importCancelBtn.textContent = "自動調整を中断";
+          for (let i = 0; i < picked.length; i++) {
+            if (tuneFlag.aborted) break;
+            progress.textContent = `自動調整中… ${i + 1}/${picked.length}コマ`;
+            importOkBtn.textContent = `自動調整中… ${i + 1}/${picked.length}コマ`;
+            try {
+              await tuneCandidate(picked[i].cand, { flag: tuneFlag });
+              renderThumb(prepared.indexOf(picked[i])); // サムネイルにも反映（§43-3）
+            } catch { /* 変換不能コマは現状維持 */ }
+          }
+          if (tuneFlag.aborted) toast("自動調整を中断しました（残りのコマは現在の設定で取り込みます）");
+          importReconvertBtn.disabled = false;
+          tuning = false;
+        }
         cleanup();
         resolve(picked);
       }
       function onCancel() {
+        if (tuning) { tuneFlag.aborted = true; return; } // 中断 → 取り込み自体は継続
         cleanup();
         resolve(null);
       }
@@ -1027,7 +1280,7 @@ export function initMotionStudio(store, toast) {
       const pixels = shiftPixels(srcPixels, offset.dx, offset.dy);
       adjust.preview = { srcPixels, autoOffset, offset, pixels };
       drawCand(adjustCanvas, pixels, adjust.cand);
-      adjustStatus.textContent = "";
+      adjustStatus.textContent = adjust.autoNote || ""; // §43: 自動調整の結果表示は保持
     } catch (err) {
       if (gen !== adjustGen || !adjust) return;
       adjustStatus.textContent = `変換に失敗: ${err.message}`;
@@ -1035,7 +1288,10 @@ export function initMotionStudio(store, toast) {
     }
   }
   for (const el of [adjustBg, adjustGlow, adjustEdge, adjustSat, adjustCell]) {
-    el.addEventListener("input", scheduleAdjustPreview);
+    el.addEventListener("input", () => {
+      if (adjust) adjust.autoNote = null; // 手動操作で自動調整の表示を解除
+      scheduleAdjustPreview();
+    });
   }
   adjustApplyBtn.addEventListener("click", () => {
     if (!adjust || !adjust.preview) { closeAdjust(); return; }
@@ -1050,6 +1306,33 @@ export function initMotionStudio(store, toast) {
     toast("候補を再変換しました（プロジェクトパレットへスナップ+整列済み・ナッジは維持）");
   });
   adjustCancelBtn.addEventListener("click", closeAdjust);
+  // §43-3: 「自動」— このコマだけ再探索して最良値をつまみにセット（以降は手で微調整可）
+  adjustAutoBtn.addEventListener("click", async () => {
+    if (!adjust) return;
+    const cand = adjust.cand;
+    adjustAutoBtn.disabled = true;
+    adjustStatus.textContent = "自動調整中…";
+    try {
+      const res = await autoTuneRegion(cand.srcRegion, { cellDelta: Number(adjustCell.value) || 0 });
+      if (!adjust || adjust.cand !== cand) return; // 探索中に閉じられた/切り替えられた
+      if (res.score === Infinity) {
+        adjustStatus.textContent = "自動調整: 有効なパラメータが見つかりませんでした";
+        return;
+      }
+      adjustBg.value = String(res.params.bgThreshold);
+      adjustGlow.value = String(res.params.glowWidth);
+      adjustEdge.value = String(res.params.edgeProtect);
+      adjustSat.value = String(res.params.satProtect);
+      adjust.autoNote =
+        `自動調整: スコア ${res.defaultScore.toFixed(3)} → ${res.score.toFixed(3)}（低いほど元絵に近い・${res.evals}回変換）。手でさらに微調整できます`;
+      adjustStatus.textContent = adjust.autoNote;
+      scheduleAdjustPreview(); // ライブプレビュー＋「適用」で convParams に入る
+    } catch (err) {
+      if (adjust && adjust.cand === cand) adjustStatus.textContent = `自動調整に失敗: ${err.message}`;
+    } finally {
+      adjustAutoBtn.disabled = false;
+    }
+  });
 
   // ---------------------------------------------------------------------
   // §25.6-4.5/§25.8: GPT依頼キット（out/ へ reference.png + prompt.txt・依頼文はクリップボードにも）
@@ -1421,6 +1704,15 @@ export function initMotionStudio(store, toast) {
         autoOffset: { ...adjust.preview.autoOffset },
       } : null,
     } : null),
+    // §43 検証用: 自動調整（探索）とスコア関数を直接叩く
+    autoTuneRegion: (url, opts) => autoTuneRegion(url, opts || {}),
+    async scoreRegionParams(url, params) {
+      const region = await dataUrlToImageData(url);
+      const prep = prepScoreRegion(region);
+      const conv = convertRegion(region, { ...defaultConvParams(), ...params });
+      return scoreRecon(region, prep, conv);
+    },
+    setTuneDelay(ms) { tuneDelayMs = ms; }, // キャンセル検証を決定的にするための遅延注入
   };
 
   // §42: 新しい空セッション（プールモデル）
