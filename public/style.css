@@ -257,6 +257,12 @@ aside, #canvasPanel {
 /* ---------- §38 フォルダへ保存（隣接する小ボタン） ---------- */
 .btn-folder { padding-left: 6px; padding-right: 6px; margin-left: -4px; }
 
+/* ---------- §36 GPTへ送るダイアログ ---------- */
+.sg-modal { max-width: 460px; display: flex; flex-direction: column; gap: 10px; }
+.sg-modal .form-row { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-1); }
+.sg-modal .sg-custom-row input { flex: 1; }
+#sgTotal { width: 64px; }
+
 /* ---------- §35 レイヤーパネル ---------- */
 #layerSection { margin-top: 10px; }
 #layerSection > summary { cursor: pointer; list-style: revert; }

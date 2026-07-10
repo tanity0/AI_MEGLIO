@@ -34,6 +34,7 @@
     <label class="check-row inline" title="GIFのフレーム列を往復展開して書き出す（端の重複なし）"><input type="checkbox" id="gifPingpongChk"> ピンポン</label>
     <label class="check-row inline" title="サーバー保存・書き出し完了後に保存先フォルダをOSのファイラーで自動で開く（§38・OFFで開かない）"><input type="checkbox" id="autoOpenFolderChk" checked> 保存後にフォルダを開く</label>
     <span class="header-sep" aria-hidden="true"></span>
+    <button id="sendToGptBtn" class="btn" title="現在フレーム（レイヤー合成済み）を gpt-exchange/out/ に書き出し、ChatGPT に渡す依頼キットを作る（§36）">GPTへ送る</button>
     <label class="check-row inline" title="共有ファイル live_project.json とGUIを同期。Codexがファイルを書き換えると自動で反映されます（§29）"><input type="checkbox" id="liveSyncToggle"> ライブ同期</label>
     <button id="liveSaveBtn" class="btn" title="現在のプロジェクトを共有ファイル live_project.json に書き戻す（Codexが続きを読める）" hidden>ライブ保存</button>
     <span id="liveSyncStatus" class="live-sync-status" hidden></span>
@@ -645,6 +646,33 @@
     <div class="ai-actions">
       <button id="crApplyBtn" class="btn btn-accent">適用</button>
       <button id="crCancelBtn" class="btn">キャンセル</button>
+    </div>
+  </div>
+</div>
+
+<!-- §36: 「GPTへ送る」ダイアログ（現在フレーム -> gpt-exchange/out/） -->
+<div id="sendGptModal" class="modal-overlay" hidden>
+  <div class="modal sg-modal">
+    <div class="modal-head">
+      <h2>GPTへ送る（gpt-exchange/out/）</h2>
+      <button id="sgCloseBtn" class="btn btn-small">閉じる</button>
+    </div>
+    <label class="form-row">動き
+      <select id="sgPreset">
+        <option value="walk">歩き</option>
+        <option value="run">走り</option>
+        <option value="attack">攻撃</option>
+        <option value="idle">待機</option>
+        <option value="jump">ジャンプ</option>
+        <option value="custom">カスタム</option>
+      </select>
+    </label>
+    <label class="form-row">コマ数 <input id="sgTotal" type="number" min="2" max="12" step="1" value="4"></label>
+    <label class="form-row sg-custom-row">補足指示 <input id="sgCustom" type="text" maxlength="500" placeholder="任意（カスタム時は動きの内容を書く）"></label>
+    <div class="hint">現在フレーム（レイヤー合成済み・8倍拡大）を reference.png として、依頼文 prompt.txt と ChatGPT Work 用の work_instruction.txt を out/ に書き出します。prompt.txt はクリップボードにもコピーされます。生成画像は gpt-exchange/in/ に保存すると自動で候補スタジオに取り込まれます（§25.8）。</div>
+    <div class="ai-actions">
+      <button id="sgExportBtn" class="btn btn-accent">書き出し</button>
+      <button id="sgCancelBtn" class="btn">キャンセル</button>
     </div>
   </div>
 </div>

@@ -12,6 +12,7 @@ import { initMotionStudio } from "./motionstudio.js";
 import { initHelp } from "./help.js";
 import { initCanvasResize } from "./canvasresize.js"; // §28 キャンバスのリサイズ
 import { initLiveSync } from "./livesync.js"; // §29 ライブプロジェクト同期
+import { initSendGpt } from "./sendgpt.js"; // §36 「GPTへ送る」
 
 // ---------------------------------------------------------------------------
 // テキストグリッド文字割当て（サーバー側 server.js と同一の規則）
@@ -1073,6 +1074,7 @@ function main() {
   initMotionStudio(store, toast); // §25 モーション候補スタジオ
   initCanvasResize(store, toast); // §28 キャンバスのリサイズ
   initLiveSync(store, toast); // §29 ライブプロジェクト同期
+  initSendGpt(store, toast); // §36 「GPTへ送る」ワンクリック
   initHelp();
   initBackendLabel();
   store.notify();

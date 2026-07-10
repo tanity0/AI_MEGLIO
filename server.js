@@ -2100,6 +2100,8 @@ async function handleApiConfig(req, res) {
     redrawMaxCells: REDRAW_MAX_CELLS, // §22.6-3
     exportEnabled: !!EXPORT_ROOT,
     exportRoot: EXPORT_ROOT || null,
+    exchangeOut: EXCHANGE_OUT, // §36: work_instruction の実パス表記用
+    exchangeIn: EXCHANGE_IN,
     version: APP_VERSION, // §24: フッター表示用
     commit: APP_COMMIT || null,
   });
@@ -2180,6 +2182,8 @@ async function handleExchangeKit(req, res) {
   }
   const customText = typeof body.customText === "string" ? body.customText.slice(0, 500) : "";
   const styleGuide = typeof body.styleGuide === "string" ? body.styleGuide.slice(0, 4000) : "";
+  // §36: ChatGPT Work 貼り付け用の作業指示（任意・クライアントがダイアログから組み立てる）
+  const workInstruction = typeof body.workInstruction === "string" ? body.workInstruction.slice(0, 2000) : "";
   const label = PRESET_LABELS[preset] || preset;
   const lines = [
     `以下の参照画像のドット絵キャラクターの「${label}」アニメーションを、横一列のスプライトシート1枚の画像として描いてください。`,
@@ -2205,7 +2209,13 @@ async function handleExchangeKit(req, res) {
     await fs.mkdir(EXCHANGE_OUT, { recursive: true });
     await fs.writeFile(path.join(EXCHANGE_OUT, "reference.png"), Buffer.from(b64, "base64"));
     await fs.writeFile(path.join(EXCHANGE_OUT, "prompt.txt"), promptText);
-    const out = JSON.stringify({ ok: true, dir: EXCHANGE_OUT, files: ["reference.png", "prompt.txt"], promptText });
+    const files = ["reference.png", "prompt.txt"];
+    if (workInstruction) {
+      // §36: work_instruction.txt（ChatGPT Work に貼る1行。無指定なら書かない=既存キットの挙動不変）
+      await fs.writeFile(path.join(EXCHANGE_OUT, "work_instruction.txt"), workInstruction);
+      files.push("work_instruction.txt");
+    }
+    const out = JSON.stringify({ ok: true, dir: EXCHANGE_OUT, files, promptText, workInstruction: workInstruction || null });
     res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Content-Length": Buffer.byteLength(out) });
     res.end(out);
     console.log(`[exchange] キットを書き出しました: ${EXCHANGE_OUT}`);
