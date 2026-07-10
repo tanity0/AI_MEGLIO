@@ -412,7 +412,8 @@ export function initMotionStudio(store, toast) {
       if (ans === null) return 0;
       startFrame = Math.max(1, Math.min(session.total, Number(ans) || 1)) - 1;
     }
-    let added = 0;
+    // 変換フェーズ: セッションにはまだ入れず、コマごとの変換結果を組み立てる
+    const prepared = [];
     for (let k = 0; k < comps.length; k++) {
       const fi = startFrame + k;
       if (fi >= session.total) break;
@@ -436,11 +437,38 @@ export function initMotionStudio(store, toast) {
       }
       const { srcPixels, offset } = snapAndAlign(conv);
       const cand = {
-        id: session.nextId++, status: "ok", variant: session.cands[fi].length,
         source: "image", snapped: true, aligned: true, srcPixels, offset,
       };
       applyOffset(cand); // §25.9-1: pixels = srcPixels + offset（ナッジで再適用）
-      session.cands[fi].push(cand);
+      prepared.push({ fi, k, cand });
+    }
+    if (!prepared.length) {
+      if (!opts.quiet) toast("候補を追加できませんでした", "error");
+      return 0;
+    }
+    // §39-4: 取り込みプレビュー（拾わないコマをチェックで外す）。
+    // gpt-exchange の in/ 自動取り込み（opts.startFrame 指定）は従来どおり全取り込み（自動性優先）。
+    let selected = prepared;
+    if (!Number.isInteger(opts.startFrame)) {
+      selected = await showImportPreview(prepared);
+      if (selected === null) {
+        if (!opts.quiet) toast("取り込みをキャンセルしました");
+        return 0;
+      }
+      if (!selected.length) {
+        if (!opts.quiet) toast("取り込むコマが選ばれていません", "error");
+        return 0;
+      }
+    }
+    let added = 0;
+    for (const item of selected) {
+      const cand = {
+        ...item.cand,
+        id: session.nextId++,
+        status: "ok",
+        variant: session.cands[item.fi].length,
+      };
+      session.cands[item.fi].push(cand);
       added++;
     }
     renderGrid();
@@ -448,6 +476,63 @@ export function initMotionStudio(store, toast) {
       toast(added ? `画像から${added}個の候補を追加しました（パレットスナップ+足元/重心整列済み）` : "候補を追加できませんでした", added ? "info" : "error");
     }
     return added;
+  }
+
+  // ---------------------------------------------------------------------
+  // §39-4: 取り込みプレビュー — サムネイル+チェックボックス（既定=全チェック）。
+  // 「取り込む(N)」で選択分を返し、「キャンセル」で null。単一コマ画像でも同UI。
+  // ---------------------------------------------------------------------
+  const importPreviewPanel = document.getElementById("mcImportPreview");
+  const importPreviewGrid = document.getElementById("mcImportGrid");
+  const importOkBtn = document.getElementById("mcImportOkBtn");
+  const importCancelBtn = document.getElementById("mcImportCancelBtn");
+  let importPreviewAbort = null; // モーダルを閉じたとき保留中のプレビューをキャンセル解決する
+
+  function showImportPreview(prepared) {
+    const p = project();
+    return new Promise((resolve) => {
+      importPreviewGrid.innerHTML = "";
+      const checks = [];
+      for (const item of prepared) {
+        const cell = document.createElement("label");
+        cell.className = "mc-import-cell";
+        const chk = document.createElement("input");
+        chk.type = "checkbox";
+        chk.checked = true; // 既定=全チェック
+        const img = document.createElement("img");
+        img.src = pixelsToPngDataUrl(item.cand.pixels, p.width, p.height, p.palette, 4);
+        img.alt = `コマ${item.k + 1}`;
+        const cap = document.createElement("span");
+        cap.textContent = `コマ${item.k + 1} → 第${item.fi + 1}フレーム`;
+        cell.append(chk, img, cap);
+        importPreviewGrid.appendChild(cell);
+        checks.push(chk);
+        chk.addEventListener("change", updateCount);
+      }
+      function updateCount() {
+        importOkBtn.textContent = `取り込む(${checks.filter((c) => c.checked).length})`;
+      }
+      updateCount();
+      function cleanup() {
+        importPreviewPanel.hidden = true;
+        importPreviewAbort = null;
+        importOkBtn.removeEventListener("click", onOk);
+        importCancelBtn.removeEventListener("click", onCancel);
+      }
+      function onOk() {
+        const picked = prepared.filter((_, idx) => checks[idx].checked);
+        cleanup();
+        resolve(picked);
+      }
+      function onCancel() {
+        cleanup();
+        resolve(null);
+      }
+      importOkBtn.addEventListener("click", onOk);
+      importCancelBtn.addEventListener("click", onCancel);
+      importPreviewAbort = onCancel;
+      importPreviewPanel.hidden = false;
+    });
   }
 
   // ---------------------------------------------------------------------
@@ -1147,6 +1232,7 @@ export function initMotionStudio(store, toast) {
   function closeModal() {
     merge = null;
     mergePanel.hidden = true;
+    if (importPreviewAbort) importPreviewAbort(); // §39-4: 保留中の取り込みプレビューはキャンセル扱い
     if (abortController) abortController.abort();
     abortController = null;
     inflight = 0;
@@ -1224,4 +1310,41 @@ export function initMotionStudio(store, toast) {
       for (const cand of session.cands[i]) runOne(i, cand);
     }
   });
+
+  // ---------------------------------------------------------------------
+  // §39: ギャラリーを生成なしで開く（画像取り込みの入口）
+  // AI生成を一切走らせず、空セッション（プリセット/コマ数=現在の入力値・候補ゼロ）で
+  // モーダルを開く。既にセッションがあれば（確定済み含む）候補・採用状態を保持して再表示。
+  // ---------------------------------------------------------------------
+  function openGalleryWithoutGeneration() {
+    if (!session) {
+      const preset = motionPreset.value;
+      const customText = motionCustomText.value.trim();
+      const total = Math.max(2, Math.min(12, Number(motionFrames.value) || 4));
+      const k = Math.max(1, Math.min(4, Number(candCount.value) || 3));
+      session = {
+        preset,
+        presetLabel: PRESET_LABELS[preset] || preset,
+        customText,
+        total,
+        k,
+        nextId: 1,
+        cands: Array.from({ length: total }, () => []),
+        adopted: Array.from({ length: total }, () => null),
+        confirmed: false,
+        insertedAt: null,
+      };
+      confirmedBar.hidden = true;
+      confirmedBar.innerHTML = "";
+      totalInput.value = String(total);
+      totalInput.disabled = false;
+    }
+    renderGrid();
+    modal.hidden = false;
+    startPreview();
+    pollInbox(); // §25.8: 受信箱に画像があれば即自動取り込み
+  }
+  document.getElementById("mcOpenGalleryBtn").addEventListener("click", openGalleryWithoutGeneration);
+  // §39: 受信箱バッジのクリックでもギャラリーを開く（開けば自動取り込みが即走る）
+  inboxBadge.addEventListener("click", openGalleryWithoutGeneration);
 }

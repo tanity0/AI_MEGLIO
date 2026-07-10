@@ -1129,7 +1129,37 @@ aside, #canvasPanel {
 .mc-confirmed { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; font-size: 12px; padding: 4px 0; }
 .mc-confirmed[hidden] { display: none; }
 .mc-badge { font-size: 10px; color: var(--text-1); }
-.mc-inbox-badge { font-size: 11px; color: var(--accent); border: 1px solid var(--accent); border-radius: 8px; padding: 1px 6px; }
+.mc-inbox-badge { font-size: 11px; color: var(--accent); border: 1px solid var(--accent); border-radius: 8px; padding: 1px 6px; cursor: pointer; } /* §39: クリックでギャラリーを開く */
+.mc-inbox-badge:hover { background: var(--bg-3); }
+
+/* §39-4: 取り込みプレビュー */
+.mc-import-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  margin: 6px 0;
+  border: 1px solid var(--accent-dark);
+  border-radius: var(--radius);
+  background: var(--bg-2);
+}
+.mc-import-preview[hidden] { display: none; }
+.mc-import-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+.mc-import-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-1);
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--text-1);
+}
+.mc-import-cell img { image-rendering: pixelated; max-width: 96px; max-height: 96px; background: #202020; border: 1px solid var(--border); }
+.mc-import-cell:has(input:not(:checked)) { opacity: 0.4; }
 /* §25.7 差分採用マージ */
 .mc-merge { border: 1px solid var(--border); border-radius: 6px; padding: 6px; margin: 6px 0; display: flex; flex-direction: column; gap: 6px; }
 .mc-merge[hidden] { display: none; }

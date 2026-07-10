@@ -276,9 +276,10 @@
         </div>
         <div class="ai-actions">
           <button id="mcGenerateBtn" class="btn btn-accent">候補を生成（ギャラリー）</button>
+          <button id="mcOpenGalleryBtn" class="btn" data-help="motion.openGallery" title="AI生成なしでギャラリーを開く（画像だけ取り込みたいときはこちら）">ギャラリーを開く</button>
           <span id="mcInboxBadge" class="mc-inbox-badge" hidden></span>
         </div>
-        <div class="hint">画像から候補追加・GPT依頼キットはギャラリー内から。候補生成は codex バックエンド推奨</div>
+        <div class="hint">画像だけ取り込みたいときは「ギャラリーを開く」から（生成なし）。画像から候補追加・GPT依頼キットはギャラリー内。候補生成は codex バックエンド推奨</div>
       </fieldset>
       <details class="adv-collapse" data-collapse-key="motionLegacy">
         <summary>旧方式: 一括生成（上級）</summary>
@@ -539,6 +540,15 @@
       </div>
     </div>
     <div id="mcConfirmedBar" class="mc-confirmed" hidden></div>
+    <!-- §39-4: 取り込みプレビュー（拾わないコマをチェックで外す。in/ 自動取り込みでは表示しない） -->
+    <div id="mcImportPreview" class="mc-import-preview" hidden>
+      <div class="hint">取り込むコマを選んでください（チェックを外したコマは取り込みません。gpt-exchange の in/ 自動取り込みは従来どおり全コマ取り込みです）</div>
+      <div id="mcImportGrid" class="mc-import-grid"></div>
+      <div class="ai-actions">
+        <button id="mcImportOkBtn" class="btn btn-small btn-accent">取り込む(0)</button>
+        <button id="mcImportCancelBtn" class="btn btn-small">キャンセル</button>
+      </div>
+    </div>
     <div id="mcMergePanel" class="mc-merge" hidden>
       <div class="mc-merge-head">
         <strong id="mcMergeTitle"></strong>
