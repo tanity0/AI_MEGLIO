@@ -579,13 +579,20 @@ function confirmStudio() {
       for (let x = 0; x < res.width; x++)
         pixels[(oy + y) * W + (ox + x)] = res.pixels[y * res.width + x];
   }
-  // sourceImage: 最大512pxに縮小した dataURL（§18.2）
-  const scale = Math.min(1, 512 / Math.max(srcData.w, srcData.h));
-  const sc = document.createElement("canvas");
-  sc.width = Math.max(1, Math.round(srcData.w * scale));
-  sc.height = Math.max(1, Math.round(srcData.h * scale));
-  const sctx = sc.getContext("2d");
-  sctx.drawImage(srcBitmapCanvas, 0, 0, sc.width, sc.height);
+  // §40: sourceImage はスタジオに渡された原本の dataURL をそのまま保存
+  // （縮小・canvas再エンコードなし＝「再変換」の入力が無劣化）。
+  // 12MB を超えるときだけ長辺2048pxへ縮小し、その旨をトースト通知。
+  const SOURCE_IMAGE_MAX_BYTES = 12 * 1024 * 1024;
+  let sourceImage = typeof srcDataUrl === "string" && srcDataUrl.startsWith("data:image/") ? srcDataUrl : "";
+  if (!sourceImage || sourceImage.length > SOURCE_IMAGE_MAX_BYTES) {
+    const scale = Math.min(1, 2048 / Math.max(srcData.w, srcData.h));
+    const sc = document.createElement("canvas");
+    sc.width = Math.max(1, Math.round(srcData.w * scale));
+    sc.height = Math.max(1, Math.round(srcData.h * scale));
+    sc.getContext("2d").drawImage(srcBitmapCanvas, 0, 0, sc.width, sc.height);
+    if (sourceImage) toast("元画像が12MBを超えるため、保存用に長辺2048pxへ縮小しました（以降の再変換はこの縮小版が入力になります）");
+    sourceImage = sc.toDataURL("image/png");
+  }
 
   // §20.2/§30: 複数フレーム（シート分割）対応
   const allFrames = res.framesPixels && res.framesPixels.length > 1
@@ -600,7 +607,7 @@ function confirmStudio() {
     frames: allFrames,
     baseFrame: Uint8Array.from(allFrames[0].pixels),
     lockedRects: [], variants: [], profile: null, styleRef: null,
-    sourceImage: sc.toDataURL("image/png"),
+    sourceImage, // §40: 原本 dataURL（12MB超のみ縮小済み）
     conversionParams: {
       ...knobs,
       grid: { ...grid },
@@ -697,6 +704,8 @@ export function initStudio(storeRef, toastRef) {
     debug: () => ({
       isMulti: isMulti(),
       activeFrame,
+      srcW: srcData ? srcData.w : 0, // §40: 再変換入力の解像度検証用
+      srcH: srcData ? srcData.h : 0,
       frameCount: result && result.framesPixels ? result.framesPixels.length : (result ? 1 : 0),
       frameParams: frameParams.map((pf) => ({ ...pf })),
       palette: result ? result.palette.slice() : null,
