@@ -657,6 +657,82 @@ function fileToDataUrl(file) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// §38: サーバー保存（saves/）＋「保存したフォルダを自動で開く」
+// ---------------------------------------------------------------------------
+const AUTO_OPEN_FOLDER_KEY = "aiMeglio.autoOpenFolder";
+
+export function autoOpenFolderEnabled() {
+  try { return localStorage.getItem(AUTO_OPEN_FOLDER_KEY) !== "0"; } catch { return true; } // 既定ON
+}
+
+export function setAutoOpenFolderEnabled(on) {
+  try { localStorage.setItem(AUTO_OPEN_FOLDER_KEY, on ? "1" : "0"); } catch {}
+}
+
+// ホワイトリストの保存先フォルダを OS ファイラーで開く（サーバー側 §38.1）
+export async function openServerFolder(target) {
+  const res = await fetch("/api/open-folder", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ target }),
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+  return json;
+}
+
+// トグルONのときだけフォルダを開く（失敗はトースト警告のみ・保存自体は成功扱い）
+export async function maybeOpenServerFolder(target) {
+  if (!autoOpenFolderEnabled()) return;
+  try {
+    await openServerFolder(target);
+  } catch (err) {
+    toast(`フォルダを開けませんでした: ${err.message}`, "error");
+  }
+}
+
+// サーバー保存用のファイル名サニタイズ（英数-_ 以外は _ に。拡張子は維持）
+export function sanitizeSaveName(name) {
+  const m = /^(.*)\.(json|png|gif)$/i.exec(name || "");
+  const base = (m ? m[1] : String(name || "file")).replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 100) || "file";
+  const ext = m ? m[2].toLowerCase() : "json";
+  return `${base}.${ext}`;
+}
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(String(fr.result).split(",")[1] || "");
+    fr.onerror = reject;
+    fr.readAsDataURL(blob);
+  });
+}
+
+// Blob をサーバーの saves/ にアトミック保存し、保存先フルパスを返す
+export async function saveBlobToServer(name, blob) {
+  const dataBase64 = await blobToBase64(blob);
+  const res = await fetch("/api/save-file", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ target: "saves", name: sanitizeSaveName(name), dataBase64 }),
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+  return json; // { ok, path, dir, name, bytes }
+}
+
+// 「フォルダへ保存」共通経路: saves/ へ保存→トーストにパス→（トグルONなら）フォルダを開く
+async function saveBlobToFolder(name, blob) {
+  try {
+    const json = await saveBlobToServer(name, blob);
+    toast(`保存しました: ${json.path}`);
+    await maybeOpenServerFolder("saves");
+  } catch (err) {
+    toast(`サーバー保存に失敗しました: ${err.message}`, "error");
+  }
+}
+
 function initHeader() {
   document.getElementById("newProjectBtn").addEventListener("click", () => {
     if (!confirm("現在のプロジェクトを破棄して新規作成しますか？")) return;
@@ -688,11 +764,69 @@ function initHeader() {
     }
   });
 
-  document.getElementById("saveJsonBtn").addEventListener("click", () => {
+  // §38: 保存(JSON)/PNG/GIF の生成を共通化（ダウンロード保存とフォルダへ保存で共用）
+  function buildProjectJsonBlob() {
     const json = JSON.stringify(projectToPlain(store.state.project), null, 0);
-    downloadBlob(new Blob([json], { type: "application/json" }), "ai-meglio-project.json");
+    return new Blob([json], { type: "application/json" });
+  }
+  function buildSpritesheetBlob() {
+    const { project } = store.state;
+    const scale = 4;
+    const canvas = document.createElement("canvas");
+    canvas.width = project.width * scale * project.frames.length;
+    canvas.height = project.height * scale;
+    const ctx = canvas.getContext("2d");
+    for (let i = 0; i < project.frames.length; i++) {
+      ctx.save();
+      ctx.translate(i * project.width * scale, 0);
+      drawFrameToContext(ctx, project, i, scale);
+      ctx.restore();
+    }
+    return new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+  }
+  function buildGifBlob() {
+    const project = store.state.project;
+    const tag = store.state.activeTagIndex >= 0 ? project.tags[store.state.activeTagIndex] : null;
+    let frames = tag ? project.frames.slice(tag.start, tag.end + 1) : project.frames;
+    // §25.9-4: ピンポン書き出し（フレーム列を往復展開。端重複なし = 2N-2 枚）
+    const pingpong = document.getElementById("gifPingpongChk")?.checked;
+    if (pingpong) frames = pingpongFrames(frames);
+    const target = { ...project, fps: tag ? tag.fps : project.fps, frames };
+    const bytes = encodeGif(target);
+    const name = tag ? `ai-meglio_${tag.name}.gif` : "ai-meglio.gif";
+    return { blob: new Blob([bytes], { type: "image/gif" }), name, tag };
+  }
+
+  document.getElementById("saveJsonBtn").addEventListener("click", () => {
+    downloadBlob(buildProjectJsonBlob(), "ai-meglio-project.json");
     toast("プロジェクトをJSON保存しました");
   });
+
+  // §38: フォルダへ保存（saves/ へサーバー保存 → トーストにパス → 自動でフォルダを開く）
+  document.getElementById("saveJsonFolderBtn")?.addEventListener("click", async () => {
+    await saveBlobToFolder("ai-meglio-project.json", buildProjectJsonBlob());
+  });
+  document.getElementById("exportPngFolderBtn")?.addEventListener("click", async () => {
+    const blob = await buildSpritesheetBlob();
+    if (!blob) { toast("PNGの生成に失敗しました", "error"); return; }
+    await saveBlobToFolder("ai-meglio-spritesheet.png", blob);
+  });
+  document.getElementById("exportGifFolderBtn")?.addEventListener("click", async () => {
+    try {
+      const { blob, name } = buildGifBlob();
+      await saveBlobToFolder(name, blob);
+    } catch (err) {
+      toast(`GIF書き出しに失敗しました: ${err.message}`, "error");
+      console.error(err);
+    }
+  });
+
+  // §38: 「保存後にフォルダを自動で開く」トグル（既定ON・localStorage）
+  const autoOpenChk = document.getElementById("autoOpenFolderChk");
+  if (autoOpenChk) {
+    autoOpenChk.checked = autoOpenFolderEnabled();
+    autoOpenChk.addEventListener("change", () => setAutoOpenFolderEnabled(autoOpenChk.checked));
+  }
 
   document.getElementById("loadJsonInput").addEventListener("change", async (ev) => {
     const file = ev.target.files[0];
@@ -708,37 +842,17 @@ function initHeader() {
     }
   });
 
-  document.getElementById("exportPngBtn").addEventListener("click", () => {
-    const { project } = store.state;
-    const scale = 4;
-    const canvas = document.createElement("canvas");
-    canvas.width = project.width * scale * project.frames.length;
-    canvas.height = project.height * scale;
-    const ctx = canvas.getContext("2d");
-    for (let i = 0; i < project.frames.length; i++) {
-      ctx.save();
-      ctx.translate(i * project.width * scale, 0);
-      drawFrameToContext(ctx, project, i, scale);
-      ctx.restore();
-    }
-    canvas.toBlob((blob) => {
-      downloadBlob(blob, "ai-meglio-spritesheet.png");
-      toast("スプライトシートPNGを書き出しました");
-    }, "image/png");
+  document.getElementById("exportPngBtn").addEventListener("click", async () => {
+    const blob = await buildSpritesheetBlob();
+    if (!blob) { toast("PNGの生成に失敗しました", "error"); return; }
+    downloadBlob(blob, "ai-meglio-spritesheet.png");
+    toast("スプライトシートPNGを書き出しました");
   });
 
   document.getElementById("exportGifBtn").addEventListener("click", () => {
     try {
-      const project = store.state.project;
-      const tag = store.state.activeTagIndex >= 0 ? project.tags[store.state.activeTagIndex] : null;
-      let frames = tag ? project.frames.slice(tag.start, tag.end + 1) : project.frames;
-      // §25.9-4: ピンポン書き出し（フレーム列を往復展開。端重複なし = 2N-2 枚）
-      const pingpong = document.getElementById("gifPingpongChk")?.checked;
-      if (pingpong) frames = pingpongFrames(frames);
-      const target = { ...project, fps: tag ? tag.fps : project.fps, frames };
-      const bytes = encodeGif(target);
-      const name = tag ? `ai-meglio_${tag.name}.gif` : "ai-meglio.gif";
-      downloadBlob(new Blob([bytes], { type: "image/gif" }), name);
+      const { blob, name, tag } = buildGifBlob();
+      downloadBlob(blob, name);
       toast(tag ? `タグ「${tag.name}」をGIF書き出ししました` : "GIFを書き出しました");
     } catch (err) {
       toast(`GIF書き出しに失敗しました: ${err.message}`, "error");

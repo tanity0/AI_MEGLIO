@@ -14,6 +14,7 @@ import {
   indexForToken,
   addGeneratedTag,
   hexToRgba,
+  maybeOpenServerFolder,
 } from "./app.js";
 
 const PRESET_LABELS = { walk: "歩き", run: "走り", attack: "攻撃", idle: "待機", jump: "ジャンプ", custom: "カスタム" };
@@ -792,6 +793,7 @@ export function initMotionStudio(store, toast) {
         clip = "（クリップボードへのコピーは失敗。prompt.txt を使ってください）";
       }
       toast(`GPT依頼キットを書き出しました: ${data.dir}（reference.png + prompt.txt）。${clip}`);
+      await maybeOpenServerFolder("exchange"); // §38: 完了時にフォルダを開く（トグルON時）
     } catch (err) {
       toast(`キットの書き出しに失敗しました: ${err.message}`, "error");
     }

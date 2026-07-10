@@ -60,6 +60,16 @@ try {
 
 const MAX_BODY_BYTES = 5 * 1024 * 1024; // 5MB 上限
 
+// §38: サーバー保存（saves/）＋フォルダ自動オープン
+const SAVES_DIR = path.join(process.cwd(), "saves"); // 自動作成・.gitignore 対象
+const SAVE_FILE_MAX_BYTES = 50 * 1024 * 1024; // デコード後 50MB 上限
+const SAVE_BODY_MAX_BYTES = 72 * 1024 * 1024; // base64 は約4/3に膨らむためボディは余裕を持たせる
+const SAVE_NAME_RE = /^[A-Za-z0-9_-]{1,100}\.(json|png|gif)$/; // 英数-_ ＋ 拡張子 json/png/gif のみ
+// OS ファイラー起動コマンド。OPEN_CMD で上書き可（クラウド検証で xdg-open が無い環境の
+// spawn 確認用モックにも使う）。
+const OPEN_CMD = process.env.OPEN_CMD ||
+  (process.platform === "win32" ? "explorer.exe" : process.platform === "darwin" ? "open" : "xdg-open");
+
 // 半角英数字（base36的割当て: 0=透明='.'、1-9,a-z）
 const CHARSET = "0123456789abcdefghijklmnopqrstuvwxyz";
 const GRID_CHAR_RE = /^[.0-9a-v?]*$/;
@@ -2458,6 +2468,121 @@ async function handleApiExport(req, res) {
   res.end(out);
 }
 
+// ---------------------------------------------------------------------------
+// §38.1: POST /api/open-folder — ホワイトリストのディレクトリのみ OS ファイラーで開く。
+// 任意パスは受け付けない（トラバーサル不可）。spawn は非同期・失敗は警告ログのみ。
+// ---------------------------------------------------------------------------
+function spawnFolderOpener(dir) {
+  try {
+    const child = spawn(OPEN_CMD, [dir], { detached: true, stdio: "ignore" });
+    child.on("error", (err) => console.warn(`[open-folder] ファイラー起動に失敗（無視）: ${OPEN_CMD} ${dir}: ${err.message}`));
+    child.unref();
+  } catch (err) {
+    console.warn(`[open-folder] ファイラー起動に失敗（無視）: ${OPEN_CMD} ${dir}: ${err.message}`);
+  }
+  return OPEN_CMD;
+}
+
+async function handleOpenFolder(req, res) {
+  let body;
+  try {
+    body = JSON.parse((await readBody(req, MAX_BODY_BYTES)).toString("utf8"));
+  } catch {
+    jsonError(res, 400, "リクエストが不正です");
+    return;
+  }
+  const target = body?.target;
+  let dir;
+  if (target === "exchange") {
+    dir = EXCHANGE_DIR;
+  } else if (target === "saves") {
+    dir = SAVES_DIR;
+  } else if (target === "export") {
+    if (!EXPORT_ROOT) {
+      jsonError(res, 403, "EXPORT_ROOT が設定されていないため、書き出しフォルダは開けません");
+      return;
+    }
+    dir = path.resolve(EXPORT_ROOT);
+  } else {
+    jsonError(res, 400, 'target は "exchange" | "export" | "saves" のいずれかで指定してください');
+    return;
+  }
+  try { await fs.mkdir(dir, { recursive: true }); } catch {}
+  const command = spawnFolderOpener(dir);
+  const out = JSON.stringify({ ok: true, dir, command });
+  res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Content-Length": Buffer.byteLength(out) });
+  res.end(out);
+  console.log(`[open-folder] ${target} -> ${command} ${dir}`);
+}
+
+// ---------------------------------------------------------------------------
+// §38.1: POST /api/save-file — saves/ へのアトミック保存（temp→rename）。
+// name はサニタイズ（英数-_ と拡張子 json/png/gif のみ・パス区切り不可）。50MB上限。
+// ---------------------------------------------------------------------------
+async function handleSaveFile(req, res) {
+  let raw;
+  try {
+    raw = await readBody(req, SAVE_BODY_MAX_BYTES);
+  } catch {
+    jsonError(res, 413, "保存サイズが上限（50MB）を超えています");
+    return;
+  }
+  let body;
+  try {
+    body = JSON.parse(raw.toString("utf8"));
+  } catch {
+    jsonError(res, 400, "リクエストが不正です");
+    return;
+  }
+  if (body?.target !== "saves") {
+    jsonError(res, 400, 'target は "saves" のみ指定できます');
+    return;
+  }
+  const name = typeof body.name === "string" ? body.name : "";
+  if (!SAVE_NAME_RE.test(name)) {
+    jsonError(res, 400, "name が不正です（英数・-_ のみ・拡張子 json/png/gif、100文字以内）");
+    return;
+  }
+  if (typeof body.dataBase64 !== "string" || body.dataBase64.length === 0) {
+    jsonError(res, 400, "dataBase64 を指定してください");
+    return;
+  }
+  let buf;
+  try {
+    buf = Buffer.from(body.dataBase64, "base64");
+  } catch {
+    jsonError(res, 400, "dataBase64 のデコードに失敗しました");
+    return;
+  }
+  if (buf.length === 0) {
+    jsonError(res, 400, "dataBase64 のデコード結果が空です");
+    return;
+  }
+  if (buf.length > SAVE_FILE_MAX_BYTES) {
+    jsonError(res, 413, "保存サイズが上限（50MB）を超えています");
+    return;
+  }
+  // サニタイズ済み name はパス区切りを含まないが、防御的に basename＋配下チェックも行う
+  const target = path.resolve(SAVES_DIR, path.basename(name));
+  if (!target.startsWith(path.resolve(SAVES_DIR) + path.sep)) {
+    jsonError(res, 400, "保存先が saves/ の外になるため拒否しました");
+    return;
+  }
+  try {
+    await fs.mkdir(SAVES_DIR, { recursive: true });
+    const tmp = path.join(SAVES_DIR, `.${path.basename(name)}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`);
+    await fs.writeFile(tmp, buf);
+    await fs.rename(tmp, target); // アトミック
+  } catch (err) {
+    jsonError(res, 500, `保存に失敗しました: ${err.message}`);
+    return;
+  }
+  const out = JSON.stringify({ ok: true, path: target, dir: path.resolve(SAVES_DIR), name: path.basename(name), bytes: buf.length });
+  res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Content-Length": Buffer.byteLength(out) });
+  res.end(out);
+  console.log(`[save-file] ${target} (${buf.length} bytes)`);
+}
+
 async function handleApiEdit(req, res) {
   let raw;
   try {
@@ -2517,6 +2642,10 @@ const server = http.createServer(async (req, res) => {
       await handleLiveProjectGet(req, res, new URL(req.url, "http://localhost")); // §29
     } else if (req.method === "POST" && urlPath === "/api/live-project") {
       await handleLiveProjectPost(req, res); // §29
+    } else if (req.method === "POST" && urlPath === "/api/open-folder") {
+      await handleOpenFolder(req, res); // §38
+    } else if (req.method === "POST" && urlPath === "/api/save-file") {
+      await handleSaveFile(req, res); // §38
     } else if (req.method === "GET") {
       await serveStatic(req, res);
     } else {

@@ -253,6 +253,9 @@ aside, #canvasPanel {
 }
 .fp-grid .fp-empty { grid-column: 1 / -1; font-size: 11px; color: var(--text-2); text-align: center; padding: 6px 0; }
 
+/* ---------- §38 フォルダへ保存（隣接する小ボタン） ---------- */
+.btn-folder { padding-left: 6px; padding-right: 6px; margin-left: -4px; }
+
 .palette-grid {
   display: grid;
   grid-template-columns: repeat(6, 1fr);

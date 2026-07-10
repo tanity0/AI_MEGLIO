@@ -1,5 +1,5 @@
 // gameexport.js — §16.3 ゲームプロファイル / §16.4 書き出し / §16.5 ゲームビュープレビュー
-import { hexToRgba } from "./app.js";
+import { hexToRgba, maybeOpenServerFolder } from "./app.js";
 
 // ---------------------------------------------------------------------------
 // 描画: ピクセル配列 → canvas（整数拡大・左右反転対応）
@@ -386,6 +386,7 @@ export function initGameExport(store, toast) {
         if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
         exportStatus.textContent = `${json.written.length}ファイルを ${json.root} に書き出しました${pixiNote}${warnText}`;
         toast(`ゲームリポジトリに ${json.written.length} ファイルを書き出しました${pixiNote}`);
+        await maybeOpenServerFolder("export"); // §38: 完了時にフォルダを開く（トグルON時）
       } catch (err) {
         exportStatus.textContent = `エラー: ${err.message}`;
         toast(err.message, "error");
