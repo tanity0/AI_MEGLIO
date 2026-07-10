@@ -1,6 +1,6 @@
-// motionstudio.js — §25 モーション候補スタジオ（生成→選別→確定）
-// N×K 個の独立した単フレーム生成（mode:"motionframe"）を並列発行し、
-// ギャラリーで採用/削除/描き直し/追加生成 → 全フレーム採用で確定（タグ付きで末尾に追加）。
+// motionstudio.js — §25/§42 モーション候補スタジオ（プール＋選択順＝フレーム順）
+// 画像取り込み・N×K 生成（mode:"motionframe"）・反転コピー・部位合成のすべてを
+// 1つのプールに並べ、クリック選択の順番がそのままフレーム順。確定で選択順にタイムラインへ。
 import { streamEdit } from "./api.js";
 import { removeBackground, detectComponents, convertImage } from "./convert.js";
 import {
@@ -15,7 +15,6 @@ import {
   addGeneratedTag,
   hexToRgba,
   maybeOpenServerFolder,
-  setFramePixels,
 } from "./app.js";
 
 const PRESET_LABELS = { walk: "歩き", run: "走り", attack: "攻撃", idle: "待機", jump: "ジャンプ", custom: "カスタム" };
@@ -105,7 +104,6 @@ export function initMotionStudio(store, toast) {
   const mirrorBtn = document.getElementById("mcMirrorBtn");
   const kitBtn = document.getElementById("mcKitBtn");
   const inboxBadge = document.getElementById("mcInboxBadge");
-  const totalInput = document.getElementById("mcTotalInput");
   const mergePanel = document.getElementById("mcMergePanel");
   const mergeTitle = document.getElementById("mcMergeTitle");
   const mergeChips = document.getElementById("mcMergeChips");
@@ -113,6 +111,8 @@ export function initMotionStudio(store, toast) {
   const mergeParts = document.getElementById("mcMergeParts");
   const mergeApplyBtn = document.getElementById("mcMergeApply");
   const mergeCancelBtn = document.getElementById("mcMergeCancel");
+  const mergeRefSelect = document.getElementById("mcMergeRef"); // §42: 比較先ドロップダウン
+  const selCount = document.getElementById("mcSelCount"); // §42: 選択数（=フレーム数）表示
   const motionPreset = document.getElementById("motionPreset");
   const motionCustomText = document.getElementById("motionCustomText");
   const motionFrames = document.getElementById("motionFrames");
@@ -131,10 +131,13 @@ export function initMotionStudio(store, toast) {
 
   function project() { return store.state.project; }
 
-  // セッション状態（モーダルを閉じるまで保持）
-  // cands[i] = [{ id, status: "pending"|"ok"|"error", pixels?, error?, variant,
-  //               source: "grid"|"image"（§25.6）, snapped?/aligned?（§25.6 で使用） }...]
-  // adopted[i] = 採用中の候補オブジェクト | null（オブジェクト参照で保持 — 削除に強い）
+  // セッション状態（モーダルを閉じるまで保持）— §42 プールモデル
+  // pool = [{ id, status: "pending"|"ok"|"error", pixels?, error?, variant,
+  //           source: "grid"|"image"|"mirror"|"merge", snapped?/aligned?（§25.6）,
+  //           phase?/phaseTotal?（グリッド生成の位相ヒント・生成パラメータとして維持）,
+  //           srcRegion?/convParams?/offset?/autoOffset?（§41） }...]
+  // selected = 選択順の候補参照の配列（この順番がそのままフレーム順。§42.1）
+  // genTotal/k = 「候補を生成」用パラメータ（フレーム数はプールの選択数で決まる）
   let session = null;
   let abortController = null;
   let inflight = 0;
@@ -194,8 +197,9 @@ export function initMotionStudio(store, toast) {
   function setIdleProgress() {
     if (tickTimer) { clearInterval(tickTimer); tickTimer = null; }
     abortBtn.disabled = true;
-    const adopted = session ? session.adopted.filter(Boolean).length : 0;
-    progress.textContent = session ? `候補を選別してください（採用 ${adopted}/${session.total}）` : "";
+    progress.textContent = session
+      ? `候補をクリックで選択（選択 ${session.selected.length}件＝フレーム数・選択順がフレーム順）`
+      : "";
   }
   function beginBatch(n) {
     if (inflight === 0) {
@@ -222,26 +226,29 @@ export function initMotionStudio(store, toast) {
   }
 
   // ---------------------------------------------------------------------
-  // 生成（1スロット）
+  // 生成（1スロット）— §42: 位相ヒント（phase/phaseTotal）は候補自身が生成パラメータとして保持
   // ---------------------------------------------------------------------
-  async function runOne(i, cand, opts = {}) {
+  async function runOne(cand, opts = {}) {
     const p = project();
     const s = session;
+    const phase = cand.phase ?? 0;
+    const phaseTotal = cand.phaseTotal ?? Math.max(1, s.genTotal || 1);
     cand.status = "pending";
     cand.error = null;
-    renderCell(i, cand);
+    renderCell(cand);
     const mf = {
       preset: s.preset,
-      index: i,
-      total: s.total,
-      variant: cand.variant,
+      index: phase,
+      total: phaseTotal,
+      variant: cand.variant ?? 0,
     };
     if (s.customText) mf.customText = s.customText;
     if (opts.instruction) mf.instruction = opts.instruction;
-    // §25.2: 描き直し時は採用済みの前後フレームを連続性の文脈として同梱
+    // §25.2: 描き直し時は選択列の前後（この候補が選択済みの場合）を連続性の文脈として同梱
     if (opts.withNeighbors) {
-      const prev = i > 0 ? s.adopted[i - 1] : null;
-      const next = i < s.total - 1 ? s.adopted[i + 1] : null;
+      const si = s.selected.indexOf(cand);
+      const prev = si > 0 ? s.selected[si - 1] : null;
+      const next = si >= 0 && si < s.selected.length - 1 ? s.selected[si + 1] : null;
       if (prev) mf.prevFrameGrid = pixelsToGridString(prev.pixels, p.width, p.height, p.palette.length);
       if (next) mf.nextFrameGrid = pixelsToGridString(next.pixels, p.width, p.height, p.palette.length);
     }
@@ -250,7 +257,7 @@ export function initMotionStudio(store, toast) {
       mode: "motionframe",
       scope: "all",
       motionframe: mf,
-      instruction: `「${s.presetLabel}」モーションの第${i + 1}/${s.total}フレーム候補を生成`,
+      instruction: `「${s.presetLabel}」モーションの第${phase + 1}/${phaseTotal}フレーム候補を生成`,
       images: p.baseFrame
         ? [{ frame: 0, dataUrl: pixelsToPngDataUrl(p.baseFrame, p.width, p.height, p.palette, p.width > 64 ? 4 : 8) }]
         : [],
@@ -268,7 +275,7 @@ export function initMotionStudio(store, toast) {
       cand.error = err.name === "AbortError" ? "中断しました" : err.message;
     } finally {
       endOne();
-      renderCell(i, cand);
+      renderCell(cand);
     }
   }
 
@@ -441,6 +448,7 @@ export function initMotionStudio(store, toast) {
   }
 
   async function addImageCandidates(file, opts = {}) {
+    // opts.auto: 受信箱の自動取り込み（§25.8）— プレビューなしで全コマ取り込み
     const p = project();
     if (!session) return 0;
     let img;
@@ -456,25 +464,9 @@ export function initMotionStudio(store, toast) {
       toast("キャラクターを検出できませんでした（背景除去に失敗）", "error");
       return 0;
     }
-    let startFrame;
-    // §25.9-3: シートのコマ数が N と不一致なら「フレーム数を合わせますか？」を自動提案
-    if (!session.confirmed && comps.length !== session.total && comps.length >= 1 && comps.length <= 12) {
-      if (window.confirm(`シートは${comps.length}コマです。ギャラリーのフレーム数を${comps.length}に合わせますか？`)) {
-        setTotal(comps.length, { force: true });
-      }
-    }
-    if (Number.isInteger(opts.startFrame)) {
-      startFrame = opts.startFrame; // §25.8: 自動取り込みはフレーム1から順に割り当て
-    } else {
-      const ans = window.prompt(`何フレーム目の候補にしますか？（1〜${session.total}。${comps.length}コマ検出 — シートは順に割り当て）`, "1");
-      if (ans === null) return 0;
-      startFrame = Math.max(1, Math.min(session.total, Number(ans) || 1)) - 1;
-    }
-    // 変換フェーズ: セッションにはまだ入れず、コマごとの変換結果を組み立てる
+    // 変換フェーズ: セッションにはまだ入れず、コマごとの変換結果を組み立てる（§42: 全コマがプール行き）
     const prepared = [];
     for (let k = 0; k < comps.length; k++) {
-      const fi = startFrame + k;
-      if (fi >= session.total) break;
       const box = comps[k];
       // コマを切り出して §18 変換（プロジェクト高さ指定）→ パレットスナップ → 整列
       const bw = box.x1 - box.x0 + 1, bh = box.y1 - box.y0 + 1;
@@ -515,40 +507,41 @@ export function initMotionStudio(store, toast) {
         convParams: defaultConvParams(),
       };
       applyOffset(cand); // §25.9-1: pixels = srcPixels + offset（ナッジで再適用）
-      prepared.push({ fi, k, cand });
+      prepared.push({ k, cand });
     }
     if (!prepared.length) {
       if (!opts.quiet) toast("候補を追加できませんでした", "error");
       return 0;
     }
     // §39-4: 取り込みプレビュー（拾わないコマをチェックで外す）。
-    // gpt-exchange の in/ 自動取り込み（opts.startFrame 指定）は従来どおり全取り込み（自動性優先）。
-    let selected = prepared;
-    if (!Number.isInteger(opts.startFrame)) {
-      selected = await showImportPreview(prepared);
-      if (selected === null) {
+    // gpt-exchange の in/ 自動取り込み（opts.auto）は従来どおり全取り込み（自動性優先）。
+    let picked = prepared;
+    if (!opts.auto) {
+      picked = await showImportPreview(prepared);
+      if (picked === null) {
         if (!opts.quiet) toast("取り込みをキャンセルしました");
         return 0;
       }
-      if (!selected.length) {
+      if (!picked.length) {
         if (!opts.quiet) toast("取り込むコマが選ばれていません", "error");
         return 0;
       }
     }
+    // §42.1: 選択が0件なら取り込んだコマを取り込み順に自動選択（1..M）。既に選択があれば未選択で追加。
+    const autoSelect = session.selected.length === 0;
     let added = 0;
-    for (const item of selected) {
-      const cand = {
-        ...item.cand,
-        id: session.nextId++,
-        status: "ok",
-        variant: session.cands[item.fi].length,
-      };
-      session.cands[item.fi].push(cand);
+    for (const item of picked) {
+      const cand = { ...item.cand, id: session.nextId++, status: "ok" };
+      session.pool.push(cand);
+      if (autoSelect) session.selected.push(cand);
       added++;
     }
-    renderGrid();
+    renderPool();
+    if (inflight === 0) setIdleProgress();
     if (!opts.quiet) {
-      toast(added ? `画像から${added}個の候補を追加しました（パレットスナップ+足元/重心整列済み）` : "候補を追加できませんでした", added ? "info" : "error");
+      toast(added
+        ? `画像から${added}個の候補をプールに追加しました${autoSelect ? `（取り込み順に自動選択 1〜${added}）` : "（未選択）"}`
+        : "候補を追加できませんでした", added ? "info" : "error");
     }
     return added;
   }
@@ -586,7 +579,7 @@ export function initMotionStudio(store, toast) {
         img.alt = `コマ${item.k + 1}`;
         thumbs.push(img);
         const cap = document.createElement("span");
-        cap.textContent = `コマ${item.k + 1} → 第${item.fi + 1}フレーム`;
+        cap.textContent = `コマ${item.k + 1}`;
         cell.append(chk, img, cap);
         importPreviewGrid.appendChild(cell);
         checks.push(chk);
@@ -657,43 +650,43 @@ export function initMotionStudio(store, toast) {
   // §25.7: 差分採用マージ — 候補の変化を塊ごとに選んで取り込む
   // ---------------------------------------------------------------------
   const MERGE_HUES = [200, 30, 300, 120, 0, 60, 260, 170];
-  let merge = null; // { i, cand, ref, refKind, blobs, adopted:Set, mask:Uint8Array }
-  let adjust = null; // §41: { i, cand, params, preview:{srcPixels,autoOffset,offset,pixels}|null }
+  let merge = null; // { cand, ref, refLabel, blobs, diffMap, adopted:Set, mask:Uint8Array, rectDrag }
+  let adjust = null; // §41: { cand, params, preview:{srcPixels,autoOffset,offset,pixels}|null }
 
   function basePixels() {
     const p = project();
     return p.baseFrame || p.frames[0].pixels;
   }
 
-  function openMerge(i, cand) {
+  // §42: 比較先の解決（ベースフレーム=既定 / 番号付きの選択候補をドロップダウンで指定）
+  function mergeRefInfo() {
+    const v = mergeRefSelect.value;
+    if (v !== "base") {
+      const c = session.pool.find((cc) => String(cc.id) === v);
+      if (c) {
+        const n = session.selected.indexOf(c);
+        return { ref: c.pixels, label: n >= 0 ? `選択#${n + 1}` : "候補" };
+      }
+    }
+    return { ref: basePixels(), label: "ベースフレーム" };
+  }
+
+  // 現在の比較先で差分（塊・差分マップ）を組み立て直す。requireDiff=true なら差分ゼロで失敗させる。
+  function rebuildMerge(cand, opts = {}) {
     const p = project();
-    // §25.7-6: スナップなし候補では適用不可（パレット整合が前提）
-    if (cand.snapped === false) {
-      toast("この候補はパレットスナップされていないため差分採用マージは使えません", "error");
-      return;
-    }
-    // 比較先 = そのフレームの現在値: 確定済みなら確定フレーム、選別中は採用中候補、無ければベース
-    let ref, refKind;
-    if (session.confirmed && session.insertedAt !== null && p.frames[session.insertedAt + i]) {
-      ref = p.frames[session.insertedAt + i].pixels;
-      refKind = "frame";
-    } else if (session.adopted[i] && session.adopted[i] !== cand) {
-      ref = session.adopted[i].pixels;
-      refKind = "adopted";
-    } else {
-      ref = basePixels();
-      refKind = "base";
-    }
+    const { ref, label } = mergeRefInfo();
     const blobs = diffBlobs(ref, cand.pixels, p.width, p.height);
-    if (!blobs.length) {
+    if (!blobs.length && opts.requireDiff) {
       toast("この候補と比較先に差分がありません", "error");
-      return;
+      return false;
     }
+    if (!blobs.length) toast("この比較先とは差分がありません（比較先を変えてください）", "error");
     // §25.10: 矩形・パーツチップ用の差分マップ（ref≠cand のセル）
     const diffMap = new Uint8Array(p.width * p.height);
     for (let k = 0; k < diffMap.length; k++) if (ref[k] !== cand.pixels[k]) diffMap[k] = 1;
     merge = {
-      i, cand, refKind,
+      cand,
+      refLabel: label,
       ref: Uint8Array.from(ref),
       blobs,
       diffMap,
@@ -701,8 +694,25 @@ export function initMotionStudio(store, toast) {
       mask: new Uint8Array(p.width * p.height),
       rectDrag: null,
     };
-    const refLabel = refKind === "adopted" ? "採用中の候補" : refKind === "frame" ? `確定済みフレーム${session.insertedAt + i}` : "ベースフレーム";
-    mergeTitle.textContent = `部位取り込み — フレーム${i + 1}の候補 vs ${refLabel}（${blobs.length}塊）`;
+    mergeTitle.textContent = `部位取り込み — 候補 vs ${label}（${blobs.length}塊）`;
+    return true;
+  }
+
+  function openMerge(cand) {
+    // §25.7-6: スナップなし候補では適用不可（パレット整合が前提）
+    if (cand.snapped === false) {
+      toast("この候補はパレットスナップされていないため差分採用マージは使えません", "error");
+      return;
+    }
+    // §42: 比較先ドロップダウンを構築（ベースフレーム + 番号付きの選択候補。自分自身は除く）
+    mergeRefSelect.innerHTML = "";
+    mergeRefSelect.add(new Option("ベースフレーム", "base"));
+    session.selected.forEach((c, idx) => {
+      if (c === cand) return;
+      mergeRefSelect.add(new Option(`選択#${idx + 1}`, String(c.id)));
+    });
+    mergeRefSelect.value = "base";
+    if (!rebuildMerge(cand, { requireDiff: true })) return;
     const rectTool = document.querySelector('input[name="mcMergeTool"][value="rect"]');
     if (rectTool) rectTool.checked = true;
     const compReplace = document.querySelector('input[name="mcMergeComposite"][value="replace"]');
@@ -927,30 +937,17 @@ export function initMotionStudio(store, toast) {
 
   mergeApplyBtn.addEventListener("click", () => {
     if (!merge) return;
-    const p = project();
     const adoptedCells = merge.mask.reduce((a, v) => a + v, 0);
     if (adoptedCells === 0) {
       toast("採用中の塊（またはブラシ加算）がありません", "error");
       return;
     }
+    // §42: 合成結果は新しい候補としてプールに追加（未選択・元候補の選択状態は維持）
     const composite = mergeComposite();
-    if (merge.refKind === "frame") {
-      // 確定済みフレームへ直接適用（アンドゥ対象）
-      store.pushUndo();
-      setFramePixels(p.frames[session.insertedAt + merge.i], composite); // §35: フラットな取り込み結果で置換
-      store.notify();
-      toast(`確定済みフレーム${session.insertedAt + merge.i}へ採用塊（${adoptedCells}セル）を取り込みました（Ctrl+Zで戻せます）`);
-    } else {
-      // 選別中: 取り込み結果を新しい候補として作成し採用
-      const cand = {
-        id: session.nextId++, status: "ok", variant: session.cands[merge.i].length,
-        source: "merge", snapped: true, pixels: composite,
-      };
-      session.cands[merge.i].push(cand);
-      session.adopted[merge.i] = cand;
-      renderGrid();
-      toast(`採用塊（${adoptedCells}セル）だけ取り込んだ候補を作成し採用しました`);
-    }
+    const cand = { id: session.nextId++, status: "ok", source: "merge", snapped: true, pixels: composite };
+    session.pool.push(cand);
+    renderPool();
+    toast(`採用塊（${adoptedCells}セル）を合成した候補をプールに追加しました（未選択。クリックで番号を付与）`);
     merge = null;
     mergePanel.hidden = true;
   });
@@ -962,6 +959,12 @@ export function initMotionStudio(store, toast) {
   for (const r of document.querySelectorAll('input[name="mcMergeComposite"]')) {
     r.addEventListener("change", () => { if (merge) renderMerge(); });
   }
+  // §42: 比較先の切り替えで差分を組み立て直す（採用済みマスクはリセット）
+  mergeRefSelect.addEventListener("change", () => {
+    if (!merge) return;
+    rebuildMerge(merge.cand);
+    renderMerge();
+  });
 
   // ---------------------------------------------------------------------
   // §41: 候補ごとの変換調整（「調整」ボタン → モーダル内サブパネル + ライブプレビュー）
@@ -969,13 +972,14 @@ export function initMotionStudio(store, toast) {
   // プロジェクトパレットへスナップ → 整列。ナッジ済みオフセット（autoOffset との差分）は維持。
   // 「適用」まで cand 自体は書き換えない（キャンセルで安全に破棄できる）。
   // ---------------------------------------------------------------------
-  function openAdjust(i, cand) {
+  function openAdjust(cand) {
     if (!cand.srcRegion) {
       toast("この候補は元画像領域が保持されていないため調整できません", "error");
       return;
     }
-    adjust = { i, cand, params: { ...(cand.convParams || defaultConvParams()) }, preview: null };
-    adjustTitle.textContent = `候補調整 — フレーム${i + 1}`;
+    adjust = { cand, params: { ...(cand.convParams || defaultConvParams()) }, preview: null };
+    const n = session.selected.indexOf(cand);
+    adjustTitle.textContent = n >= 0 ? `候補調整 — 選択#${n + 1}` : "候補調整 — 未選択の候補";
     adjustBg.value = String(adjust.params.bgThreshold);
     adjustGlow.value = String(adjust.params.glowWidth);
     adjustEdge.value = String(adjust.params.edgeProtect);
@@ -1035,14 +1039,14 @@ export function initMotionStudio(store, toast) {
   }
   adjustApplyBtn.addEventListener("click", () => {
     if (!adjust || !adjust.preview) { closeAdjust(); return; }
-    const { i, cand, params, preview } = adjust;
+    const { cand, params, preview } = adjust;
     cand.srcPixels = preview.srcPixels;
     cand.autoOffset = preview.autoOffset;
     cand.offset = preview.offset;
     cand.pixels = preview.pixels;
     cand.convParams = params;
     closeAdjust();
-    renderCell(i, cand);
+    renderCell(cand);
     toast("候補を再変換しました（プロジェクトパレットへスナップ+整列済み・ナッジは維持）");
   });
   adjustCancelBtn.addEventListener("click", closeAdjust);
@@ -1067,7 +1071,7 @@ export function initMotionStudio(store, toast) {
         body: JSON.stringify({
           preset: session.preset,
           customText: session.customText,
-          total: session.total,
+          total: session.genTotal,
           styleGuide: style.styleGuide || "",
           referencePng,
         }),
@@ -1101,7 +1105,7 @@ export function initMotionStudio(store, toast) {
           let total = 0;
           for (const f of data.files) {
             const blob = await (await fetch(f.dataUrl)).blob();
-            total += await addImageCandidates(new File([blob], f.name, { type: blob.type }), { startFrame: 0, quiet: true });
+            total += await addImageCandidates(new File([blob], f.name, { type: blob.type }), { auto: true, quiet: true });
           }
           if (total > 0) toast(`gpt-exchange/in から新しい候補を取り込みました（${total}個・処理済みは in/done/ へ移動）`);
           inboxBadge.hidden = true;
@@ -1121,42 +1125,36 @@ export function initMotionStudio(store, toast) {
   }
   setInterval(pollInbox, 3000);
 
-  // §25.6-4: ミラー補完 — 採用済みフレーム i の左右反転を i+N/2 の候補に（歩き4f: 3=flip(1), 4=flip(2)）
+  // §42: 反転で補完 — 選択した候補の左右反転コピーをプールに追加（未選択）
   function mirrorComplete() {
     if (!session) return;
-    if (session.total % 2 !== 0) {
-      toast("反転補完はフレーム数が偶数のときに使えます（前半↔後半の対応）", "error");
+    if (!session.selected.length) {
+      toast("選択された候補がありません（反転コピーは番号を付けた候補から作られます）", "error");
       return;
     }
-    const half = session.total / 2;
     let added = 0;
-    for (let i = 0; i < half; i++) {
-      const src = session.adopted[i];
-      if (!src) continue;
-      const j = i + half;
-      const cand = {
-        id: session.nextId++, status: "ok", variant: session.cands[j].length,
+    for (const src of session.selected) {
+      session.pool.push({
+        id: session.nextId++, status: "ok",
         source: "mirror", snapped: true, pixels: flipPixelsH(src.pixels),
-      };
-      session.cands[j].push(cand);
+      });
       added++;
     }
-    renderGrid();
-    toast(added
-      ? `${added}個の反転候補を追加しました（フレーム${half + 1}〜。武器などの非対称部は確定後に部位修正で直してください）`
-      : "反転元がありません（前半のフレームを採用してから実行してください）", added ? "info" : "error");
+    renderPool();
+    toast(`${added}個の反転コピーをプールに追加しました（未選択。武器などの非対称部は確定後に部位修正で直してください）`);
   }
 
-  function renderCell(i, cand) {
-    const el = grid.querySelector(`[data-cell="${i}:${cand.id}"]`);
-    if (!el) return renderGrid();
-    fillCell(el, i, cand);
+  function renderCell(cand) {
+    const el = grid.querySelector(`[data-cell="${cand.id}"]`);
+    if (!el) return renderPool();
+    fillCell(el, cand);
     updateConfirmState();
   }
 
-  function fillCell(el, i, cand) {
+  function fillCell(el, cand) {
     el.innerHTML = "";
-    el.classList.toggle("is-adopted", session.adopted[i] === cand);
+    const sel = session.selected.indexOf(cand);
+    el.classList.toggle("is-selected", sel >= 0);
     el.classList.toggle("is-error", cand.status === "error");
     if (cand.status === "pending") {
       const d = document.createElement("div");
@@ -1171,60 +1169,51 @@ export function initMotionStudio(store, toast) {
       const retry = document.createElement("button");
       retry.className = "btn btn-small";
       retry.textContent = "再生成";
-      retry.addEventListener("click", () => runOne(i, cand));
+      retry.addEventListener("click", () => runOne(cand));
       el.appendChild(retry);
     } else {
-      const cv = document.createElement("canvas");
-      const srcLabel = cand.source === "image" ? "画像" : cand.source === "mirror" ? "反転" : `候補${cand.variant + 1}`;
-      cv.title = cand.warn || srcLabel;
-      drawCand(cv, cand.pixels, cand);
-      cv.addEventListener("click", () => adopt(i, cand));
-      el.appendChild(cv);
-      if (cand.source !== "grid") {
-        const badge = document.createElement("div");
-        badge.className = "mc-badge";
-        badge.textContent = cand.source === "image" ? "画像（スナップ+整列済み）" : "反転補完";
-        el.appendChild(badge);
+      // §42.1: 選択済み＝大きな番号バッジ。クリックで選択/解除（後続の番号は自動で繰り上げ）
+      if (sel >= 0) {
+        const num = document.createElement("div");
+        num.className = "mc-sel-badge";
+        num.textContent = String(sel + 1);
+        el.appendChild(num);
       }
+      const cv = document.createElement("canvas");
+      const srcLabel = cand.source === "image" ? "画像"
+        : cand.source === "mirror" ? "反転コピー"
+        : cand.source === "merge" ? "部位合成"
+        : `生成${(cand.phase ?? 0) + 1}/${cand.phaseTotal ?? "?"}-${(cand.variant ?? 0) + 1}`;
+      cv.title = cand.warn || `${srcLabel}（クリックで選択/解除）`;
+      drawCand(cv, cand.pixels, cand);
+      cv.addEventListener("click", () => toggleSelect(cand));
+      el.appendChild(cv);
+      const badge = document.createElement("div");
+      badge.className = "mc-badge";
+      badge.textContent = cand.source === "image" ? "画像（スナップ+整列済み）"
+        : cand.source === "mirror" ? "反転コピー"
+        : cand.source === "merge" ? "部位合成"
+        : srcLabel;
+      el.appendChild(badge);
       const row = document.createElement("div");
       row.className = "mc-cell-actions";
-      const adoptBtn = document.createElement("button");
-      adoptBtn.className = "btn btn-small" + (session.adopted[i] === cand ? " btn-accent" : "");
-      adoptBtn.textContent = session.adopted[i] === cand ? "採用中" : "採用";
-      adoptBtn.addEventListener("click", () => adopt(i, cand));
-      row.appendChild(adoptBtn);
-      // §25.9-2: フレーム列移動
-      const mvL = document.createElement("button");
-      mvL.className = "btn btn-small";
-      mvL.textContent = "◀列";
-      mvL.title = "前のフレーム列へ移動";
-      mvL.disabled = i === 0;
-      mvL.addEventListener("click", () => moveCand(i, cand, i - 1));
-      row.appendChild(mvL);
-      const mvR = document.createElement("button");
-      mvR.className = "btn btn-small";
-      mvR.textContent = "列▶";
-      mvR.title = "次のフレーム列へ移動";
-      mvR.disabled = i === session.total - 1;
-      mvR.addEventListener("click", () => moveCand(i, cand, i + 1));
-      row.appendChild(mvR);
       if (cand.source === "grid") {
         const redo = document.createElement("button");
         redo.className = "btn btn-small";
         redo.textContent = "描き直し";
-        redo.title = "追記指示を添えて単発再生成（採用済みの前後フレームを文脈として同梱）";
+        redo.title = "追記指示を添えて単発再生成（この候補が選択済みなら選択列の前後を文脈として同梱）";
         redo.addEventListener("click", () => {
           const inst = window.prompt("描き直しの追記指示（例: 腕をもっと大きく振って）", "");
           if (inst === null) return;
-          runOne(i, cand, { instruction: inst.trim() || undefined, withNeighbors: true });
+          runOne(cand, { instruction: inst.trim() || undefined, withNeighbors: true });
         });
         row.appendChild(redo);
       }
       const mg = document.createElement("button");
       mg.className = "btn btn-small";
       mg.textContent = "部位取り込み";
-      mg.title = "この候補から部位ごとに選んで取り込む（矩形/パーツチップ/塊/ブラシ・§25.7/§25.10）";
-      mg.addEventListener("click", () => openMerge(i, cand));
+      mg.title = "この候補から部位ごとに選んで合成候補を作る（比較先=ベース/番号付き候補・矩形/パーツチップ/塊/ブラシ・§25.7/§25.10/§42）";
+      mg.addEventListener("click", () => openMerge(cand));
       row.appendChild(mg);
       // §41: 画像由来の候補のみ「調整」（グリッド生成候補には出さない）
       if (cand.source === "image" && cand.srcRegion) {
@@ -1232,16 +1221,18 @@ export function initMotionStudio(store, toast) {
         adj.className = "btn btn-small";
         adj.textContent = "調整";
         adj.title = "背景除去閾値・フチ光彩・輪郭/彩度保護・セルサイズを個別調整（元画像領域から再変換→パレットスナップ→整列。ナッジ済みオフセットは維持）";
-        adj.addEventListener("click", () => openAdjust(i, cand));
+        adj.addEventListener("click", () => openAdjust(cand));
         row.appendChild(adj);
       }
       const del = document.createElement("button");
       del.className = "btn btn-small";
       del.textContent = "削除";
       del.addEventListener("click", () => {
-        session.cands[i] = session.cands[i].filter((c) => c !== cand);
-        if (session.adopted[i] === cand) session.adopted[i] = null;
-        renderGrid();
+        session.pool = session.pool.filter((c) => c !== cand);
+        const si = session.selected.indexOf(cand);
+        if (si >= 0) session.selected.splice(si, 1); // §42: 削除でも後続の番号は自動繰り上げ
+        renderPool();
+        if (inflight === 0) setIdleProgress();
       });
       row.appendChild(del);
       el.appendChild(row);
@@ -1259,7 +1250,7 @@ export function initMotionStudio(store, toast) {
             cand.offset.dx += dx;
             cand.offset.dy += dy;
             applyOffset(cand);
-            renderCell(i, cand);
+            renderCell(cand);
           });
           nudge.appendChild(b);
         }
@@ -1269,7 +1260,7 @@ export function initMotionStudio(store, toast) {
         ov.title = "ベースフレームを半透明で重ねて整列を確認";
         ov.addEventListener("click", () => {
           cand.overlayBase = !cand.overlayBase;
-          renderCell(i, cand);
+          renderCell(cand);
         });
         nudge.appendChild(ov);
         el.appendChild(nudge);
@@ -1277,101 +1268,45 @@ export function initMotionStudio(store, toast) {
     }
   }
 
-  function renderGrid() {
+  // §42.1: プール描画 — 列分けなしの1グリッド
+  function renderPool() {
     if (!session) return;
     grid.innerHTML = "";
-    for (let i = 0; i < session.total; i++) {
-      const col = document.createElement("div");
-      col.className = "mc-col";
-      const head = document.createElement("div");
-      head.className = "mc-col-head";
-      head.textContent = `フレーム${i + 1}`;
-      const add = document.createElement("button");
-      add.className = "btn btn-small";
-      add.textContent = "追加生成";
-      add.title = "この列にK+1個目の候補を追加";
-      add.addEventListener("click", () => {
-        const cand = { id: session.nextId++, status: "pending", variant: session.cands[i].length, source: "grid" };
-        session.cands[i].push(cand);
-        renderGrid();
-        runOne(i, cand);
-      });
-      head.appendChild(add);
-      col.appendChild(head);
-      for (const cand of session.cands[i]) {
-        const el = document.createElement("div");
-        el.className = "mc-cell";
-        el.dataset.cell = `${i}:${cand.id}`;
-        fillCell(el, i, cand);
-        col.appendChild(el);
-      }
-      grid.appendChild(col);
+    for (const cand of session.pool) {
+      const el = document.createElement("div");
+      el.className = "mc-cell";
+      el.dataset.cell = String(cand.id);
+      fillCell(el, cand);
+      grid.appendChild(el);
     }
     updateConfirmState();
   }
 
-  // §25.9-3: ギャラリーでフレーム数 N を直接変更（増=空列追加 / 減=末尾を畳む・候補あり列は確認）
-  function setTotal(n, opts = {}) {
-    if (!session || session.confirmed) return false;
-    n = Math.max(1, Math.min(12, Math.round(n)));
-    if (n === session.total) {
-      totalInput.value = String(n);
-      return true;
-    }
-    if (n < session.total) {
-      const hasCands = session.cands.slice(n).some((list) => list.length > 0);
-      if (hasCands && !opts.force
-        && !window.confirm(`フレーム${n + 1}〜${session.total}の候補は削除されます。フレーム数を${n}にしますか？`)) {
-        totalInput.value = String(session.total);
-        return false;
-      }
-      session.cands.length = n;
-      session.adopted.length = n;
-    } else {
-      while (session.cands.length < n) {
-        session.cands.push([]);
-        session.adopted.push(null);
-      }
-    }
-    session.total = n;
-    totalInput.value = String(n);
-    renderGrid();
-    if (inflight === 0) setIdleProgress();
-    return true;
-  }
-
-  // §25.9-2: 候補のフレーム列移動（採用は列ごとに1つの原則のまま・移動元の採用は解除）
-  function moveCand(i, cand, j) {
-    if (!session || j < 0 || j >= session.total || j === i) return;
-    session.cands[i] = session.cands[i].filter((c) => c !== cand);
-    if (session.adopted[i] === cand) session.adopted[i] = null;
-    cand.variant = session.cands[j].length;
-    session.cands[j].push(cand);
-    renderGrid();
-    if (inflight === 0) setIdleProgress();
-  }
-
-  function adopt(i, cand) {
+  // §42.1: 選択トグル — クリックで末尾番号を付与、再クリックで解除して後続を繰り上げ
+  function toggleSelect(cand) {
     if (cand.status !== "ok") return;
-    session.adopted[i] = session.adopted[i] === cand ? null : cand; // 再クリックで解除
-    renderGrid();
+    const i = session.selected.indexOf(cand);
+    if (i >= 0) session.selected.splice(i, 1);
+    else session.selected.push(cand);
+    renderPool(); // 番号が全体で繰り上がるため全再描画
     if (inflight === 0) setIdleProgress();
   }
 
   function updateConfirmState() {
-    const ready = session && !session.confirmed && session.adopted.every(Boolean);
-    confirmBtn.disabled = !ready;
+    const n = session ? session.selected.length : 0;
+    confirmBtn.disabled = !(session && !session.confirmed && n >= 1);
+    if (selCount) selCount.textContent = `選択 ${n}件`;
   }
 
   // ---------------------------------------------------------------------
-  // ミニプレビュー（採用中セットの連続再生・プロジェクトfps）
+  // ミニプレビュー（§42: 選択順のセットを連続再生・プロジェクトfps）
   // ---------------------------------------------------------------------
   function startPreview() {
     stopPreview();
     previewTimer = setInterval(() => {
       if (!session) return;
       const p = project();
-      const frames = session.adopted.filter(Boolean);
+      const frames = session.selected;
       const ctx = previewCanvas.getContext("2d");
       const sc = Math.max(1, Math.floor(64 / Math.max(p.width, p.height)));
       previewCanvas.width = p.width * sc;
@@ -1399,31 +1334,30 @@ export function initMotionStudio(store, toast) {
   }
 
   // ---------------------------------------------------------------------
-  // 確定（§25.2: タイムライン末尾に追加+プリセット名のタグ付与）
+  // 確定（§42: 選択順にフレーム化してタイムライン末尾へ・タグ範囲=選択数）
   // ---------------------------------------------------------------------
   confirmBtn.addEventListener("click", () => {
-    if (!session || session.confirmed || !session.adopted.every(Boolean)) return;
+    if (!session || session.confirmed || session.selected.length === 0) return;
     const p = project();
+    const n = session.selected.length;
     store.pushUndo();
     const start = p.frames.length;
-    for (const cand of session.adopted) p.frames.push({ pixels: Uint8Array.from(cand.pixels) });
-    const tag = addGeneratedTag(p, session.preset, start, start + session.total - 1);
+    for (const cand of session.selected) p.frames.push({ pixels: Uint8Array.from(cand.pixels) });
+    const tag = addGeneratedTag(p, session.preset, start, start + n - 1);
     tag.fps = p.fps;
     store.state.activeTagIndex = p.tags.indexOf(tag);
     session.confirmed = true;
-    session.insertedAt = start;
-    totalInput.disabled = true; // §25.9-3: 確定後の N 変更は不可
     store.clampAfterProjectChange();
     store.state.currentFrame = start;
     store.notify();
-    toast(`${session.total}フレームをタグ「${tag.name}」として追加しました`);
+    toast(`選択${n}件を選択順にフレーム化し、タグ「${tag.name}」として追加しました`);
     // §25.2: 確定後の各フレームに「エディタで開く」
     confirmedBar.hidden = false;
     confirmedBar.innerHTML = "";
     const label = document.createElement("span");
-    label.textContent = `確定しました（フレーム${start}〜${start + session.total - 1}・タグ「${tag.name}」）: `;
+    label.textContent = `確定しました（フレーム${start}〜${start + n - 1}・タグ「${tag.name}」）: `;
     confirmedBar.appendChild(label);
-    for (let i = 0; i < session.total; i++) {
+    for (let i = 0; i < n; i++) {
       const b = document.createElement("button");
       b.className = "btn btn-small";
       b.textContent = `フレーム${start + i}をエディタで開く`;
@@ -1463,7 +1397,6 @@ export function initMotionStudio(store, toast) {
   });
   mirrorBtn.addEventListener("click", mirrorComplete);
   kitBtn.addEventListener("click", exportKit);
-  totalInput.addEventListener("change", () => setTotal(Number(totalInput.value)));
   abortBtn.addEventListener("click", () => {
     if (abortController) abortController.abort();
   });
@@ -1471,16 +1404,15 @@ export function initMotionStudio(store, toast) {
   // 検証用フック（§25.7-6 の「スナップなし候補では適用不可」等をテストから注入するため）
   modal.__mcTest = {
     getSession: () => session,
-    addCandidate(i, cand) {
+    addCandidate(cand) {
       if (!session) return null;
-      const c = { id: session.nextId++, status: "ok", variant: session.cands[i].length, source: "image", ...cand };
-      session.cands[i].push(c);
-      renderGrid();
+      const c = { id: session.nextId++, status: "ok", source: "image", ...cand };
+      session.pool.push(c);
+      renderPool();
       return c.id;
     },
     // §41 検証用: 開いている調整パネルの現在の下書き（未適用のライブプレビュー）を覗く
     getAdjustDraft: () => (adjust ? {
-      i: adjust.i,
       candId: adjust.cand.id,
       params: { ...adjust.params },
       preview: adjust.preview ? {
@@ -1490,6 +1422,23 @@ export function initMotionStudio(store, toast) {
       } : null,
     } : null),
   };
+
+  // §42: 新しい空セッション（プールモデル）
+  function newSession() {
+    const preset = motionPreset.value;
+    const customText = motionCustomText.value.trim();
+    return {
+      preset,
+      presetLabel: PRESET_LABELS[preset] || preset,
+      customText,
+      genTotal: Math.max(2, Math.min(12, Number(motionFrames.value) || 4)),
+      k: Math.max(1, Math.min(4, Number(candCount.value) || 3)),
+      nextId: 1,
+      pool: [],
+      selected: [],
+      confirmed: false,
+    };
+  }
 
   generateBtn.addEventListener("click", () => {
     const p = project();
@@ -1505,68 +1454,47 @@ export function initMotionStudio(store, toast) {
     }
     const total = Math.max(2, Math.min(12, Number(motionFrames.value) || 4));
     const k = Math.max(1, Math.min(4, Number(candCount.value) || 3));
-    session = {
-      preset,
-      presetLabel: PRESET_LABELS[preset] || preset,
-      customText,
-      total,
-      k,
-      nextId: 1,
-      cands: Array.from({ length: total }, () => []),
-      adopted: Array.from({ length: total }, () => null),
-      confirmed: false,
-      insertedAt: null,
-    };
-    confirmedBar.hidden = true;
-    confirmedBar.innerHTML = "";
-    totalInput.value = String(total);
-    totalInput.disabled = false;
+    if (!session || session.confirmed) {
+      session = newSession();
+      confirmedBar.hidden = true;
+      confirmedBar.innerHTML = "";
+    }
+    // §42: 生成パラメータを更新し、結果は既存プールへ未選択で追加（phaseHint は生成パラメータとして維持）
+    session.preset = preset;
+    session.presetLabel = PRESET_LABELS[preset] || preset;
+    session.customText = customText;
+    session.genTotal = total;
+    session.k = k;
     modal.hidden = false;
-    abortController = new AbortController();
+    const newCands = [];
     for (let i = 0; i < total; i++) {
       for (let kk = 0; kk < k; kk++) {
-        session.cands[i].push({ id: session.nextId++, status: "pending", variant: kk, source: "grid" });
+        const cand = { id: session.nextId++, status: "pending", variant: kk, source: "grid", phase: i, phaseTotal: total };
+        session.pool.push(cand);
+        newCands.push(cand);
       }
     }
-    renderGrid();
+    renderPool();
     startPreview();
     // N×K を発行（サーバー側キューの並列2に乗る）
-    for (let i = 0; i < total; i++) {
-      for (const cand of session.cands[i]) runOne(i, cand);
-    }
+    for (const cand of newCands) runOne(cand);
   });
 
   // ---------------------------------------------------------------------
   // §39: ギャラリーを生成なしで開く（画像取り込みの入口）
-  // AI生成を一切走らせず、空セッション（プリセット/コマ数=現在の入力値・候補ゼロ）で
-  // モーダルを開く。既にセッションがあれば（確定済み含む）候補・採用状態を保持して再表示。
+  // AI生成を一切走らせず、空のプールでモーダルを開く。
+  // 既にセッションがあれば（確定済み含む）プール・選択状態を保持して再表示。
   // ---------------------------------------------------------------------
   function openGalleryWithoutGeneration() {
     if (!session) {
-      const preset = motionPreset.value;
-      const customText = motionCustomText.value.trim();
-      const total = Math.max(2, Math.min(12, Number(motionFrames.value) || 4));
-      const k = Math.max(1, Math.min(4, Number(candCount.value) || 3));
-      session = {
-        preset,
-        presetLabel: PRESET_LABELS[preset] || preset,
-        customText,
-        total,
-        k,
-        nextId: 1,
-        cands: Array.from({ length: total }, () => []),
-        adopted: Array.from({ length: total }, () => null),
-        confirmed: false,
-        insertedAt: null,
-      };
+      session = newSession();
       confirmedBar.hidden = true;
       confirmedBar.innerHTML = "";
-      totalInput.value = String(total);
-      totalInput.disabled = false;
     }
-    renderGrid();
+    renderPool();
     modal.hidden = false;
     startPreview();
+    if (inflight === 0) setIdleProgress();
     pollInbox(); // §25.8: 受信箱に画像があれば即自動取り込み
   }
   document.getElementById("mcOpenGalleryBtn").addEventListener("click", openGalleryWithoutGeneration);

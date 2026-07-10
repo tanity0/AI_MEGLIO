@@ -521,21 +521,21 @@
   </div>
 </div>
 
-<!-- §25 モーション候補スタジオ（生成→選別→確定） -->
+<!-- §25/§42 モーション候補スタジオ（プール＋選択順＝フレーム順） -->
 <div id="mcModal" class="modal-overlay" hidden>
   <div class="modal mc-modal">
     <div class="modal-head">
       <h2>モーション候補スタジオ</h2>
       <div class="mc-head-actions">
-        <span class="mc-preview-wrap"><canvas id="mcPreviewCanvas" width="64" height="64" title="採用中セットの連続再生（プロジェクトfps）"></canvas></span>
+        <span class="mc-preview-wrap"><canvas id="mcPreviewCanvas" width="64" height="64" title="選択セットの連続再生（選択順・プロジェクトfps）"></canvas></span>
         <span id="mcProgress" class="ai-progress" aria-live="polite"></span>
-        <label class="form-row inline" title="フレーム数（増=空列追加・減=末尾列を畳む）">N <input id="mcTotalInput" type="number" min="1" max="12" value="4" style="width:52px"></label>
+        <span id="mcSelCount" class="mc-sel-count" title="選択数（=確定時のフレーム数）。候補クリックで番号を付与・再クリックで解除（後続は自動繰り上げ）">選択 0件</span>
         <button id="mcKitBtn" class="btn btn-small" title="ChatGPT への依頼キット（参照PNG+依頼文）を gpt-exchange/out/ に書き出し、依頼文をクリップボードへコピー（§25.6/§25.8）">GPT用依頼キットを書き出し</button>
-        <button id="mcImageBtn" class="btn btn-small" title="画像ファイル（単発またはシート）をパレットスナップ+足元/重心整列して候補に追加（§25.6）">画像から候補追加</button>
+        <button id="mcImageBtn" class="btn btn-small" title="画像ファイル（単発またはシート）をパレットスナップ+足元/重心整列してプールに追加（選択が0件なら取り込み順に自動選択・§25.6/§42）">画像から候補追加</button>
         <input id="mcImageInput" type="file" accept="image/*" hidden>
-        <button id="mcMirrorBtn" class="btn btn-small" title="採用済みの前半フレームの左右反転を後半フレームの候補に追加（歩き4f: 3=flip(1), 4=flip(2)）">反転で補完</button>
+        <button id="mcMirrorBtn" class="btn btn-small" title="選択した候補の左右反転コピーをプールに追加（未選択・§42）">反転で補完</button>
         <button id="mcAbortBtn" class="btn btn-small" disabled>中断</button>
-        <button id="mcConfirmBtn" class="btn btn-small btn-accent" disabled>確定（タイムラインへ追加）</button>
+        <button id="mcConfirmBtn" class="btn btn-small btn-accent" disabled title="選択順にフレーム化してタイムライン末尾へ追加（タグ範囲=選択数）">確定（選択順にタイムラインへ追加）</button>
         <button id="mcCloseBtn" class="btn btn-small">閉じる</button>
       </div>
     </div>
@@ -582,6 +582,7 @@
       <div class="mc-merge-head">
         <strong id="mcMergeTitle"></strong>
         <span class="hint">矩形で部位を囲んで取り込み（Shift または「引く」で解除）。パーツチップ・塊チップ・ブラシも使えます</span>
+        <label class="form-row inline" title="差分の比較先（§42）。既定はベースフレーム、番号付きの選択候補とも比較できます">比較先 <select id="mcMergeRef"></select></label>
         <label class="radio-row inline"><input type="radio" name="mcMergeTool" value="rect" checked> 矩形</label>
         <label class="radio-row inline"><input type="radio" name="mcMergeTool" value="blob"> 塊</label>
         <label class="radio-row inline"><input type="radio" name="mcMergeTool" value="brush"> ブラシ</label>

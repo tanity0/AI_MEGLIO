@@ -1116,13 +1116,21 @@ aside, #canvasPanel {
 .mc-head-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .mc-preview-wrap { display: inline-flex; border: 1px solid var(--border); background: var(--bg-0); padding: 2px; }
 .mc-preview-wrap canvas { image-rendering: pixelated; max-width: 72px; max-height: 72px; }
-.mc-grid { display: flex; gap: 10px; overflow: auto; padding: 8px 2px; }
-.mc-col { display: flex; flex-direction: column; gap: 8px; min-width: 140px; }
-.mc-col-head { font-size: 12px; color: var(--text-1); display: flex; align-items: center; justify-content: space-between; gap: 6px; }
-.mc-cell { border: 2px solid var(--border); border-radius: 6px; padding: 4px; background: var(--bg-0); display: flex; flex-direction: column; gap: 4px; align-items: center; }
-.mc-cell.is-adopted { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+/* §42: プール表示（列分けなしの1グリッド）＋選択番号バッジ */
+.mc-grid { display: flex; flex-wrap: wrap; gap: 10px; overflow: auto; padding: 8px 2px; align-content: flex-start; }
+.mc-cell { position: relative; border: 2px solid var(--border); border-radius: 6px; padding: 4px; background: var(--bg-0); display: flex; flex-direction: column; gap: 4px; align-items: center; width: 148px; box-sizing: border-box; }
+.mc-cell.is-selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .mc-cell.is-error { border-color: var(--danger); }
 .mc-cell canvas { image-rendering: pixelated; cursor: pointer; max-width: 128px; }
+.mc-sel-badge {
+  position: absolute; top: 4px; left: 4px; z-index: 1;
+  min-width: 30px; height: 30px; padding: 0 6px; border-radius: 15px;
+  background: var(--accent); color: #0b2b21;
+  font-size: 19px; font-weight: 800; line-height: 30px; text-align: center;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+  pointer-events: none; /* バッジの上でもクリックはセルのcanvasに通す */
+}
+.mc-sel-count { font-size: 12px; color: var(--accent); border: 1px solid var(--accent-dark); border-radius: 8px; padding: 2px 8px; white-space: nowrap; }
 .mc-cell-actions { display: flex; gap: 4px; flex-wrap: wrap; justify-content: center; }
 .mc-pending { font-size: 12px; color: var(--text-1); padding: 24px 8px; }
 .mc-error { font-size: 11px; color: #f3b3ba; max-width: 130px; word-break: break-all; }
