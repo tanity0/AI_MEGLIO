@@ -116,6 +116,18 @@ export function initMotionStudio(store, toast) {
   const motionPreset = document.getElementById("motionPreset");
   const motionCustomText = document.getElementById("motionCustomText");
   const motionFrames = document.getElementById("motionFrames");
+  // §41: 候補ごとの変換調整パネル
+  const adjustPanel = document.getElementById("mcAdjustPanel");
+  const adjustTitle = document.getElementById("mcAdjustTitle");
+  const adjustCanvas = document.getElementById("mcAdjustCanvas");
+  const adjustBg = document.getElementById("mcAdjustBg");
+  const adjustGlow = document.getElementById("mcAdjustGlow");
+  const adjustEdge = document.getElementById("mcAdjustEdge");
+  const adjustSat = document.getElementById("mcAdjustSat");
+  const adjustCell = document.getElementById("mcAdjustCell");
+  const adjustStatus = document.getElementById("mcAdjustStatus");
+  const adjustApplyBtn = document.getElementById("mcAdjustApplyBtn");
+  const adjustCancelBtn = document.getElementById("mcAdjustCancelBtn");
 
   function project() { return store.state.project; }
 
@@ -382,6 +394,52 @@ export function initMotionStudio(store, toast) {
     return ctx.getImageData(0, 0, bmp.width, bmp.height);
   }
 
+  // ---------------------------------------------------------------------
+  // §41: ギャラリー候補の変換調整（取り込み後のつまみ）
+  // srcRegion（元画像の該当コマ領域・原寸・背景除去前）を保持しておき、
+  // つまみ変更のたびそこから再変換 → プロジェクトパレットへスナップ → 整列。
+  // ---------------------------------------------------------------------
+  function defaultConvParams() {
+    return { bgThreshold: 48, glowWidth: 0, edgeProtect: 0.3, satProtect: 0.5, cellDelta: 0 };
+  }
+
+  function rgbaCropToDataUrl(data, w, h) {
+    const cv = document.createElement("canvas");
+    cv.width = w; cv.height = h;
+    const ctx = cv.getContext("2d");
+    ctx.putImageData(new ImageData(new Uint8ClampedArray(data), w, h), 0, 0);
+    return cv.toDataURL("image/png");
+  }
+
+  async function dataUrlToImageData(url) {
+    const resp = await fetch(url);
+    const blob = await resp.blob();
+    const bmp = await createImageBitmap(blob);
+    const cv = document.createElement("canvas");
+    cv.width = bmp.width; cv.height = bmp.height;
+    const ctx = cv.getContext("2d");
+    ctx.drawImage(bmp, 0, 0);
+    return ctx.getImageData(0, 0, bmp.width, bmp.height);
+  }
+
+  // srcRegion から params（bgThreshold/glowWidth/edgeProtect/satProtect/cellDelta）で再変換し、
+  // §25.6 と同じパイプラインでプロジェクトパレットへスナップ・整列した { srcPixels, offset } を返す
+  async function reconvertFromRegion(srcRegionUrl, params) {
+    const p = project();
+    const region = await dataUrlToImageData(srcRegionUrl);
+    const bg = removeBackground(region.data, region.width, region.height, {
+      threshold: params.bgThreshold, glowWidth: params.glowWidth,
+    });
+    const targetH = Math.max(2, p.height + (params.cellDelta || 0));
+    const conv = convertImage(bg, region.width, region.height, {
+      targetH,
+      colors: Math.min(64, Math.max(2, p.palette.length - 1)),
+      edgeProtect: params.edgeProtect,
+      satProtect: params.satProtect,
+    });
+    return snapAndAlign(conv);
+  }
+
   async function addImageCandidates(file, opts = {}) {
     const p = project();
     if (!session) return 0;
@@ -436,8 +494,25 @@ export function initMotionStudio(store, toast) {
         continue;
       }
       const { srcPixels, offset } = snapAndAlign(conv);
+      // §41-1: 元画像の該当コマ領域（原寸クロップ・背景除去前）を保持 — 「調整」での再変換の入力源。
+      // 周囲に PAD px の余白を含めて切り出す（背景除去のフラッドフィルが機能する範囲を確保）。
+      const PAD = 8;
+      const rx0 = Math.max(0, box.x0 - PAD), ry0 = Math.max(0, box.y0 - PAD);
+      const rx1 = Math.min(img.width - 1, box.x1 + PAD), ry1 = Math.min(img.height - 1, box.y1 + PAD);
+      const rw = rx1 - rx0 + 1, rh = ry1 - ry0 + 1;
+      const rawCrop = new Uint8ClampedArray(rw * rh * 4);
+      for (let y = 0; y < rh; y++) {
+        for (let x = 0; x < rw; x++) {
+          const si = ((ry0 + y) * img.width + (rx0 + x)) * 4;
+          const di = (y * rw + x) * 4;
+          rawCrop[di] = img.data[si]; rawCrop[di + 1] = img.data[si + 1]; rawCrop[di + 2] = img.data[si + 2]; rawCrop[di + 3] = img.data[si + 3];
+        }
+      }
       const cand = {
-        source: "image", snapped: true, aligned: true, srcPixels, offset,
+        source: "image", snapped: true, aligned: true, srcPixels,
+        offset: { ...offset }, autoOffset: { ...offset }, // autoOffset: ナッジ適用前の整列オフセット（再調整時の差分計算用）
+        srcRegion: rgbaCropToDataUrl(rawCrop, rw, rh),
+        convParams: defaultConvParams(),
       };
       applyOffset(cand); // §25.9-1: pixels = srcPixels + offset（ナッジで再適用）
       prepared.push({ fi, k, cand });
@@ -486,6 +561,9 @@ export function initMotionStudio(store, toast) {
   const importPreviewGrid = document.getElementById("mcImportGrid");
   const importOkBtn = document.getElementById("mcImportOkBtn");
   const importCancelBtn = document.getElementById("mcImportCancelBtn");
+  const importBgInput = document.getElementById("mcImportBg");
+  const importGlowInput = document.getElementById("mcImportGlow");
+  const importReconvertBtn = document.getElementById("mcImportReconvertBtn");
   let importPreviewAbort = null; // モーダルを閉じたとき保留中のプレビューをキャンセル解決する
 
   function showImportPreview(prepared) {
@@ -493,6 +571,10 @@ export function initMotionStudio(store, toast) {
     return new Promise((resolve) => {
       importPreviewGrid.innerHTML = "";
       const checks = [];
+      const thumbs = [];
+      function renderThumb(idx) {
+        thumbs[idx].src = pixelsToPngDataUrl(prepared[idx].cand.pixels, p.width, p.height, p.palette, 4);
+      }
       for (const item of prepared) {
         const cell = document.createElement("label");
         cell.className = "mc-import-cell";
@@ -502,6 +584,7 @@ export function initMotionStudio(store, toast) {
         const img = document.createElement("img");
         img.src = pixelsToPngDataUrl(item.cand.pixels, p.width, p.height, p.palette, 4);
         img.alt = `コマ${item.k + 1}`;
+        thumbs.push(img);
         const cap = document.createElement("span");
         cap.textContent = `コマ${item.k + 1} → 第${item.fi + 1}フレーム`;
         cell.append(chk, img, cap);
@@ -513,11 +596,45 @@ export function initMotionStudio(store, toast) {
         importOkBtn.textContent = `取り込む(${checks.filter((c) => c.checked).length})`;
       }
       updateCount();
+      // §41-3: 取り込みプレビューの簡易つまみ（全コマ共通の背景除去閾値/フチ光彩）で変換し直す。
+      // 個別の詰めは取り込み後の候補ごとの「調整」で行う（二段構え）。
+      const firstParams = prepared[0]?.cand.convParams || defaultConvParams();
+      importBgInput.value = String(firstParams.bgThreshold);
+      importGlowInput.value = String(firstParams.glowWidth);
+      async function onReconvert() {
+        const bgThreshold = Number(importBgInput.value);
+        const glowWidth = Number(importGlowInput.value);
+        importReconvertBtn.disabled = true;
+        const origLabel = importReconvertBtn.textContent;
+        importReconvertBtn.textContent = "変換中…";
+        for (let idx = 0; idx < prepared.length; idx++) {
+          const item = prepared[idx];
+          if (!item.cand.srcRegion) continue;
+          try {
+            const params = { ...(item.cand.convParams || defaultConvParams()), bgThreshold, glowWidth };
+            const { srcPixels, offset: autoOffset } = await reconvertFromRegion(item.cand.srcRegion, params);
+            const nudgeDx = item.cand.offset.dx - item.cand.autoOffset.dx;
+            const nudgeDy = item.cand.offset.dy - item.cand.autoOffset.dy;
+            const offset = { dx: autoOffset.dx + nudgeDx, dy: autoOffset.dy + nudgeDy };
+            item.cand.srcPixels = srcPixels;
+            item.cand.autoOffset = autoOffset;
+            item.cand.offset = offset;
+            item.cand.pixels = shiftPixels(srcPixels, offset.dx, offset.dy);
+            item.cand.convParams = params;
+            renderThumb(idx);
+          } catch (err) {
+            toast(`コマ${item.k + 1}の再変換に失敗: ${err.message}`, "error");
+          }
+        }
+        importReconvertBtn.disabled = false;
+        importReconvertBtn.textContent = origLabel;
+      }
       function cleanup() {
         importPreviewPanel.hidden = true;
         importPreviewAbort = null;
         importOkBtn.removeEventListener("click", onOk);
         importCancelBtn.removeEventListener("click", onCancel);
+        importReconvertBtn.removeEventListener("click", onReconvert);
       }
       function onOk() {
         const picked = prepared.filter((_, idx) => checks[idx].checked);
@@ -530,6 +647,7 @@ export function initMotionStudio(store, toast) {
       }
       importOkBtn.addEventListener("click", onOk);
       importCancelBtn.addEventListener("click", onCancel);
+      importReconvertBtn.addEventListener("click", onReconvert);
       importPreviewAbort = onCancel;
       importPreviewPanel.hidden = false;
     });
@@ -540,6 +658,7 @@ export function initMotionStudio(store, toast) {
   // ---------------------------------------------------------------------
   const MERGE_HUES = [200, 30, 300, 120, 0, 60, 260, 170];
   let merge = null; // { i, cand, ref, refKind, blobs, adopted:Set, mask:Uint8Array }
+  let adjust = null; // §41: { i, cand, params, preview:{srcPixels,autoOffset,offset,pixels}|null }
 
   function basePixels() {
     const p = project();
@@ -845,6 +964,90 @@ export function initMotionStudio(store, toast) {
   }
 
   // ---------------------------------------------------------------------
+  // §41: 候補ごとの変換調整（「調整」ボタン → モーダル内サブパネル + ライブプレビュー）
+  // srcRegion から bgThreshold/glowWidth/edgeProtect/satProtect/セルサイズを変えて再変換 →
+  // プロジェクトパレットへスナップ → 整列。ナッジ済みオフセット（autoOffset との差分）は維持。
+  // 「適用」まで cand 自体は書き換えない（キャンセルで安全に破棄できる）。
+  // ---------------------------------------------------------------------
+  function openAdjust(i, cand) {
+    if (!cand.srcRegion) {
+      toast("この候補は元画像領域が保持されていないため調整できません", "error");
+      return;
+    }
+    adjust = { i, cand, params: { ...(cand.convParams || defaultConvParams()) }, preview: null };
+    adjustTitle.textContent = `候補調整 — フレーム${i + 1}`;
+    adjustBg.value = String(adjust.params.bgThreshold);
+    adjustGlow.value = String(adjust.params.glowWidth);
+    adjustEdge.value = String(adjust.params.edgeProtect);
+    adjustSat.value = String(adjust.params.satProtect);
+    adjustCell.value = String(adjust.params.cellDelta || 0);
+    adjustStatus.textContent = "";
+    adjustPanel.hidden = false;
+    scheduleAdjustPreview();
+  }
+
+  function closeAdjust() {
+    adjustPanel.hidden = true;
+    adjust = null;
+  }
+
+  function readAdjustParams() {
+    return {
+      bgThreshold: Number(adjustBg.value),
+      glowWidth: Number(adjustGlow.value),
+      edgeProtect: Number(adjustEdge.value),
+      satProtect: Number(adjustSat.value),
+      cellDelta: Number(adjustCell.value),
+    };
+  }
+
+  let adjustGen = 0;
+  let adjustTimer = null;
+  function scheduleAdjustPreview() {
+    clearTimeout(adjustTimer);
+    adjustTimer = setTimeout(runAdjustPreview, 120);
+  }
+  async function runAdjustPreview() {
+    if (!adjust) return;
+    const gen = ++adjustGen;
+    const params = readAdjustParams();
+    adjust.params = params;
+    adjustStatus.textContent = "変換中…";
+    try {
+      const { srcPixels, offset: autoOffset } = await reconvertFromRegion(adjust.cand.srcRegion, params);
+      if (gen !== adjustGen || !adjust) return;
+      // ナッジ済みオフセット = 元の offset と元の autoOffset の差分。新しい autoOffset に同じ差分を足して維持する。
+      const nudgeDx = adjust.cand.offset.dx - adjust.cand.autoOffset.dx;
+      const nudgeDy = adjust.cand.offset.dy - adjust.cand.autoOffset.dy;
+      const offset = { dx: autoOffset.dx + nudgeDx, dy: autoOffset.dy + nudgeDy };
+      const pixels = shiftPixels(srcPixels, offset.dx, offset.dy);
+      adjust.preview = { srcPixels, autoOffset, offset, pixels };
+      drawCand(adjustCanvas, pixels, adjust.cand);
+      adjustStatus.textContent = "";
+    } catch (err) {
+      if (gen !== adjustGen || !adjust) return;
+      adjustStatus.textContent = `変換に失敗: ${err.message}`;
+      adjust.preview = null;
+    }
+  }
+  for (const el of [adjustBg, adjustGlow, adjustEdge, adjustSat, adjustCell]) {
+    el.addEventListener("input", scheduleAdjustPreview);
+  }
+  adjustApplyBtn.addEventListener("click", () => {
+    if (!adjust || !adjust.preview) { closeAdjust(); return; }
+    const { i, cand, params, preview } = adjust;
+    cand.srcPixels = preview.srcPixels;
+    cand.autoOffset = preview.autoOffset;
+    cand.offset = preview.offset;
+    cand.pixels = preview.pixels;
+    cand.convParams = params;
+    closeAdjust();
+    renderCell(i, cand);
+    toast("候補を再変換しました（プロジェクトパレットへスナップ+整列済み・ナッジは維持）");
+  });
+  adjustCancelBtn.addEventListener("click", closeAdjust);
+
+  // ---------------------------------------------------------------------
   // §25.6-4.5/§25.8: GPT依頼キット（out/ へ reference.png + prompt.txt・依頼文はクリップボードにも）
   // ---------------------------------------------------------------------
   async function exportKit() {
@@ -1023,6 +1226,15 @@ export function initMotionStudio(store, toast) {
       mg.title = "この候補から部位ごとに選んで取り込む（矩形/パーツチップ/塊/ブラシ・§25.7/§25.10）";
       mg.addEventListener("click", () => openMerge(i, cand));
       row.appendChild(mg);
+      // §41: 画像由来の候補のみ「調整」（グリッド生成候補には出さない）
+      if (cand.source === "image" && cand.srcRegion) {
+        const adj = document.createElement("button");
+        adj.className = "btn btn-small";
+        adj.textContent = "調整";
+        adj.title = "背景除去閾値・フチ光彩・輪郭/彩度保護・セルサイズを個別調整（元画像領域から再変換→パレットスナップ→整列。ナッジ済みオフセットは維持）";
+        adj.addEventListener("click", () => openAdjust(i, cand));
+        row.appendChild(adj);
+      }
       const del = document.createElement("button");
       del.className = "btn btn-small";
       del.textContent = "削除";
@@ -1232,6 +1444,8 @@ export function initMotionStudio(store, toast) {
   function closeModal() {
     merge = null;
     mergePanel.hidden = true;
+    adjust = null;
+    adjustPanel.hidden = true;
     if (importPreviewAbort) importPreviewAbort(); // §39-4: 保留中の取り込みプレビューはキャンセル扱い
     if (abortController) abortController.abort();
     abortController = null;
@@ -1264,6 +1478,17 @@ export function initMotionStudio(store, toast) {
       renderGrid();
       return c.id;
     },
+    // §41 検証用: 開いている調整パネルの現在の下書き（未適用のライブプレビュー）を覗く
+    getAdjustDraft: () => (adjust ? {
+      i: adjust.i,
+      candId: adjust.cand.id,
+      params: { ...adjust.params },
+      preview: adjust.preview ? {
+        pixels: Array.from(adjust.preview.pixels),
+        offset: { ...adjust.preview.offset },
+        autoOffset: { ...adjust.preview.autoOffset },
+      } : null,
+    } : null),
   };
 
   generateBtn.addEventListener("click", () => {

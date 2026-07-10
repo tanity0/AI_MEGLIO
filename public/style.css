@@ -1160,6 +1160,15 @@ aside, #canvasPanel {
 }
 .mc-import-cell img { image-rendering: pixelated; max-width: 96px; max-height: 96px; background: #202020; border: 1px solid var(--border); }
 .mc-import-cell:has(input:not(:checked)) { opacity: 0.4; }
+/* §41-3: 取り込みプレビューの簡易つまみ */
+.mc-import-knobs { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12px; }
+/* §41: 候補ごとの変換調整パネル */
+.mc-adjust { border: 1px solid var(--accent-dark); border-radius: var(--radius); padding: 10px; margin: 6px 0; display: flex; flex-direction: column; gap: 8px; background: var(--bg-2); }
+.mc-adjust[hidden] { display: none; }
+.mc-adjust-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; }
+.mc-adjust-body { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-start; }
+.mc-adjust-body canvas { image-rendering: pixelated; border: 1px solid var(--border); background: var(--bg-0); }
+.mc-adjust-knobs { display: flex; flex-direction: column; gap: 4px; min-width: 220px; }
 /* §25.7 差分採用マージ */
 .mc-merge { border: 1px solid var(--border); border-radius: 6px; padding: 6px; margin: 6px 0; display: flex; flex-direction: column; gap: 6px; }
 .mc-merge[hidden] { display: none; }

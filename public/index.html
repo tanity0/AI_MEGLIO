@@ -543,10 +543,39 @@
     <!-- §39-4: 取り込みプレビュー（拾わないコマをチェックで外す。in/ 自動取り込みでは表示しない） -->
     <div id="mcImportPreview" class="mc-import-preview" hidden>
       <div class="hint">取り込むコマを選んでください（チェックを外したコマは取り込みません。gpt-exchange の in/ 自動取り込みは従来どおり全コマ取り込みです）</div>
+      <!-- §41-3: 取り込み前の簡易つまみ（全コマ共通）。個別の詰めは取り込み後の候補ごとの「調整」で -->
+      <div class="mc-import-knobs">
+        <span class="hint">この設定で変換し直す（全コマ共通・個別調整は取り込み後の「調整」で）:</span>
+        <label class="form-row inline">背景除去閾値 <input id="mcImportBg" type="range" min="8" max="120" step="1" value="48"></label>
+        <label class="form-row inline">フチ光彩除去 <input id="mcImportGlow" type="range" min="0" max="3" step="1" value="0"></label>
+        <button id="mcImportReconvertBtn" class="btn btn-small">この設定で変換し直す</button>
+      </div>
       <div id="mcImportGrid" class="mc-import-grid"></div>
       <div class="ai-actions">
         <button id="mcImportOkBtn" class="btn btn-small btn-accent">取り込む(0)</button>
         <button id="mcImportCancelBtn" class="btn btn-small">キャンセル</button>
+      </div>
+    </div>
+    <!-- §41: 候補ごとの変換調整パネル（画像由来候補の「調整」ボタンから開く） -->
+    <div id="mcAdjustPanel" class="mc-adjust" hidden>
+      <div class="mc-adjust-head">
+        <strong id="mcAdjustTitle"></strong>
+        <span class="hint" data-help="motion.candidateAdjust">元画像領域(srcRegion)から再変換 → プロジェクトパレットへスナップ → 足元/重心整列（ナッジ済みオフセットは維持）</span>
+      </div>
+      <div class="mc-adjust-body">
+        <canvas id="mcAdjustCanvas"></canvas>
+        <div class="mc-adjust-knobs">
+          <label class="form-row">背景除去閾値 <input id="mcAdjustBg" type="range" min="8" max="120" step="1" value="48"></label>
+          <label class="form-row">フチ光彩除去 <input id="mcAdjustGlow" type="range" min="0" max="3" step="1" value="0"></label>
+          <label class="form-row">輪郭保護 <input id="mcAdjustEdge" type="range" min="0" max="1" step="0.05" value="0.3"></label>
+          <label class="form-row">彩度保護 <input id="mcAdjustSat" type="range" min="0" max="1" step="0.05" value="0.5"></label>
+          <label class="form-row">セルサイズ微調整 <input id="mcAdjustCell" type="range" min="-8" max="8" step="1" value="0"></label>
+        </div>
+      </div>
+      <div id="mcAdjustStatus" class="hint" aria-live="polite"></div>
+      <div class="ai-actions">
+        <button id="mcAdjustApplyBtn" class="btn btn-small btn-accent">適用</button>
+        <button id="mcAdjustCancelBtn" class="btn btn-small">キャンセル</button>
       </div>
     </div>
     <div id="mcMergePanel" class="mc-merge" hidden>
