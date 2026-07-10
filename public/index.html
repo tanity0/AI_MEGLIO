@@ -100,6 +100,21 @@
         <input type="range" id="zoomRange" min="2" max="32" step="1" value="12">
         <span id="zoomLabel">12x</span>
       </div>
+      <div class="backdrop-row" title="透明部分とキャンバス周りの表示色（表示専用。PNG/GIF/シート/ゲーム書き出しは透明のまま）">
+        <span data-help="editor.backdrop">背景</span>
+        <select id="backdropSelect">
+          <option value="checker-dark">市松（暗）</option>
+          <option value="checker-light">市松（明）</option>
+          <option value="dark">ダーク</option>
+          <option value="lightgray">ライトグレー</option>
+          <option value="white">白</option>
+          <option value="black">黒</option>
+          <option value="green">緑</option>
+          <option value="magenta">マゼンタ</option>
+          <option value="custom">任意色</option>
+        </select>
+        <input type="color" id="backdropColor" value="#202020" title="任意の背景色（変えると「任意色」になります）">
+      </div>
       <div class="undo-row">
         <button id="undoBtn" class="btn btn-small" title="元に戻す (Ctrl+Z)">↩ 戻す</button>
         <button id="redoBtn" class="btn btn-small" title="やり直し (Ctrl+Shift+Z)">↪ やり直し</button>

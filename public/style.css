@@ -12,6 +12,12 @@
   --danger: #ef6d7a;
   --warn: #e8b654;
   --radius: 6px;
+  /* §45: 背景（透明部分の表示色）。既定=市松（暗）。backdrop.js が上書きする（表示専用） */
+  --bd-color: #202020;
+  --bd-img:
+    linear-gradient(45deg, #333333 25%, transparent 25%), linear-gradient(-45deg, #333333 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #333333 75%), linear-gradient(-45deg, transparent 75%, #333333 75%);
+  --bd-wrap: #363636;
   font-variant-numeric: tabular-nums;
 }
 
@@ -142,6 +148,10 @@ aside, #canvasPanel {
 .check-row { display: flex; align-items: center; gap: 6px; color: var(--text-1); font-size: 12px; cursor: pointer; }
 .zoom-row { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-1); }
 .zoom-row input[type=range] { flex: 1; }
+/* §45.1: 背景（透明部分の表示色）セレクタ+任意色ピッカー */
+.backdrop-row { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-1); }
+.backdrop-row select { flex: 1; min-width: 0; }
+.backdrop-row input[type=color] { width: 28px; height: 22px; padding: 0; border: 1px solid var(--border); border-radius: 4px; background: none; cursor: pointer; }
 .brush-row { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-1); }
 .brush-size-group { display: flex; gap: 4px; }
 .brush-size-btn {
@@ -336,6 +346,7 @@ aside, #canvasPanel {
   overflow: auto;
   cursor: grab;
   touch-action: none; /* §31.3: 1本指=描画/パン、2本指=パン・ピンチズームをJS側で処理するため既定のタッチ挙動を無効化 */
+  background: var(--bd-wrap); /* §45.2: キャンバス外周は背景色と同系で僅かに差を付ける */
 }
 #canvasWrap.panning { cursor: grabbing; }
 #canvasWrap > #canvasStack { margin: auto; position: relative; }
@@ -344,7 +355,11 @@ aside, #canvasPanel {
   image-rendering: pixelated;
   border: 1px solid var(--border);
   cursor: crosshair;
-  background: #202020;
+  /* §45.2: 透明部分の表示色（表示専用。canvas自体は透明のままなので書き出し非影響） */
+  background-color: var(--bd-color);
+  background-image: var(--bd-img);
+  background-size: 8px 8px;
+  background-position: 0 0, 0 4px, 4px -4px, -4px 0px;
   touch-action: none; /* §31.3: iPad/ペンタブで描画中にページスクロールさせない */
   -webkit-touch-callout: none; /* iOS長押しメニュー抑制 */
 }
@@ -611,12 +626,11 @@ aside, #canvasPanel {
 #previewCanvas {
   image-rendering: pixelated;
   border: 1px solid var(--border);
-  background-image:
-    linear-gradient(45deg, #333 25%, transparent 25%), linear-gradient(-45deg, #333 25%, transparent 25%),
-    linear-gradient(45deg, transparent 75%, #333 75%), linear-gradient(-45deg, transparent 75%, #333 75%);
+  /* §45.2: 再生プレビューの透明部分も背景設定に追随 */
+  background-image: var(--bd-img);
   background-size: 8px 8px;
   background-position: 0 0, 0 4px, 4px -4px, -4px 0px;
-  background-color: #202020;
+  background-color: var(--bd-color);
 }
 .preview-controls { display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
 
@@ -706,12 +720,11 @@ aside, #canvasPanel {
   border-radius: 4px;
   cursor: pointer;
   overflow: hidden;
-  background-image:
-    linear-gradient(45deg, #333 25%, transparent 25%), linear-gradient(-45deg, #333 25%, transparent 25%),
-    linear-gradient(45deg, transparent 75%, #333 75%), linear-gradient(-45deg, transparent 75%, #333 75%);
+  /* §45.2: タイムラインサムネの透明部分も背景設定に追随 */
+  background-image: var(--bd-img);
   background-size: 8px 8px;
   background-position: 0 0, 0 4px, 4px -4px, -4px 0px;
-  background-color: #202020;
+  background-color: var(--bd-color);
 }
 .frame-thumb canvas { image-rendering: pixelated; width: 100%; height: 100%; display: block; }
 .frame-thumb .frame-index {
@@ -1115,13 +1128,27 @@ aside, #canvasPanel {
 .mc-modal { width: 1100px; max-width: 96vw; max-height: 92vh; display: flex; flex-direction: column; }
 .mc-head-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .mc-preview-wrap { display: inline-flex; border: 1px solid var(--border); background: var(--bg-0); padding: 2px; }
-.mc-preview-wrap canvas { image-rendering: pixelated; max-width: 72px; max-height: 72px; }
+.mc-preview-wrap canvas {
+  image-rendering: pixelated; max-width: 72px; max-height: 72px;
+  /* §45.2: ギャラリーのミニプレビューの透明部分も背景設定に追随 */
+  background-color: var(--bd-color);
+  background-image: var(--bd-img);
+  background-size: 8px 8px;
+  background-position: 0 0, 0 4px, 4px -4px, -4px 0px;
+}
 /* §42: プール表示（列分けなしの1グリッド）＋選択番号バッジ */
 .mc-grid { display: flex; flex-wrap: wrap; gap: 10px; overflow: auto; padding: 8px 2px; align-content: flex-start; }
 .mc-cell { position: relative; border: 2px solid var(--border); border-radius: 6px; padding: 4px; background: var(--bg-0); display: flex; flex-direction: column; gap: 4px; align-items: center; width: 148px; box-sizing: border-box; }
 .mc-cell.is-selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .mc-cell.is-error { border-color: var(--danger); }
-.mc-cell canvas { image-rendering: pixelated; cursor: pointer; max-width: 128px; }
+.mc-cell canvas {
+  image-rendering: pixelated; cursor: pointer; max-width: 128px;
+  /* §45.2: ギャラリーサムネの透明部分も背景設定に追随 */
+  background-color: var(--bd-color);
+  background-image: var(--bd-img);
+  background-size: 8px 8px;
+  background-position: 0 0, 0 4px, 4px -4px, -4px 0px;
+}
 .mc-sel-badge {
   position: absolute; top: 4px; left: 4px; z-index: 1;
   min-width: 30px; height: 30px; padding: 0 6px; border-radius: 15px;

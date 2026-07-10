@@ -13,6 +13,7 @@ import { initHelp } from "./help.js";
 import { initCanvasResize } from "./canvasresize.js"; // §28 キャンバスのリサイズ
 import { initLiveSync } from "./livesync.js"; // §29 ライブプロジェクト同期
 import { initSendGpt } from "./sendgpt.js"; // §36 「GPTへ送る」
+import { initBackdrop } from "./backdrop.js"; // §45 背景色の変更（表示専用）
 
 // ---------------------------------------------------------------------------
 // テキストグリッド文字割当て（サーバー側 server.js と同一の規則）
@@ -1075,6 +1076,7 @@ function main() {
   initCanvasResize(store, toast); // §28 キャンバスのリサイズ
   initLiveSync(store, toast); // §29 ライブプロジェクト同期
   initSendGpt(store, toast); // §36 「GPTへ送る」ワンクリック
+  initBackdrop(); // §45 背景色の変更（透明部分の表示色・localStorage 復元）
   initHelp();
   initBackendLabel();
   store.notify();
