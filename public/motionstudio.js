@@ -120,6 +120,13 @@ export function initMotionStudio(store, toast) {
 
   function project() { return store.state.project; }
 
+  // §48.2: 静的モードでは GPT用依頼キット書き出し・候補生成の進捗UIを隠す
+  // （画像から候補追加・反転で補完・部位取り込み・確定はブラウザ内完結なので残す）。
+  if (store.state.staticMode) {
+    kitBtn.hidden = true;
+    progress.hidden = true;
+  }
+
   // セッション状態（モーダルを閉じるまで保持）— §42 プールモデル
   // pool = [{ id, status: "pending"|"ok"|"error", pixels?, error?, variant,
   //           source: "grid"|"image"|"mirror"|"merge", snapped?/aligned?（§25.6）,
@@ -1308,7 +1315,8 @@ export function initMotionStudio(store, toast) {
       }
     } catch {}
   }
-  setInterval(pollInbox, 3000);
+  // §48.2: 静的モードでは受信箱ポーリング（/api/exchange-inbox）を開始しない
+  if (!store.state.staticMode) setInterval(pollInbox, 3000);
 
   // §42: 反転で補完 — 選択した候補の左右反転コピーをプールに追加（未選択）
   function mirrorComplete() {
@@ -1828,9 +1836,11 @@ export function initMotionStudio(store, toast) {
     document.body.classList.add("mc-gallery-open"); // §47.1: タイムラインを前面化
     startPreview();
     if (inflight === 0) setIdleProgress();
-    pollInbox(); // §25.8: 受信箱に画像があれば即自動取り込み
+    if (!store.state.staticMode) pollInbox(); // §25.8: 受信箱に画像があれば即自動取り込み（静的モードでは無し）
   }
   document.getElementById("mcOpenGalleryBtn").addEventListener("click", openGalleryWithoutGeneration);
   // §39: 受信箱バッジのクリックでもギャラリーを開く（開けば自動取り込みが即走る）
   inboxBadge.addEventListener("click", openGalleryWithoutGeneration);
+  // §48.2: 静的モードのみ表示される、ヘッダーの「ギャラリーを開く」（AIパネルごと隠れる代わり）
+  document.getElementById("headerGalleryBtn")?.addEventListener("click", openGalleryWithoutGeneration);
 }

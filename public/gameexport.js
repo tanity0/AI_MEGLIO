@@ -210,6 +210,17 @@ export function initGameExport(store, toast) {
   }
 
   async function loadProfiles() {
+    // §48.2: 静的モードでは /api/profiles・/api/config の取得をスキップ（「プロファイルなし」のみ）。
+    // 出力先「ゲームリポジトリ」自体もヘッダー側の applyStaticModeUI で非表示にする。
+    if (store.state.staticMode) {
+      profiles = [];
+      config = { exportEnabled: false, exportRoot: null };
+      renderProfileSelect();
+      renderChecklist();
+      destRepoRadio.disabled = true;
+      destRepoLabel.title = "静的モードでは無効です（ダウンロードのみ）";
+      return;
+    }
     try {
       const [pRes, cRes] = await Promise.all([fetch("/api/profiles"), fetch("/api/config")]);
       profiles = await pRes.json();

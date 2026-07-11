@@ -668,6 +668,9 @@ class Store {
       rigAdjustMode: false,
       activeTagIndex: -1, // §16.1: 選択中タグ（-1 = 全体）
       serverConfig: null, // /api/config の内容（§17でバックエンド判定に使用）
+      // §48.1: 静的モード（GitHub Pages 等・サーバー無し）。起動時の GET /api/config 失敗で true。
+      // 判定はこの1箇所（detectStaticMode）のみ。各モジュールは store.state.staticMode を参照する。
+      staticMode: false,
       highlightGroup: null, // §18.3: メイングループハイライト
       zoom: 12,
       zoomAuto: true,
@@ -1027,27 +1030,81 @@ function initGlobalShortcuts() {
 // ---------------------------------------------------------------------------
 // 起動
 // ---------------------------------------------------------------------------
-// サーバー設定を取得してバックエンド表示（§15.1）
-async function initBackendLabel() {
-  const label = document.getElementById("backendLabel");
+// §48.1: 静的モード検知（唯一の判定箇所）。GET /api/config が失敗（reject/非2xx/非JSON）したら
+// store.state.staticMode = true。以降、各モジュールは store.state.staticMode を参照するだけで
+// 独自に /api/config を叩き直す必要はない。
+async function detectStaticMode() {
   try {
     const res = await fetch("/api/config");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const cfg = await res.json();
+    store.state.staticMode = false;
     store.state.serverConfig = cfg;
-    const name = cfg.mock ? "MOCK" : cfg.backend === "cli" ? "Claude Code CLI" : cfg.backend === "codex" ? "Codex CLI" : "API";
-    const ver = cfg.version ? ` · v${cfg.version}${cfg.commit ? ` (${cfg.commit})` : ""}` : "";
-    label.textContent = `バックエンド: ${name}${ver}`;
-    label.title = cfg.mock
-      ? "MOCKモード（APIを呼びません）"
-      : cfg.backend === "cli"
-        ? `Claude Code CLI（モデル: ${cfg.cliModel}。画像は送信されません）`
-        : cfg.backend === "codex"
-          ? `Codex CLI（モデル: ${cfg.codexModel}。画像は送信されません）`
-          : `Anthropic API（モデル: ${cfg.model}, effort: ${cfg.effort}）`;
-    if (cfg.version) label.title += `\nバージョン: v${cfg.version}${cfg.commit ? ` / コミット: ${cfg.commit}` : ""}（git pull 後はサーバー再起動+ブラウザ再読込で更新）`;
   } catch {
-    label.textContent = "バックエンド: 不明";
+    store.state.staticMode = true;
+    store.state.serverConfig = null;
   }
+}
+
+// §48.1: 静的モードのフッター（バージョン表示）用。public/version.json はビルド不要の
+// 静的ファイルなので相対パスで読む（サブパス配信でも壊れない）。取得失敗時は "web" のみ。
+async function staticFooterVersionText() {
+  try {
+    const res = await fetch("version.json");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (data && data.version) return `v${data.version} (web)`;
+    throw new Error("no version");
+  } catch {
+    return "web";
+  }
+}
+
+// バックエンド/バージョン表示（§15.1・§48.1）。ネットワークは一切叩かない
+// （設定取得は detectStaticMode に一本化済み）。静的モードでは "vX.Y.Z (web)" にフォールバック。
+async function renderBackendLabel() {
+  const label = document.getElementById("backendLabel");
+  if (store.state.staticMode) {
+    label.textContent = await staticFooterVersionText();
+    label.title = "静的モード（GitHub Pages 等）: サーバー機能（AI編集・サーバー保存等）は無効です";
+    return;
+  }
+  const cfg = store.state.serverConfig;
+  if (!cfg) { label.textContent = "バックエンド: 不明"; return; }
+  const name = cfg.mock ? "MOCK" : cfg.backend === "cli" ? "Claude Code CLI" : cfg.backend === "codex" ? "Codex CLI" : "API";
+  const ver = cfg.version ? ` · v${cfg.version}${cfg.commit ? ` (${cfg.commit})` : ""}` : "";
+  label.textContent = `バックエンド: ${name}${ver}`;
+  label.title = cfg.mock
+    ? "MOCKモード（APIを呼びません）"
+    : cfg.backend === "cli"
+      ? `Claude Code CLI（モデル: ${cfg.cliModel}。画像は送信されません）`
+      : cfg.backend === "codex"
+        ? `Codex CLI（モデル: ${cfg.codexModel}。画像は送信されません）`
+        : `Anthropic API（モデル: ${cfg.model}, effort: ${cfg.effort}）`;
+  if (cfg.version) label.title += `\nバージョン: v${cfg.version}${cfg.commit ? ` / コミット: ${cfg.commit}` : ""}（git pull 後はサーバー再起動+ブラウザ再読込で更新）`;
+}
+
+// §48.2: 静的モードで隠す・無効化するUI（サーバー前提の機能）。
+// [hidden] を使い、CSS側にも display:flex/inline-flex に勝つための保険ルールを用意する。
+function applyStaticModeUI() {
+  const stat = store.state.staticMode;
+  document.body.classList.toggle("static-mode", stat);
+  const hideIds = [
+    "sendToGptBtn", "liveSyncRow", "liveSaveBtn", "liveSyncStatus", "headerSepGpt",
+    "saveJsonFolderBtn", "exportPngFolderBtn", "exportGifFolderBtn", "autoOpenFolderRow",
+    "exportDestRepoLabel",
+  ];
+  for (const id of hideIds) {
+    const el = document.getElementById(id);
+    if (el) el.hidden = stat || el.hidden; // 既に hidden なもの（liveSaveBtn等）はそのまま維持
+  }
+  const profileRow = document.querySelector("#profileBar .profile-row");
+  if (profileRow) profileRow.hidden = stat;
+  const aiPanel = document.getElementById("aiPanel");
+  if (aiPanel) aiPanel.hidden = stat;
+  // §48.2: AI編集パネルごと消える「ギャラリーを開く」の代わり（ヘッダー・画像読込の隣・静的モードのみ）
+  const headerGalleryBtn = document.getElementById("headerGalleryBtn");
+  if (headerGalleryBtn) headerGalleryBtn.hidden = !stat;
 }
 
 // §27 折りたたみ（<details data-collapse-key>）の開閉状態を localStorage に記憶
@@ -1065,7 +1122,10 @@ function initCollapsePersistence() {
   });
 }
 
-function main() {
+async function main() {
+  // §48.1: 静的モード判定を最初に確定させる。以降の init* は store.state.staticMode を
+  // 同期的に参照できる（各モジュールが個別に /api/config を叩き直す必要がない）。
+  await detectStaticMode();
   initHeader();
   initGlobalShortcuts();
   initCollapsePersistence();
@@ -1083,7 +1143,8 @@ function main() {
   initSendGpt(store, toast); // §36 「GPTへ送る」ワンクリック
   initBackdrop(); // §45 背景色の変更（透明部分の表示色・localStorage 復元）
   initHelp();
-  initBackendLabel();
+  applyStaticModeUI(); // §48.2: サーバー前提UIの非表示・ギャラリーを開くの復活
+  renderBackendLabel();
   store.notify();
   // デバッグ/E2Eテスト用フック（UIには影響しない）
   window.aiMeglio = { store, openStudio };

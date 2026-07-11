@@ -1237,4 +1237,24 @@ body.mc-gallery-open #timelineBar { position: relative; z-index: 600; }
   color: var(--text-0);
 }
 .adv-collapse[open] { padding-bottom: 8px; }
+
+/* ---------- §48.2 静的モードで隠すUIの [hidden] 保険 ----------
+   .btn(display:inline-flex) / .check-row(display:flex) / #aiPanel(display:flex) /
+   .profile-row・.radio-row(display:flex) が UA の [hidden]{display:none} に勝ってしまう
+   バグがこのプロジェクトで3回発生している。ID+属性セレクタで明示的に上書きする。 */
+#sendToGptBtn[hidden],
+#liveSyncRow[hidden],
+#autoOpenFolderRow[hidden],
+#saveJsonFolderBtn[hidden],
+#exportPngFolderBtn[hidden],
+#exportGifFolderBtn[hidden],
+#headerGalleryBtn[hidden],
+#headerSepGpt[hidden],
+#aiPanel[hidden],
+#profileBar .profile-row[hidden],
+#exportDestRepoLabel[hidden],
+#mcKitBtn[hidden],
+#mcProgress[hidden] {
+  display: none;
+}
 .adv-collapse > *:not(summary) { margin-left: 10px; margin-right: 10px; }

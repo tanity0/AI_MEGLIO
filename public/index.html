@@ -20,6 +20,7 @@
       画像を開く
       <input id="importImageInput" type="file" accept="image/png,image/gif,image/webp" hidden>
     </label>
+    <button id="headerGalleryBtn" class="btn" hidden title="AI生成なしでギャラリーを開く（画像だけ取り込みたいときはこちら・静的モード）">ギャラリーを開く</button>
     <button id="reconvertBtn" class="btn" data-help="header.reconvert" title="保存された元画像から変換スタジオをやり直す">再変換</button>
     <button id="saveJsonBtn" class="btn" title="プロジェクトをJSONで保存">保存 (JSON)</button>
     <button id="saveJsonFolderBtn" class="btn btn-folder" title="サーバーの saves/ フォルダへJSON保存（§38・保存後にフォルダを開く）">📁</button>
@@ -32,10 +33,10 @@
     <button id="exportGifBtn" class="btn btn-accent" title="アニメーションGIFを書き出し">GIF書き出し</button>
     <button id="exportGifFolderBtn" class="btn btn-folder" title="サーバーの saves/ フォルダへGIF書き出し（§38・保存後にフォルダを開く）">📁</button>
     <label class="check-row inline" title="GIFのフレーム列を往復展開して書き出す（端の重複なし）"><input type="checkbox" id="gifPingpongChk"> ピンポン</label>
-    <label class="check-row inline" title="サーバー保存・書き出し完了後に保存先フォルダをOSのファイラーで自動で開く（§38・OFFで開かない）"><input type="checkbox" id="autoOpenFolderChk" checked> 保存後にフォルダを開く</label>
-    <span class="header-sep" aria-hidden="true"></span>
+    <label id="autoOpenFolderRow" class="check-row inline" title="サーバー保存・書き出し完了後に保存先フォルダをOSのファイラーで自動で開く（§38・OFFで開かない）"><input type="checkbox" id="autoOpenFolderChk" checked> 保存後にフォルダを開く</label>
+    <span class="header-sep" id="headerSepGpt" aria-hidden="true"></span>
     <button id="sendToGptBtn" class="btn" title="現在フレーム（レイヤー合成済み）を gpt-exchange/out/ に書き出し、ChatGPT に渡す依頼キットを作る（§36）">GPTへ送る</button>
-    <label class="check-row inline" title="共有ファイル live_project.json とGUIを同期。Codexがファイルを書き換えると自動で反映されます（§29）"><input type="checkbox" id="liveSyncToggle"> ライブ同期</label>
+    <label id="liveSyncRow" class="check-row inline" title="共有ファイル live_project.json とGUIを同期。Codexがファイルを書き換えると自動で反映されます（§29）"><input type="checkbox" id="liveSyncToggle"> ライブ同期</label>
     <button id="liveSaveBtn" class="btn" title="現在のプロジェクトを共有ファイル live_project.json に書き戻す（Codexが続きを読める）" hidden>ライブ保存</button>
     <span id="liveSyncStatus" class="live-sync-status" hidden></span>
   </div>
