@@ -1389,5 +1389,19 @@ body.mc-gallery-open #timelineBar { position: relative; z-index: 600; }
   /* ---- タイムライン: compact（下部のまま、高さを抑える） ---- */
   #timelineBar { padding: 4px 8px 6px; gap: 4px; }
   .frame-thumb { width: 36px; height: 36px; }
-  .timeline-controls { flex-wrap: wrap; row-gap: 4px; }
+  /* §49.6: .timeline-controls が flex:0 0 auto（縮まない）のため、幅の狭いモバイルでは
+     .timeline-main が nowrap のままだと #frameList（flex:1、サムネ列）の取り分が
+     0pxまで潰れてしまい、サムネが1枚も見えず横スクロールもできなくなっていた（実機バグ）。
+     .timeline-main を折り返し、サムネ列とコントロール列をそれぞれ専用の1行（幅100%）に
+     分けることでサムネ列に必ず横幅を確保し、横スクロールを機能させる。 */
+  .timeline-main { flex-wrap: wrap; }
+  #frameList { flex: 1 1 100%; min-width: 0; touch-action: pan-x; }
+  .timeline-controls { flex: 1 1 100%; flex-wrap: wrap; row-gap: 4px; }
+
+  /* ---- §49.6 モバイルのスクロール監査: タッチスクロール禁止はキャンバス（描画面）
+     だけに限定する。既存の overflow-x/y:auto コンテナに明示的な touch-action を付与し、
+     ヘッダー横スクロール（横=pan-x）・タグ行横スクロール（pan-x）・ドロワー縦スクロール
+     （縦=pan-y。最下部のレイヤー等まで届く）を実機（スマホSafari/Chrome）で確実にする。 */
+  .header-actions, #profileBar, #tagBar, #tagList { touch-action: pan-x; }
+  #toolPanel, #aiPanel { touch-action: pan-y; }
 }
