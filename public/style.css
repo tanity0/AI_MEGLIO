@@ -145,7 +145,11 @@ aside, #canvasPanel {
 .tool-btn.is-active span { color: var(--accent); }
 
 .tool-options { display: flex; flex-direction: column; gap: 8px; padding: 8px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
-.check-row { display: flex; align-items: center; gap: 6px; color: var(--text-1); font-size: 12px; cursor: pointer; }
+/* §49.7-1: .btn 同様 white-space:nowrap が無かったため、ヘッダーの狭い横スクロール行で
+   flex-shrink により .check-row（「ピンポン」「保存後にフォルダを開く」等のラベル）の幅が
+   詰められた際にテキストが縦に折り返し、行の高さが十数〜百数十px に膨れ上がって
+   #appHeader 全体の高さを押し広げていた（実機バグの根因）。折り返し禁止で1行固定にする。 */
+.check-row { display: flex; align-items: center; gap: 6px; color: var(--text-1); font-size: 12px; cursor: pointer; white-space: nowrap; }
 .zoom-row { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-1); }
 .zoom-row input[type=range] { flex: 1; }
 /* §45.1: 背景（透明部分の表示色）セレクタ+任意色ピッカー */
@@ -971,7 +975,11 @@ body.mc-gallery-open #timelineBar { position: relative; z-index: 600; }
   background-color: #202020;
 }
 .studio-viewport .hint { position: absolute; top: 2px; left: 6px; z-index: 2; text-shadow: 0 0 3px #000; }
-.studio-viewport canvas { display: block; cursor: grab; }
+/* §49.7-3: 2本指ピンチズーム・1本指ドラッグパンをJS側(studio.js)で処理するため、
+   §31.3の主キャンバスと同様に既定のタッチ挙動（ページスクロール・ブラウザの拡大縮小）を
+   無効化する。禁止範囲はプレビューcanvas自体のみ（§49.6の原則どおりモーダル本文の
+   縦スクロールは #studioPanel .modal 側の overflow-y:auto のまま生かす）。 */
+.studio-viewport canvas { display: block; cursor: grab; touch-action: none; }
 /* §30: フレーム選択バー */
 .studio-frame-bar {
   display: flex;
@@ -1273,17 +1281,42 @@ body.mc-gallery-open #timelineBar { position: relative; z-index: 600; }
      キャンバスパネルが全幅を使うようにする */
   #appMain { grid-template-columns: 1fr; }
 
-  /* ---- ヘッダー: 横スクロール可（ボタンの折返しで画面を潰さない） ---- */
-  #appHeader { flex-wrap: nowrap; }
-  .brand { flex: 0 0 auto; }
+  /* ---- §49.7-1: ヘッダーの作り直し。1行固定（nowrap・高さ固定）＋横スクロール保証。
+     根因は .check-row にテキスト折返し禁止(white-space:nowrap)が無く、横スクロール行の
+     中で flex-shrink により折り返されて縦に膨れていたこと（上の .check-row 修正で対処済み）。
+     ここでは再発防止の防御線として、ヘッダー行の子要素を明示的に縮まない(flex-shrink:0)・
+     1行(white-space:nowrap)固定にし、#appHeader 自体にも高さ上限を与えて何かの理由で
+     子が膨れても行の高さには影響しないようにする（overflow:hidden はセーフティネット、
+     通常時は子の実サイズがそのまま収まる）。 ---- */
+  #appHeader {
+    flex-wrap: nowrap;
+    height: 52px;
+    min-height: 52px;
+    max-height: 52px;
+    overflow: hidden;
+  }
+  .brand { flex: 0 0 auto; white-space: nowrap; }
   .header-actions {
     flex: 1 1 auto;
     min-width: 0;
     overflow-x: auto;
+    overflow-y: hidden;
     flex-wrap: nowrap;
     -webkit-overflow-scrolling: touch;
+    height: 100%;
   }
+  .header-actions > * { flex: 0 0 auto; white-space: nowrap; }
+  /* #profileBar 自体は §49.6 から overflow-x:auto/flex-wrap:nowrap 済み（このルールを維持）。
+     #tagChecklist は意図的に flex-wrap:wrap（必要タグが多い時に複数行で見せる仕様）なので、
+     #appHeader と違って高さを固定しない（固定するとチップが見えなくなる回帰になるため）。 */
   #profileBar { overflow-x: auto; flex-wrap: nowrap; -webkit-overflow-scrolling: touch; }
+  /* .profile-spacer だけは flex:1（伸びる）で「ゲーム書き出し」を右端へ押し出す既存挙動を
+     維持するため、それ以外の子だけ flex:0 0 auto・nowrap にする（§49.7-1点検・折返し防止） */
+  #profileBar > *:not(.profile-spacer) { flex: 0 0 auto; white-space: nowrap; }
+  /* タグバー（§49.7-1: プロファイル行・タグバーも同様に点検）: #tagBar は元々 overflow-x:auto
+     で、子（.tag-bar-label/.tag-chip）はもともと flex:0 0 auto かつ .tag-chip は
+     white-space:nowrap 済みなので折返しの心配は無い。touch-action:pan-x も既に付与済み
+     （§49.6）。ここでは追加のCSSは不要。折返し由来のバグが無いことをテストで確認する。 */
 
   /* ---- サイドパネルのオフキャンバスドロワー化（§49.2） ---- */
   #toolPanel, #aiPanel {
@@ -1368,6 +1401,9 @@ body.mc-gallery-open #timelineBar { position: relative; z-index: 600; }
     align-items: center;
     justify-content: center;
     cursor: pointer;
+    /* §49.7-2: ↩/↪の連打（同グループの＋/−/⤢も同様）がダブルタップズーム等の既定ジェスチャー
+       判定に食われて取りこぼされないよう、タップを即座にclickへ確定させる。 */
+    touch-action: manipulation;
   }
   .mobile-zoom-btn:active { background: rgba(56, 58, 71, 0.9); }
   .mobile-zoom-btn:disabled { opacity: 0.35; cursor: default; }

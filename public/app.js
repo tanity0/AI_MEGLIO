@@ -7,7 +7,7 @@ import { importImageFile, probeImage } from "./import.js";
 import { initRig, PART_ROLES } from "./rig.js";
 import { initGameExport, initGameView } from "./gameexport.js";
 import { initStyleRef } from "./styleref.js";
-import { initStudio, openStudio } from "./studio.js";
+import { initStudio, openStudio, getStudioView } from "./studio.js";
 import { initMotionStudio } from "./motionstudio.js";
 import { initHelp } from "./help.js";
 import { initCanvasResize } from "./canvasresize.js"; // §28 キャンバスのリサイズ
@@ -698,6 +698,15 @@ class Store {
     this.undoStack.push(projectToPlain(this.state.project));
     if (this.undoStack.length > UNDO_LIMIT) this.undoStack.shift();
     this.redoStack.length = 0;
+    // §49.7-2: アンドゥ不発の根因。pushUndo() は undoStack/redoStack を変更する唯一の経路の
+    // 一つだが、これまで notify() を呼んでいなかった。editor.js のドット/ストローク確定
+    // （pointerup/pointermove）は pushUndo() の直後に paintStroke/render を独自に呼ぶだけで
+    // store.notify() を経由しないため、#undoBtn/#mobileUndoBtn の disabled 同期
+    // （syncUndoRedoButtons は store.subscribe 経由）が更新されないまま取り残されていた。
+    // 「描画→即↩」で↩ボタンが disabled のまま（=タップが物理的に無視される）になり、
+    // その後たまたま別の操作で notify() が走った時だけ同期されて「たまに効く」ように見えていた。
+    // pushUndo() 自体で通知することで、undoStack が増えた瞬間に必ずボタンが活性化する。
+    this.notify();
   }
   undo() {
     if (this.undoStack.length === 0) return false;
@@ -1170,7 +1179,7 @@ async function main() {
   renderBackendLabel();
   store.notify();
   // デバッグ/E2Eテスト用フック（UIには影響しない）
-  window.aiMeglio = { store, openStudio };
+  window.aiMeglio = { store, openStudio, studioView: getStudioView };
 }
 
 document.addEventListener("DOMContentLoaded", main);

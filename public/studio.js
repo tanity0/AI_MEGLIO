@@ -294,7 +294,36 @@ function guessCellSize() {
   return result && result.srcCellSize ? result.srcCellSize : grid ? grid.s : 8;
 }
 
+// §49.7-3: 変換スタジオのプレビューに2本指ピンチズーム・1本指ドラッグパンを追加。
+// この画面には描画操作が無いため（§31.3の主キャンバスと違い1本指=描画を割り当てる必要がない）
+// 1本指ドラッグをそのままパンにできる。既存のホイールズーム/マウスドラッグパン（デスクトップ）は
+// そのまま維持しつつ、PointerEvents（mouse+touch+pen統一・§31.3方針踏襲）で1本指パンを
+// 実装し直し、2本指（pointerId 2つ）をピンチズームとして追加で扱う。studioSrcCanvas /
+// studioResCanvas は view.zoom/panX/panY を共有しているため（「同期ズーム」）、片方への操作が
+// 両方に反映される既存挙動・全体表示ボタン(fitView)・§44候補モードのスタジオにもそのまま効く。
 function attachViewControls() {
+  // pointerId -> {x, y}（screen座標）。2点そろったらピンチ、1点だけならパン。
+  const touchPoints = new Map();
+  let pinch = null; // {startDist, startZoom, startPanX, startPanY, midX, midY, rect}
+  let pan = null; // {x, y, panX, panY}
+
+  function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+  function mid(a, b) { return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; }
+
+  function beginPinch(rect) {
+    pan = null; // ピンチ開始で単指パンは中断
+    const pts = Array.from(touchPoints.values());
+    const m = mid(pts[0], pts[1]);
+    pinch = {
+      startDist: dist(pts[0], pts[1]) || 1,
+      startZoom: view.zoom,
+      // ピンチ中心（screen座標→現在のview上のsrc座標）を固定点として維持する
+      anchorX: view.panX + (m.x - rect.left) / view.zoom,
+      anchorY: view.panY + (m.y - rect.top) / view.zoom,
+      rect,
+    };
+  }
+
   for (const id of ["studioSrcCanvas", "studioResCanvas"]) {
     const c = $(id);
     c.addEventListener("wheel", (ev) => {
@@ -309,16 +338,60 @@ function attachViewControls() {
       view.panY = beforeY - my / view.zoom;
       renderCompare();
     }, { passive: false });
-    let drag = null;
-    c.addEventListener("mousedown", (ev) => { drag = { x: ev.clientX, y: ev.clientY }; });
-    window.addEventListener("mousemove", (ev) => {
-      if (!drag) return;
-      view.panX -= (ev.clientX - drag.x) / view.zoom;
-      view.panY -= (ev.clientY - drag.y) / view.zoom;
-      drag = { x: ev.clientX, y: ev.clientY };
+
+    c.addEventListener("pointerdown", (ev) => {
+      if (ev.pointerType === "touch") {
+        touchPoints.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+        c.setPointerCapture?.(ev.pointerId); // 2本目もキャプチャ（画面外に指が出てもピンチを継続）
+        if (touchPoints.size === 2) {
+          beginPinch(c.getBoundingClientRect());
+          return;
+        }
+        if (touchPoints.size > 2) { pinch = null; pan = null; return; }
+        // 1本指: パン開始
+      } else if (ev.button !== 0) {
+        return; // マウスは主ボタンのみ
+      } else {
+        c.setPointerCapture?.(ev.pointerId);
+      }
+      pan = { x: ev.clientX, y: ev.clientY, panX: view.panX, panY: view.panY };
+    });
+
+    c.addEventListener("pointermove", (ev) => {
+      if (ev.pointerType === "touch" && touchPoints.has(ev.pointerId)) {
+        touchPoints.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+      }
+      if (touchPoints.size === 2 && pinch) {
+        const pts = Array.from(touchPoints.values());
+        const m = mid(pts[0], pts[1]);
+        const d = dist(pts[0], pts[1]) || 1;
+        view.zoom = Math.max(0.05, Math.min(40, pinch.startZoom * (d / pinch.startDist)));
+        view.panX = pinch.anchorX - (m.x - pinch.rect.left) / view.zoom;
+        view.panY = pinch.anchorY - (m.y - pinch.rect.top) / view.zoom;
+        renderCompare();
+        return;
+      }
+      if (!pan) return;
+      view.panX = pan.panX - (ev.clientX - pan.x) / view.zoom;
+      view.panY = pan.panY - (ev.clientY - pan.y) / view.zoom;
       renderCompare();
     });
-    window.addEventListener("mouseup", () => { drag = null; });
+
+    function endPointer(ev) {
+      if (ev.pointerType === "touch") {
+        touchPoints.delete(ev.pointerId);
+        if (touchPoints.size < 2) pinch = null;
+        if (touchPoints.size === 1) {
+          // 2本指→1本指に減った: 残った指の現在位置からパンを再開する
+          const remaining = Array.from(touchPoints.values())[0];
+          pan = { x: remaining.x, y: remaining.y, panX: view.panX, panY: view.panY };
+          return;
+        }
+      }
+      pan = null;
+    }
+    c.addEventListener("pointerup", endPointer);
+    c.addEventListener("pointercancel", endPointer);
   }
 }
 
@@ -779,6 +852,11 @@ export function cancelCandidateStudio() {
   candidateMode = null;
   candidateAutoNote = "";
   return true;
+}
+
+// §49.7-3: テスト/デバッグ用の読み取り専用アクセサ（view.zoom/panX/panYの数値検証に使う）。
+export function getStudioView() {
+  return { zoom: view.zoom, panX: view.panX, panY: view.panY };
 }
 
 export function initStudio(storeRef, toastRef) {
