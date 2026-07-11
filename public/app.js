@@ -1001,15 +1001,34 @@ function initHeader() {
 }
 
 // ---------------------------------------------------------------------------
-// グローバル Undo/Redo ショートカット
+// グローバル Undo/Redo ショートカット（§49.5: モバイルのフローティング↩/↪も同じ処理を共有）
 // ---------------------------------------------------------------------------
+function doUndo() {
+  if (!store.undo()) toast("これ以上元に戻せません");
+}
+function doRedo() {
+  if (!store.redo()) toast("これ以上やり直せません");
+}
+// §49.5: #undoBtn/#redoBtn とモバイル用 #mobileUndoBtn/#mobileRedoBtn の活性状態を
+// 履歴（undoStack/redoStack）に合わせて同期する。store.notify() のたびに呼ばれる。
+function syncUndoRedoButtons() {
+  const canUndo = store.undoStack.length > 0;
+  const canRedo = store.redoStack.length > 0;
+  for (const id of ["undoBtn", "mobileUndoBtn"]) {
+    const el = document.getElementById(id);
+    if (el) el.disabled = !canUndo;
+  }
+  for (const id of ["redoBtn", "mobileRedoBtn"]) {
+    const el = document.getElementById(id);
+    if (el) el.disabled = !canRedo;
+  }
+}
+
 function initGlobalShortcuts() {
-  document.getElementById("undoBtn")?.addEventListener("click", () => {
-    if (!store.undo()) toast("これ以上元に戻せません");
-  });
-  document.getElementById("redoBtn")?.addEventListener("click", () => {
-    if (!store.redo()) toast("これ以上やり直せません");
-  });
+  document.getElementById("undoBtn")?.addEventListener("click", doUndo);
+  document.getElementById("redoBtn")?.addEventListener("click", doRedo);
+  document.getElementById("mobileUndoBtn")?.addEventListener("click", doUndo);
+  document.getElementById("mobileRedoBtn")?.addEventListener("click", doRedo);
   window.addEventListener("keydown", (ev) => {
     const tag = document.activeElement?.tagName;
     const inText = tag === "TEXTAREA" || tag === "INPUT";
@@ -1019,13 +1038,15 @@ function initGlobalShortcuts() {
     if (key === "z" && !ev.shiftKey) {
       if (inText) return;
       ev.preventDefault();
-      if (!store.undo()) toast("これ以上元に戻せません");
+      doUndo();
     } else if ((key === "z" && ev.shiftKey) || key === "y") {
       if (inText) return;
       ev.preventDefault();
-      if (!store.redo()) toast("これ以上やり直せません");
+      doRedo();
     }
   });
+  store.subscribe(syncUndoRedoButtons);
+  syncUndoRedoButtons();
 }
 
 // ---------------------------------------------------------------------------

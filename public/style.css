@@ -1266,6 +1266,7 @@ body.mc-gallery-open #timelineBar { position: relative; z-index: 600; }
 .drawer-handle { display: none; }
 #drawerBackdrop { display: none; }
 #mobileZoomControls { display: none; }
+#mobileUndoControls { display: none; } /* §49.5 */
 
 @media (max-width: 820px) {
   /* 左右パネルはオフキャンバス（position:fixed）になるためグリッド枠から外し、
@@ -1369,6 +1370,21 @@ body.mc-gallery-open #timelineBar { position: relative; z-index: 600; }
     cursor: pointer;
   }
   .mobile-zoom-btn:active { background: rgba(56, 58, 71, 0.9); }
+  .mobile-zoom-btn:disabled { opacity: 0.35; cursor: default; }
+  .mobile-zoom-btn:disabled:active { background: rgba(36, 38, 49, 0.8); }
+
+  /* ---- クイックアンドゥUI（§49.5・左下フローティング。§49.3のズームボタンと左右対称）----
+     つまみ（.drawer-handle-left: left:0, top:50%, height:88px）とは
+     縦位置が被らないよう bottom 起点で配置する。 */
+  #mobileUndoControls {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    position: absolute;
+    left: 12px;
+    bottom: 12px;
+    z-index: 60; /* カーソルオーバーレイより前面・モーダル(500〜)より背面 */
+  }
 
   /* ---- タイムライン: compact（下部のまま、高さを抑える） ---- */
   #timelineBar { padding: 4px 8px 6px; gap: 4px; }
