@@ -1591,3 +1591,11 @@ API不要の draw→GPT 最短経路の最後の1ピース。現在フレーム�
 2. **実表示高さ基準のレイアウト**: アプリのルートグリッドの高さを `100vh` → `100dvh`（フォールバック付き）にし、iOS Safari の下部バーの伸縮でヘッダー/タイムラインが画面外に出ないようにする。`overscroll-behavior: none` でページのゴムスクロールも抑止。
 3. **セーフエリア**: `viewport-fit=cover` に伴い、ヘッダー上端に `env(safe-area-inset-top)`、タイムライン下端に `env(safe-area-inset-bottom)` のパディングを追加（ノッチ/ホームバーとの重なり防止）。
 4. 検証: 390×844 でヘッダーが常に viewport 内・visualViewport スケール固定の確認（メタ内容の検証＋タッチ操作後もヘッダー rect が画面内）・デスクトップ退行なし・test49 追加全PASS。バージョン繰り上げ。
+
+### 49.9 モーダル画面のSafariズーム抑止（追補）
+
+実機フィードバック: 画像取り込み（変換スタジオ）の画面でまだSafariのページズームが効いてしまう。iOS Safari は user-scalable=no を無視するため、実際の抑止は touch-action と gesture イベントの preventDefault で行う必要がある。
+
+1. **iOS専用 gesture イベントの抑止**: document に `gesturestart`/`gesturechange`/`gesturedown` の preventDefault（passive:false）を敷き、Safariのページピンチズームをアプリ全域で止める。PointerEvents ベースの自作ピンチ（キャンバス/スタジオ）は gesture イベントと独立のため影響なし。
+2. **モーダル/パネルの touch-action**: `.modal`（ギャラリー・書き出し・リサイズ）・`#studioPanel`・取り込みプレビュー等のコンテナに `touch-action: pan-x pan-y`（スクロールは許可・ピンチは不許可）を敷く。自作ピンチ対象のキャンバス（touch-action:none）はそのまま。
+3. 検証: 390×844 で studioPanel/ギャラリー/書き出しの computed touch-action 確認・gesture リスナーの存在確認（機能検証はJSDOMでのgestureイベント発火）・モーダル内スクロール（§49.6）とスタジオの自作ピンチ（§49.7）の退行なし・test49 追加全PASS・回帰 test48。バージョン繰り上げ。
