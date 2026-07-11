@@ -589,13 +589,19 @@ function attachKnobs() {
       scheduleConvert();
     });
   }
-  const nudge = (key, delta, labelId, fmt) => {
-    knobs[key] = Math.round((knobs[key] + delta) * 100) / 100;
+  // §49.10: 1タップの刻み幅を推定セルサイズ grid.s に比例させる。
+  // grid 未推定（null）の間は従来の固定値（offset=1px / size=0.25px）にフォールバック。
+  // 保存値（knobs.offsetDX/DY・sizeDelta）の単位は従来どおり実px。
+  const offsetNudgeStep = () => (grid ? Math.max(1, Math.round(grid.s / 4)) : 1);
+  const sizeNudgeStep = () => (grid ? Math.max(0.25, Math.round((grid.s * 0.02) / 0.25) * 0.25) : 0.25);
+  const nudge = (key, dir, labelId, fmt) => {
+    const step = key === "sizeDelta" ? sizeNudgeStep() : offsetNudgeStep();
+    knobs[key] = Math.round((knobs[key] + dir * step) * 100) / 100;
     $(labelId).textContent = fmt ? knobs[key].toFixed(2) : String(knobs[key]);
     scheduleConvert();
   };
-  $("studioSizeMinus").addEventListener("click", () => nudge("sizeDelta", -0.25, "studioSizeDelta", true));
-  $("studioSizePlus").addEventListener("click", () => nudge("sizeDelta", 0.25, "studioSizeDelta", true));
+  $("studioSizeMinus").addEventListener("click", () => nudge("sizeDelta", -1, "studioSizeDelta", true));
+  $("studioSizePlus").addEventListener("click", () => nudge("sizeDelta", 1, "studioSizeDelta", true));
   $("studioOxMinus").addEventListener("click", () => nudge("offsetDX", -1, "studioOffsetDX"));
   $("studioOxPlus").addEventListener("click", () => nudge("offsetDX", 1, "studioOffsetDX"));
   $("studioOyMinus").addEventListener("click", () => nudge("offsetDY", -1, "studioOffsetDY"));
@@ -918,6 +924,7 @@ export function initStudio(storeRef, toastRef) {
       activeFrame,
       candidateMode: !!candidateMode, // §44.1
       knobs: { ...knobs },
+      grid: grid ? { ...grid } : null, // §49.10: 推定セルサイズ（nudge刻み幅の検証用）
       srcW: srcData ? srcData.w : 0, // §40: 再変換入力の解像度検証用
       srcH: srcData ? srcData.h : 0,
       frameCount: result && result.framesPixels ? result.framesPixels.length : (result ? 1 : 0),
