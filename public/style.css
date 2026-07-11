@@ -30,18 +30,40 @@ html, body {
   color: var(--text-0);
   font-family: -apple-system, "Segoe UI", "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif;
   font-size: 14px;
+  /* §49.8: iOS Safari のゴムスクロール（ページ全体のバウンス）でヘッダー/タイムラインが
+     画面外へ押し出されるのを抑止する。個々のスクロールコンテナ（ドロワー/モーダル等）の
+     内部スクロールは touch-action の指定どおり引き続き機能する。 */
+  overscroll-behavior: none;
 }
 
 body {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: 100vh; /* dvh 未対応環境向けフォールバック */
   overflow: hidden;
+}
+
+/* §49.8: 実表示高さ基準のレイアウト。iOS Safari は下部バー（URLバー等）の伸縮に応じて
+   100vh がレイアウトビューポート（＝バー最小時の高さ）基準のまま変わらず、結果として
+   ヘッダーやタイムラインが実際のビジュアルビューポートの外に押し出される。
+   100dvh（動的ビューポート単位）が使える環境ではそちらを優先し、実表示高さに追従させる。 */
+@supports (height: 100dvh) {
+  body { height: 100dvh; }
 }
 
 button {
   font-family: inherit;
   font-size: inherit;
+}
+
+/* §49.8: ダブルタップズーム誤爆防止（UI全域への適用範囲の点検・拡大）。
+   §49.7 では .mobile-zoom-btn にのみ touch-action:manipulation を適用していたが、
+   連打・連続タップされうるボタン/チップ/チェック類全般に広げる。
+   キャンバス・変換スタジオの自作ピンチ（PointerEvents実装）が使う要素
+   （#canvasWrap/#mainCanvas/.studio-viewport canvas 等）は別途 touch-action:none が
+   明示指定されており、ここでの対象外（別セレクタなので影響しない）。 */
+button, .btn, .tool-btn, .drawer-handle, .tag-chip, .frame-thumb, .check-row, .radio-row, select {
+  touch-action: manipulation;
 }
 
 /* ---------- header ---------- */
@@ -1290,9 +1312,13 @@ body.mc-gallery-open #timelineBar { position: relative; z-index: 600; }
      通常時は子の実サイズがそのまま収まる）。 ---- */
   #appHeader {
     flex-wrap: nowrap;
-    height: 52px;
-    min-height: 52px;
-    max-height: 52px;
+    /* §49.8: viewport-fit=cover に伴い、ノッチ/Dynamic Island のセーフエリア分だけ
+       上端パディングを増やし、その分だけ高さも伸ばして1行52px分の表示領域を確保する
+       （env() 未対応環境ではフォールバック0pxで従来どおり）。 */
+    height: calc(52px + env(safe-area-inset-top, 0px));
+    min-height: calc(52px + env(safe-area-inset-top, 0px));
+    max-height: calc(52px + env(safe-area-inset-top, 0px));
+    padding-top: calc(8px + env(safe-area-inset-top, 0px));
     overflow: hidden;
   }
   .brand { flex: 0 0 auto; white-space: nowrap; }
@@ -1422,8 +1448,10 @@ body.mc-gallery-open #timelineBar { position: relative; z-index: 600; }
     z-index: 60; /* カーソルオーバーレイより前面・モーダル(500〜)より背面 */
   }
 
-  /* ---- タイムライン: compact（下部のまま、高さを抑える） ---- */
-  #timelineBar { padding: 4px 8px 6px; gap: 4px; }
+  /* ---- タイムライン: compact（下部のまま、高さを抑える） ----
+     §49.8: viewport-fit=cover に伴い、ホームバー（ホームインジケーター）のセーフエリア分だけ
+     下端パディングを増やし、操作ボタンがホームバーの裏に隠れないようにする。 */
+  #timelineBar { padding: 4px 8px calc(6px + env(safe-area-inset-bottom, 0px)); gap: 4px; }
   .frame-thumb { width: 36px; height: 36px; }
   /* §49.6: .timeline-controls が flex:0 0 auto（縮まない）のため、幅の狭いモバイルでは
      .timeline-main が nowrap のままだと #frameList（flex:1、サムネ列）の取り分が
