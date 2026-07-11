@@ -197,6 +197,12 @@
       <span id="cursorPosLabel"></span>
       <span id="backendLabel" title="サーバーのAIバックエンド"></span>
     </div>
+    <!-- §49.3: モバイル専用キャンバスズームUI（デスクトップではCSSで非表示） -->
+    <div id="mobileZoomControls" class="mobile-zoom-controls">
+      <button id="mobileZoomInBtn" type="button" class="mobile-zoom-btn" title="ズームイン（+2）" aria-label="ズームイン">＋</button>
+      <button id="mobileZoomOutBtn" type="button" class="mobile-zoom-btn" title="ズームアウト（-2）" aria-label="ズームアウト">－</button>
+      <button id="mobileZoomFitBtn" type="button" class="mobile-zoom-btn" title="全体表示（フィット）" aria-label="全体表示">⤢</button>
+    </div>
   </section>
 
   <aside id="aiPanel">
@@ -732,6 +738,11 @@
   </label>
   <div class="fp-grid" id="floatPaletteGrid"></div>
 </div>
+
+<!-- §49.2: モバイルドロワーのつまみ・バックドロップ（デスクトップでは非表示。CSSの@media内に隔離） -->
+<button id="toolDrawerHandle" type="button" class="drawer-handle drawer-handle-left" title="ツールパネルを開く/閉じる" aria-label="ツールパネルを開く/閉じる">☰</button>
+<button id="aiDrawerHandle" type="button" class="drawer-handle drawer-handle-right" title="AI編集/履歴パネルを開く/閉じる" aria-label="AI編集/履歴パネルを開く/閉じる">☰</button>
+<div id="drawerBackdrop"></div>
 
 <div id="toastRoot" aria-live="polite"></div>
 

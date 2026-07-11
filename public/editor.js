@@ -877,6 +877,22 @@ export function initEditor(store, toast) {
 
   zoomRange.addEventListener("input", () => setZoom(Number(zoomRange.value)));
 
+  // §49.3: モバイル専用のキャンバスズームUI（＋/−/⤢全体）。ボタン自体はCSSでデスクトップ
+  // では非表示だが、リスナーは常時登録して問題ない（非表示中はクリックされない）。
+  // ＋/−は既存 zoom を1段階（±2）増減、⤢は zoomAuto（全体フィット）に戻す。
+  const mobileZoomInBtn = document.getElementById("mobileZoomInBtn");
+  const mobileZoomOutBtn = document.getElementById("mobileZoomOutBtn");
+  const mobileZoomFitBtn = document.getElementById("mobileZoomFitBtn");
+  mobileZoomInBtn?.addEventListener("click", () => setZoom(store.state.zoom + 2));
+  mobileZoomOutBtn?.addEventListener("click", () => setZoom(store.state.zoom - 2));
+  mobileZoomFitBtn?.addEventListener("click", () => {
+    store.state.zoomAuto = true;
+    store.state.zoom = computeAutoZoom();
+    render();
+    zoomRange.value = String(store.state.zoom);
+    zoomLabel.textContent = `${store.state.zoom}x`;
+  });
+
   clearSelectionBtn.addEventListener("click", () => {
     if (floating) commitFloating(); // 保留中の変形は焼き込んでから選択解除
     store.state.selection = null;
