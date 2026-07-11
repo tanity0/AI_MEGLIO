@@ -50,4 +50,18 @@ export function initMobile() {
   if (typeof mq.addEventListener === "function") mq.addEventListener("change", syncMediaState);
   else if (typeof mq.addListener === "function") mq.addListener(syncMediaState); // 古いSafari互換
   syncMediaState();
+
+  initGestureGuard();
+}
+
+// §49.9: iOS Safari はページの2本指ピンチズームを user-scalable=no でも無視することがあるため、
+// 非標準の gesturestart/gesturechange/gestureend（Safari独自イベント）を preventDefault してアプリ
+// 全域でページズームを止める。これは PointerEvents で自前実装しているキャンバス（editor.js）・
+// 変換スタジオ（studio.js）のピンチとは完全に独立したイベント系統なので、そちらの挙動には影響しない。
+// モバイル/デスクトップを問わず常時張っておいてよい（デスクトップ・Safari以外では発火しないため無害）。
+function initGestureGuard() {
+  const preventGesture = (e) => e.preventDefault();
+  document.addEventListener("gesturestart", preventGesture, { passive: false });
+  document.addEventListener("gesturechange", preventGesture, { passive: false });
+  document.addEventListener("gestureend", preventGesture, { passive: false });
 }

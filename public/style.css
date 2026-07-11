@@ -675,7 +675,9 @@ aside, #canvasPanel {
    変換スタジオ（#studioPanel）はさらに前面（700）なので、ギャラリーから候補調整で
    スタジオを開いている間はタイムラインに覆われない（トースト999/ヘルプ1000未満） */
 body.mc-gallery-open #timelineBar { position: relative; z-index: 600; }
-#studioPanel { z-index: 700; }
+/* §49.9: .modal-overlay の背景領域（バックドロップ）自体でのピンチも抑止しておく
+   （中の .modal は上の .modal ルールで touch-action:pan-x pan-y 済み）。 */
+#studioPanel { z-index: 700; touch-action: pan-x pan-y; }
 .timeline-main {
   display: flex;
   align-items: center;
@@ -874,6 +876,11 @@ body.mc-gallery-open #timelineBar { position: relative; z-index: 600; }
   flex-direction: column;
   gap: 10px;
   box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+  /* §49.9: モーダル内の縦スクロール（このoverflow-y:auto）・横スクロールは許可しつつ、
+     iOS Safariのページピンチズームの起点になるのを防ぐ。自作ピンチ対象のキャンバス
+     （.studio-viewport canvas 等、touch-action:none）は個別セレクタの方が詳細度が高く
+     優先されるため、ここでの指定に上書きされない。 */
+  touch-action: pan-x pan-y;
 }
 .modal-head { display: flex; align-items: center; justify-content: space-between; }
 .modal-head h2 { margin: 0; font-size: 15px; }
@@ -1215,6 +1222,8 @@ body.mc-gallery-open #timelineBar { position: relative; z-index: 600; }
   border: 1px solid var(--accent-dark);
   border-radius: var(--radius);
   background: var(--bg-2);
+  /* §49.9: 取り込みプレビュー内のスクロールは許可、ページピンチズームは不許可 */
+  touch-action: pan-x pan-y;
 }
 .mc-import-preview[hidden] { display: none; }
 .mc-import-grid { display: flex; flex-wrap: wrap; gap: 8px; }
