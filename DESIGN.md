@@ -1617,3 +1617,12 @@ API不要の draw→GPT 最短経路の最後の1ピース。現在フレーム�
 2. 左パネル内の既存 brush-size-btn と**状態同期**（どちらを押してももう一方の is-active も更新）。ズームボタン・右ドロワーつまみ・↩/↪と重ならないこと。画面高が足りない場合は縦スクロールでなく間隔を詰めて収める。
 3. デスクトップでは非表示。touch-action: manipulation。
 4. 検証: 390×844 でタップ→editor のブラシサイズが変わり描画幅が変わる（画素数値）・パネル側との相互同期・非重複（rect）・デスクトップ非表示・test49 追加全PASS・回帰 test48。バージョン繰り上げ。
+
+### 49.12 解像度指定モードでオフセット/サイズ±が無効なバグ修正（追補）
+
+実機フィードバック: 別の画像でもオフセットが無反応（±100でも変化なし）。根因: convertImage / convertSheetImage の `targetH > 0`（解像度(高さ)指定・既定）分岐では `cs = bbox高さ/targetH, gx0 = x0, gy0 = y0` と外接矩形固定で、**ox/oy（オフセット）と sizeDelta を完全に無視**している。オフセットが効くのは 1:1 モード（targetH=0）と §30 多フレーム経路のみだった。
+
+1. **params に offsetDX/offsetDY を明示的に追加**（knobsToParams から渡す。従来の ox/oy＝grid位相+offset は 1:1 用にそのまま維持）。
+2. **targetH>0 分岐で適用**: `gx0 = x0 + offsetDX, gy0 = y0 + offsetDY`、`cs = bbox高さ/targetH + sizeDelta`（cs は 0.5 以上にクランプ。幅128クランプとの順序に注意）。convertImage と convertSheetImage の両方。
+3. §49.10 の刻み幅比例化はそのまま有効（targetH モードでは grid.s ではなく現在の cs 相当で刻むのが理想だが、grid.s ≒ cs のため簡易に grid.s 基準のままで良い）。
+4. 検証: targetH=64 の単一画像でオフセット1タップ→変換結果の画素が変わる（数値）・サイズ±も変化・1:1 モードの従来動作維持・多フレーム経路（test30系）退行なし・conversionParams 往復互換。バージョン繰り上げ。
