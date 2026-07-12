@@ -81,9 +81,14 @@ function defaultKnobs() {
 
 function knobsToParams() {
   return {
+    // 1:1 モード（targetH=0）用: グリッド位相 + オフセットを1本化した従来互換値
     s: grid.s + knobs.sizeDelta,
     ox: grid.ox + knobs.offsetDX,
     oy: grid.oy + knobs.offsetDY,
+    // §49.12: 解像度指定モード（targetH>0）用にオフセット/サイズ±を明示的に渡す
+    offsetDX: knobs.offsetDX,
+    offsetDY: knobs.offsetDY,
+    sizeDelta: knobs.sizeDelta,
     targetH: knobs.oneToOne ? 0 : knobs.targetH,
     colors: knobs.colors,
     domBlend: knobs.domBlend,

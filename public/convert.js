@@ -343,7 +343,7 @@ function quantizeCellColors(allCellColors, colors, satProtect) {
 }
 
 export function convertImage(data, w, h, params) {
-  const { s, ox, oy, targetH = 0, colors = 64, domBlend = 0.15, centerWeight = 0.5, edgeProtect = 0.3, satProtect = 0.5 } = params;
+  const { s, ox, oy, targetH = 0, colors = 64, domBlend = 0.15, centerWeight = 0.5, edgeProtect = 0.3, satProtect = 0.5, offsetDX = 0, offsetDY = 0, sizeDelta = 0 } = params;
 
   // 非透明のバウンディングボックス
   let x0 = w, y0 = h, x1 = -1, y1 = -1;
@@ -358,8 +358,10 @@ export function convertImage(data, w, h, params) {
   // セルサイズと開始位相
   let cs, gx0, gy0;
   if (targetH > 0) {
-    cs = (y1 - y0 + 1) / targetH;
-    gx0 = x0; gy0 = y0;
+    // §49.12: sizeDelta を反映後、0.5px 未満にはクランプ（幅128クランプより先）
+    cs = (y1 - y0 + 1) / targetH + sizeDelta;
+    if (cs < 0.5) cs = 0.5;
+    gx0 = x0 + offsetDX; gy0 = y0 + offsetDY;
   } else {
     cs = s;
     gx0 = x0 - (((x0 - ox) % s) + s) % s;
@@ -484,14 +486,15 @@ export function detectComponents(data, w, h) {
 // 共通パレット（全ポーズ一括k-means）、共通セルサイズ
 // ---------------------------------------------------------------------------
 export function convertSheetImage(data, w, h, params, boxes, align = "bottom") {
-  const { s, targetH = 0, colors = 64, domBlend = 0.15, centerWeight = 0.5, edgeProtect = 0.3, satProtect = 0.5 } = params;
+  const { s, targetH = 0, colors = 64, domBlend = 0.15, centerWeight = 0.5, edgeProtect = 0.3, satProtect = 0.5, offsetDX = 0, offsetDY = 0, sizeDelta = 0 } = params;
   if (!boxes || boxes.length < 1) throw new Error("分割対象がありません");
 
   const maxBoxW = Math.max(...boxes.map((b) => b.x1 - b.x0 + 1));
   const maxBoxH = Math.max(...boxes.map((b) => b.y1 - b.y0 + 1));
 
-  // 共通セルサイズ（最大ポーズ基準）
-  let cs = targetH > 0 ? maxBoxH / targetH : s;
+  // 共通セルサイズ（最大ポーズ基準）。§49.12: sizeDelta を反映後、0.5px 未満はクランプ（幅128クランプより先）
+  let cs = targetH > 0 ? maxBoxH / targetH + sizeDelta : s;
+  if (targetH > 0 && cs < 0.5) cs = 0.5;
   // モーション用パディング: 左右2セル・上2セル・下0（接地）
   const PAD_X = 2, PAD_TOP = 2, PAD_BOTTOM = 0;
   // 128クランプ（§18.1）
@@ -508,9 +511,9 @@ export function convertSheetImage(data, w, h, params, boxes, align = "bottom") {
     const bh = b.y1 - b.y0 + 1;
     const cols = Math.min(poseColsMax, Math.ceil(bw / cs));
     const rows = Math.min(poseRowsMax, Math.ceil(bh / cs));
-    // 下端揃え・中央x（ポーズ内サンプリング原点）
-    const gy0 = b.y1 + 1 - rows * cs;
-    const gx0 = (b.x0 + b.x1 + 1) / 2 - (cols * cs) / 2;
+    // 下端揃え・中央x（ポーズ内サンプリング原点）。§49.12: offsetDX/DY を適用
+    const gy0 = b.y1 + 1 - rows * cs + offsetDY;
+    const gx0 = (b.x0 + b.x1 + 1) / 2 - (cols * cs) / 2 + offsetDX;
     const cells = sampleCellsRegion(data, w, h, { cs, gx0, gy0, cols, rows, domBlend, centerWeight, edgeProtect });
     poseCells.push({ cells, cols, rows });
   }
