@@ -197,6 +197,17 @@
       <span id="cursorPosLabel"></span>
       <span id="backendLabel" title="サーバーのAIバックエンド"></span>
     </div>
+    <!-- §49.11: モバイル専用クイックブラシサイズUI（キャンバス右側・ズームボタン群の上・
+         デスクトップではCSSで非表示）。brush-size-btn クラスは左パネルの同クラスと共有しており、
+         editor.js のクリックハンドラ／is-active同期（querySelectorAll(".brush-size-btn")）に
+         そのまま乗るため、専用のJS配線は不要（既存の流儀のまま状態が相互同期する）。 -->
+    <div id="mobileBrushControls" class="mobile-zoom-controls mobile-brush-controls">
+      <button type="button" class="mobile-zoom-btn mobile-brush-btn brush-size-btn" data-size="1" title="ブラシサイズ 1px" aria-label="ブラシサイズ1">1</button>
+      <button type="button" class="mobile-zoom-btn mobile-brush-btn brush-size-btn" data-size="2" title="ブラシサイズ 2px" aria-label="ブラシサイズ2">2</button>
+      <button type="button" class="mobile-zoom-btn mobile-brush-btn brush-size-btn" data-size="3" title="ブラシサイズ 3px" aria-label="ブラシサイズ3">3</button>
+      <button type="button" class="mobile-zoom-btn mobile-brush-btn brush-size-btn" data-size="4" title="ブラシサイズ 4px" aria-label="ブラシサイズ4">4</button>
+      <button type="button" class="mobile-zoom-btn mobile-brush-btn brush-size-btn" data-size="8" title="ブラシサイズ 8px" aria-label="ブラシサイズ8">8</button>
+    </div>
     <!-- §49.3: モバイル専用キャンバスズームUI（デスクトップではCSSで非表示） -->
     <div id="mobileZoomControls" class="mobile-zoom-controls">
       <button id="mobileZoomInBtn" type="button" class="mobile-zoom-btn" title="ズームイン（+2）" aria-label="ズームイン">＋</button>

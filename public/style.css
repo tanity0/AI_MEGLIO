@@ -1306,6 +1306,7 @@ body.mc-gallery-open #timelineBar { position: relative; z-index: 600; }
 #drawerBackdrop { display: none; }
 #mobileZoomControls { display: none; }
 #mobileUndoControls { display: none; } /* §49.5 */
+#mobileBrushControls { display: none; } /* §49.11 */
 
 @media (max-width: 820px) {
   /* 左右パネルはオフキャンバス（position:fixed）になるためグリッド枠から外し、
@@ -1443,6 +1444,35 @@ body.mc-gallery-open #timelineBar { position: relative; z-index: 600; }
   .mobile-zoom-btn:active { background: rgba(56, 58, 71, 0.9); }
   .mobile-zoom-btn:disabled { opacity: 0.35; cursor: default; }
   .mobile-zoom-btn:disabled:active { background: rgba(36, 38, 49, 0.8); }
+
+  /* ---- クイックブラシサイズUI（§49.11・キャンバス右側、ズームボタン群(§49.3)より
+     視覚的に上に縦積み）。同じ .mobile-zoom-btn の円形半透明デザインを流用しつつ、
+     5個収めるため 40px・4px間隔とやや詰めてある。
+     実測（390×844）: ズームボタン群は bottom:12px 起点で高さ148px（top≈532px）、
+     右ドロワーつまみ(#aiDrawerHandle)は position:fixed; top:50% で画面中央（top≈378〜
+     bottom≈466px）に固定表示される。この2つの間（466〜532px）は約66pxしかなく5ボタンは
+     収まらないため、ズーム群のすぐ上に積むのではなく、つまみより上側（キャンバス上部・
+     #canvasStatus より上のcanvasWrap内、top:12px起点）に置くことで、ズームボタン群より
+     上・かつ画面中央のつまみとも重ならない配置にする（縦位置が離れているだけで
+     「ズームボタン群の上」という視覚的な積み順は保たれる）。5ボタン(40px)+間隔(4px)×4=
+     216px は、canvasPanel上端からつまみ上端までの実測290px以内に収まる。
+     画面高が足りない狭小機では gap を詰めて収める方針（§49.11-2）。 ---- */
+  #mobileBrushControls {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    position: absolute;
+    right: 12px;
+    top: 12px;
+    z-index: 60; /* §49.3/49.5と同じ層（カーソルオーバーレイより前面・モーダルより背面） */
+  }
+  .mobile-brush-btn {
+    width: 40px;
+    height: 40px;
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .mobile-brush-btn.is-active { border-color: var(--accent); background: var(--bg-3); color: var(--text-0); }
 
   /* ---- クイックアンドゥUI（§49.5・左下フローティング。§49.3のズームボタンと左右対称）----
      つまみ（.drawer-handle-left: left:0, top:50%, height:88px）とは
