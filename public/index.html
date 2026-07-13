@@ -110,6 +110,10 @@
           <button type="button" class="brush-size-btn" data-size="8">8</button>
         </div>
       </div>
+      <!-- §50.3: 指先オフセットモード（タッチのみ。ONで描画点を接触点の上方≈24pxにずらす） -->
+      <label class="check-row" title="タッチ操作時、描画点を接触点の上方≈24pxにずらします（マウス/ペンには影響しません）">
+        <input type="checkbox" id="fingerOffsetToggle"> 指先オフセット（タッチ）
+      </label>
       <div class="zoom-row">
         <span>ズーム</span>
         <input type="range" id="zoomRange" min="2" max="32" step="1" value="12">

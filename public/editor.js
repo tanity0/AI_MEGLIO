@@ -29,6 +29,7 @@ export function initEditor(store, toast) {
   const gridMajorSelect = document.getElementById("gridMajorSelect");
   const mirrorToggle = document.getElementById("mirrorToggle");
   const mirrorAxisInput = document.getElementById("mirrorAxisInput");
+  const fingerOffsetToggle = document.getElementById("fingerOffsetToggle"); // §50.3
   const colorReplaceBtn = document.getElementById("colorReplaceBtn");
   const colorReplacePanel = document.getElementById("colorReplacePanel");
   const colorReplaceFrom = document.getElementById("colorReplaceFrom");
@@ -72,6 +73,15 @@ export function initEditor(store, toast) {
     else if (savedShow === "0") store.state.gridShow = false;
     const savedMajor = Number(localStorage.getItem(GRID_MAJOR_KEY));
     if (savedMajor === 8 || savedMajor === 16) store.state.gridMajor = savedMajor;
+  } catch {}
+
+  // §50.3: 指先オフセットモード（タッチのみ・既定OFF・localStorageに保持）。
+  // ONで描画点を接触点の上方≈24px（CSS px。キャンバス座標はズームでセル単位に自然に丸まる）にずらす。
+  const FINGER_OFFSET_KEY = "aiMeglio.fingerOffset";
+  const FINGER_OFFSET_PX = 24;
+  store.state.fingerOffset = false;
+  try {
+    if (localStorage.getItem(FINGER_OFFSET_KEY) === "1") store.state.fingerOffset = true;
   } catch {}
 
   let dragging = false;
@@ -339,8 +349,11 @@ export function initEditor(store, toast) {
   function cellFromEvent(ev) {
     const rect = canvas.getBoundingClientRect();
     const cellSize = store.state.zoom;
+    // §50.3: 指先オフセットモード。タッチ入力のみ、接触点の上方≈24pxを描画点とする
+    // （マウス/ペンは対象外＝pointerType厳密判定）。floorでセル境界に自然に丸まる。
+    const offsetY = (store.state.fingerOffset && ev.pointerType === "touch") ? FINGER_OFFSET_PX : 0;
     const x = Math.floor((ev.clientX - rect.left) / cellSize);
-    const y = Math.floor((ev.clientY - rect.top) / cellSize);
+    const y = Math.floor((ev.clientY - offsetY - rect.top) / cellSize);
     return { x, y };
   }
 
@@ -494,6 +507,43 @@ export function initEditor(store, toast) {
   function touchDist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
   function touchMid(a, b) { return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; }
 
+  // §50.3: 2本指タップ=Undo・3本指タップ=Redo。
+  // 判定: 2本指(または3本指)そろった時点を起点に、300ms以内・各指の移動が10px未満で
+  // 全指が離れたら発火。パン/ピンチで実際に指が動いた場合や4本指以上が絡んだ場合は
+  // moved扱いにして無効化する（既存の2本指パン/ピンチの挙動には一切手を入れない）。
+  // タップ自体はstore.undo()/redo()を呼ぶだけで、描画ストロークのpushUndo/paintは
+  // 一切行わない＝2本指開始時の既存abortStroke()（未確定の保留ドットを捨てるだけ）以上の
+  // 副作用を持たない。
+  const TAP_MS = 300;
+  const TAP_MOVE_PX = 10;
+  let tapGesture = null; // {startTime, maxCount, moved, starts:Map<pointerId,{x,y}>}
+
+  function tapGestureBeginOrExtend() {
+    if (!tapGesture) tapGesture = { startTime: performance.now(), maxCount: 0, moved: false, starts: new Map() };
+    tapGesture.maxCount = Math.max(tapGesture.maxCount, touchPoints.size);
+    for (const [id, pos] of touchPoints) {
+      if (!tapGesture.starts.has(id)) tapGesture.starts.set(id, { x: pos.x, y: pos.y });
+    }
+  }
+  function tapGestureCheckMove(ev) {
+    if (!tapGesture) return;
+    const start = tapGesture.starts.get(ev.pointerId);
+    if (!start) return;
+    if (Math.hypot(ev.clientX - start.x, ev.clientY - start.y) >= TAP_MOVE_PX) tapGesture.moved = true;
+  }
+  function tapGestureFinish(cancelled) {
+    if (!tapGesture) return;
+    const g = tapGesture;
+    tapGesture = null;
+    if (cancelled || g.moved) return;
+    if (performance.now() - g.startTime > TAP_MS) return;
+    if (g.maxCount === 2) {
+      if (!store.undo()) toast("これ以上元に戻せません");
+    } else if (g.maxCount === 3) {
+      if (!store.redo()) toast("これ以上やり直せません");
+    }
+  }
+
   function abortStroke() {
     clearHoldTimer();
     pendingPen = null;
@@ -509,6 +559,11 @@ export function initEditor(store, toast) {
   window.addEventListener("pointerdown", (ev) => {
     if (ev.pointerType !== "touch") return;
     touchPoints.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+    if (touchPoints.size === 2 || touchPoints.size === 3) {
+      tapGestureBeginOrExtend(); // §50.3: 2本指/3本指タップの起点候補として記録
+    } else if (touchPoints.size > 3 && tapGesture) {
+      tapGesture.moved = true; // §50.3: 4本指以上が絡んだらタップ扱いにしない
+    }
     if (touchPoints.size === 2) {
       // 2本指ジェスチャー開始：進行中の1本指ストロークやパンは中断してパン/ズームに切替
       abortStroke();
@@ -518,7 +573,7 @@ export function initEditor(store, toast) {
       const mid = touchMid(pts[0], pts[1]);
       pinch = { startDist: touchDist(pts[0], pts[1]) || 1, startZoom: store.state.zoom, lastMidX: mid.x, lastMidY: mid.y };
     } else if (touchPoints.size > 2) {
-      pinch = null; // 3本指以上は無視
+      pinch = null; // 3本指以上は無視（パン/ピンチ対象外。タップ判定は続行）
     }
   }, true);
 
@@ -540,6 +595,7 @@ export function initEditor(store, toast) {
   window.addEventListener("pointermove", (ev) => {
     if (ev.pointerType !== "touch" || !touchPoints.has(ev.pointerId)) return;
     touchPoints.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+    tapGestureCheckMove(ev); // §50.3: 指が動いたらタップ扱いを取り消す（パン/ピンチ中も含め常時監視）
     if (touchPoints.size !== 2 || !pinch) return;
     const pts = Array.from(touchPoints.values());
     pendingPinch = { mid: touchMid(pts[0], pts[1]), dist: touchDist(pts[0], pts[1]) || 1 };
@@ -554,6 +610,10 @@ export function initEditor(store, toast) {
     if (touchPoints.size < 2) {
       flushPinch(); // 保留中の最終増分を破棄せず適用してから終了
       pinch = null;
+    }
+    if (touchPoints.size === 0) {
+      // §50.3: 全指が離れた時点でタップ判定を確定（pointercancelは無効なタップとして破棄）
+      tapGestureFinish(ev.type !== "pointerup");
     }
   }
   window.addEventListener("pointerup", endTouch, true);
@@ -593,6 +653,11 @@ export function initEditor(store, toast) {
     if (ev.pointerType === "touch" && touchPoints.size >= 2) return; // 2本指ジェスチャー中は描画しない
     if (store.state.rigAdjustMode) return; // リグ調整モード中はrig.jsがドラッグを処理する
     const { x, y } = cellFromEvent(ev);
+    // §50.3: 拡大鏡/指先オフセットマーカー用のホバー状態を、タッチはpointermoveが来る前に
+    // ここで先行更新しておく（静止した長押しではpointermoveが発生しないため）。
+    hoverCell = { x, y };
+    hoverClient = { x: ev.clientX, y: ev.clientY };
+    hoverIsTouch = ev.pointerType === "touch";
     const tool = store.state.tool;
     const frameIndex = store.state.currentFrame;
 
@@ -633,6 +698,7 @@ export function initEditor(store, toast) {
         holdEyedrop = true;
         dragTool = null;
         canvas.style.cursor = "copy";
+        scheduleHoverUpdate(); // §50.3: 拡大鏡を即座に表示（次のpointermoveを待たない）
       }, HOLD_EYEDROP_MS);
     } else if (tool === "eraser") {
       store.pushUndo();
@@ -729,6 +795,14 @@ export function initEditor(store, toast) {
     lastCell = null;
     moveGrabCell = null;
     moveStartXY = null;
+    if (ev.pointerType === "touch") {
+      // §50.3: タッチは離した後にhoverが残らないため、拡大鏡/オフセットマーカー/
+      // ブラシ枠のゴースト表示を明示的に消す（離すと確定して消える）。
+      hoverCell = null;
+      hoverClient = null;
+      hoverIsTouch = false;
+    }
+    scheduleHoverUpdate();
   });
 
   // ---------------------------------------------------------------------
@@ -737,6 +811,8 @@ export function initEditor(store, toast) {
   // 再描画する必要がなく、高ズーム/大キャンバスでもカーソル追従が滑らか。
   // ---------------------------------------------------------------------
   let hoverCell = null;
+  let hoverClient = null; // §50.3: 拡大鏡の画面配置に使うクライアント座標(x,y)
+  let hoverIsTouch = false; // §50.3: 拡大鏡・指先オフセットマーカーはタッチのみ表示（デスクトップ非表示）
   let hoverRafScheduled = false;
   function scheduleHoverUpdate() {
     if (hoverRafScheduled) return;
@@ -825,31 +901,139 @@ export function initEditor(store, toast) {
     cctx.restore();
   }
 
+  // §50.3: 指先オフセットの実描画点マーカー（タッチ×オフセットON時のみ・常時表示）
+  function drawFingerOffsetMarker() {
+    if (!store.state.fingerOffset || !hoverIsTouch || !hoverCell) return;
+    const cellSize = store.state.zoom;
+    const cx = (hoverCell.x + 0.5) * cellSize;
+    const cy = (hoverCell.y + 0.5) * cellSize;
+    const r = Math.max(4, Math.min(cellSize * 0.4, 10));
+    cctx.save();
+    cctx.fillStyle = "rgba(255,214,102,0.30)";
+    cctx.strokeStyle = "#ffd666";
+    cctx.lineWidth = 1.5;
+    cctx.beginPath();
+    cctx.arc(cx, cy, r, 0, Math.PI * 2);
+    cctx.fill();
+    cctx.stroke();
+    cctx.beginPath();
+    cctx.moveTo(cx - r - 4, cy); cctx.lineTo(cx - r, cy);
+    cctx.moveTo(cx + r, cy); cctx.lineTo(cx + r + 4, cy);
+    cctx.moveTo(cx, cy - r - 4); cctx.lineTo(cx, cy - r);
+    cctx.moveTo(cx, cy + r); cctx.lineTo(cx, cy + r + 4);
+    cctx.stroke();
+    cctx.restore();
+  }
+
+  // §50.3: スポイト長押し中の拡大鏡（周辺9x9セル・中心マーカー・吸い取り色プレビュー）。
+  // タッチのみ表示（マウス/ペンの長押しスポイトはcursor:copyのみで拡大鏡は出さない＝
+  // デスクトップ操作への影響ゼロ）。指の上方に離して表示し、指で隠れないようにする。
+  const EYEDROP_MAG_CELLS = 9;
+  const EYEDROP_MAG_CELL_PX = 14;
+  function colorForIndex(colorIndex) {
+    const hex = project().palette[colorIndex];
+    if (!hex || colorIndex === 0) return null; // 透明
+    const [r, g, b, a] = hexToRgba(hex);
+    if (a === 0) return null;
+    return a === 255 ? `rgb(${r},${g},${b})` : `rgba(${r},${g},${b},${a / 255})`;
+  }
+  function drawEyedropMagnifier() {
+    if (!holdEyedrop || !hoverIsTouch || !hoverCell || !hoverClient) return;
+    const p = project();
+    const frameIndex = store.state.currentFrame;
+    const half = Math.floor(EYEDROP_MAG_CELLS / 2);
+    const magSize = EYEDROP_MAG_CELLS * EYEDROP_MAG_CELL_PX;
+    const pad = 6;
+    const rect = canvas.getBoundingClientRect();
+    const fx = hoverClient.x - rect.left; // cursorCanvasはcanvasと同一のCSSサイズ・原点
+    const fy = hoverClient.y - rect.top;
+    const gap = 20; // 指の上方に離す（指で隠れないように）
+    let mx = fx - magSize / 2;
+    let my = fy - gap - magSize;
+    mx = Math.max(pad, Math.min(cursorCanvas.width - magSize - pad, mx));
+    my = Math.max(pad, my);
+    cctx.save();
+    cctx.fillStyle = "rgba(18,18,22,0.92)";
+    cctx.fillRect(mx - pad, my - pad, magSize + pad * 2, magSize + pad * 2);
+    cctx.strokeStyle = "rgba(255,255,255,0.55)";
+    cctx.lineWidth = 1;
+    cctx.strokeRect(mx - pad + 0.5, my - pad + 0.5, magSize + pad * 2 - 1, magSize + pad * 2 - 1);
+    for (let dy = -half; dy <= half; dy++) {
+      for (let dx = -half; dx <= half; dx++) {
+        const cx = hoverCell.x + dx, cy = hoverCell.y + dy;
+        let fill = "#2a2a30"; // キャンバス範囲外
+        if (inBounds(cx, cy)) {
+          const idx = cy * p.width + cx;
+          const col = colorForIndex(p.frames[frameIndex].pixels[idx]);
+          fill = col || (((cx + cy) % 2 === 0) ? "#3a3a40" : "#2e2e34"); // 透明=市松
+        }
+        cctx.fillStyle = fill;
+        cctx.fillRect(mx + (dx + half) * EYEDROP_MAG_CELL_PX, my + (dy + half) * EYEDROP_MAG_CELL_PX, EYEDROP_MAG_CELL_PX, EYEDROP_MAG_CELL_PX);
+      }
+    }
+    cctx.strokeStyle = "rgba(255,255,255,0.18)";
+    cctx.lineWidth = 1;
+    for (let i = 0; i <= EYEDROP_MAG_CELLS; i++) {
+      cctx.beginPath();
+      cctx.moveTo(mx + i * EYEDROP_MAG_CELL_PX, my);
+      cctx.lineTo(mx + i * EYEDROP_MAG_CELL_PX, my + magSize);
+      cctx.stroke();
+      cctx.beginPath();
+      cctx.moveTo(mx, my + i * EYEDROP_MAG_CELL_PX);
+      cctx.lineTo(mx + magSize, my + i * EYEDROP_MAG_CELL_PX);
+      cctx.stroke();
+    }
+    // 中心マーカー（吸い取り対象セル）
+    cctx.strokeStyle = "#ffd666";
+    cctx.lineWidth = 2;
+    cctx.strokeRect(mx + half * EYEDROP_MAG_CELL_PX + 1, my + half * EYEDROP_MAG_CELL_PX + 1, EYEDROP_MAG_CELL_PX - 2, EYEDROP_MAG_CELL_PX - 2);
+    // 吸い取り色プレビュー（パネル右上の丸スウォッチ）
+    const previewIdx = inBounds(hoverCell.x, hoverCell.y) ? p.frames[frameIndex].pixels[hoverCell.y * p.width + hoverCell.x] : 0;
+    const previewColor = colorForIndex(previewIdx);
+    const swR = 8;
+    const swX = Math.min(cursorCanvas.width - swR - 2, mx + magSize + pad + swR + 2);
+    const swY = Math.max(swR + 2, my - pad + swR + 2);
+    cctx.beginPath();
+    cctx.arc(swX, swY, swR, 0, Math.PI * 2);
+    cctx.fillStyle = previewColor || "#111";
+    cctx.fill();
+    cctx.strokeStyle = "#fff";
+    cctx.lineWidth = 1.5;
+    cctx.stroke();
+    cctx.restore();
+  }
+
   function renderCursorOverlay() {
     syncCursorCanvasSize();
     cctx.clearRect(0, 0, cursorCanvas.width, cursorCanvas.height);
     drawGridOverlay(); // §34.2
     drawMirrorAxisOverlay(); // §34.3
+    drawFingerOffsetMarker(); // §50.3: 実描画点を常時表示（タッチ×指先オフセットON時のみ）
     const tool = store.state.tool;
-    if (!hoverCell || (tool !== "pen" && tool !== "eraser")) return;
-    const cellSize = store.state.zoom;
-    const size = store.state.brushSize;
-    const half = Math.floor((size - 1) / 2);
-    const bx = hoverCell.x - half, by = hoverCell.y - half;
-    cctx.save();
-    cctx.strokeStyle = tool === "eraser" ? "#ef6d7a" : "#6ee7c8";
-    cctx.lineWidth = 1.5;
-    cctx.strokeRect(bx * cellSize + 1, by * cellSize + 1, size * cellSize - 2, size * cellSize - 2);
-    cctx.restore();
+    if (hoverCell && (tool === "pen" || tool === "eraser")) {
+      const cellSize = store.state.zoom;
+      const size = store.state.brushSize;
+      const half = Math.floor((size - 1) / 2);
+      const bx = hoverCell.x - half, by = hoverCell.y - half;
+      cctx.save();
+      cctx.strokeStyle = tool === "eraser" ? "#ef6d7a" : "#6ee7c8";
+      cctx.lineWidth = 1.5;
+      cctx.strokeRect(bx * cellSize + 1, by * cellSize + 1, size * cellSize - 2, size * cellSize - 2);
+      cctx.restore();
+    }
+    drawEyedropMagnifier(); // §50.3: 長押しスポイト中の拡大鏡（最前面）
   }
 
   canvas.addEventListener("pointermove", (ev) => {
     const { x, y } = cellFromEvent(ev);
     hoverCell = { x, y };
+    hoverClient = { x: ev.clientX, y: ev.clientY };
+    hoverIsTouch = ev.pointerType === "touch";
     scheduleHoverUpdate();
   });
   canvas.addEventListener("pointerleave", () => {
     hoverCell = null;
+    hoverClient = null;
     scheduleHoverUpdate();
   });
 
@@ -1388,6 +1572,17 @@ export function initEditor(store, toast) {
       store.notify();
     });
   });
+
+  // --- 指先オフセットモード（§50.3・タッチのみ・既定OFF・localStorage保持）---
+  if (fingerOffsetToggle) {
+    fingerOffsetToggle.checked = store.state.fingerOffset;
+    fingerOffsetToggle.addEventListener("change", () => {
+      store.state.fingerOffset = fingerOffsetToggle.checked;
+      try { localStorage.setItem(FINGER_OFFSET_KEY, store.state.fingerOffset ? "1" : "0"); } catch {}
+      store.notify();
+      scheduleHoverUpdate(); // マーカー表示をトグル直後から反映
+    });
+  }
 
   // --- ロック領域（§13.2-3）---
   lockSelectionBtn.addEventListener("click", () => {
