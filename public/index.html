@@ -237,6 +237,19 @@
       <button id="mobileUndoBtn" type="button" class="mobile-zoom-btn" title="元に戻す (Ctrl+Z)" aria-label="元に戻す">↩</button>
       <button id="mobileRedoBtn" type="button" class="mobile-zoom-btn" title="やり直し (Ctrl+Shift+Z)" aria-label="やり直し">↪</button>
     </div>
+    <!-- §50.4: モバイル専用フローティングツールバー（キャンバス下端中央・タイムライン直上）。
+         tool-btn クラスは左パネルの同クラスと共有しており、editor.js の
+         querySelectorAll(".tool-btn") によるクリックハンドラ／is-active同期にそのまま乗るため、
+         専用のJS配線は不要（§49.11 ブラシサイズと同じ「同じクラスを使い回す」流儀）。
+         現在色チップだけは専用ロジック（タップでフローティングパレット窓を開閉・色に追従）。 -->
+    <div id="mobileToolbar" class="mobile-toolbar">
+      <button type="button" class="tool-btn mobile-tool-btn" data-tool="pen" title="ペン (B)" aria-label="ペン">✏️</button>
+      <button type="button" class="tool-btn mobile-tool-btn" data-tool="eraser" title="消しゴム (E)" aria-label="消しゴム">🧹</button>
+      <button type="button" class="tool-btn mobile-tool-btn" data-tool="fill" title="塗りつぶし (F)" aria-label="塗りつぶし">🪣</button>
+      <button type="button" class="tool-btn mobile-tool-btn" data-tool="select" title="矩形選択 (S)" aria-label="矩形選択">▭</button>
+      <button type="button" class="tool-btn mobile-tool-btn" data-tool="eyedropper" title="スポイト (I)" aria-label="スポイト">💧</button>
+      <button type="button" id="mobileColorChipBtn" class="mobile-color-chip" title="現在の色（タップでパレット窓）" aria-label="現在の色・パレット窓を開閉"></button>
+    </div>
   </section>
 
   <aside id="aiPanel">
@@ -504,6 +517,10 @@
 </main>
 
 <footer id="timelineBar">
+  <!-- §50.4: タイムライン折りたたみつまみ（モバイルのみ・デスクトップではCSSで非表示）。
+       折りたたむとタグ/サムネ/操作列（再生ボタン以外）を隠し、高さを最小にする。
+       状態は localStorage（aiMeglio.timelineCollapsed）に保持（public/mobile.js）。 -->
+  <button id="timelineCollapseBtn" type="button" class="timeline-collapse-btn" title="タイムラインを折りたたむ" aria-label="タイムラインを折りたたむ">∨</button>
   <div id="tagBar">
     <span class="tag-bar-label">タグ</span>
     <div id="tagList"></div>

@@ -10,6 +10,8 @@ export function initMobile() {
   const aiHandle = document.getElementById("aiDrawerHandle");
   const backdrop = document.getElementById("drawerBackdrop");
   const body = document.body;
+  const timelineBar = document.getElementById("timelineBar");
+  const timelineCollapseBtn = document.getElementById("timelineCollapseBtn");
 
   function isMobile() {
     return mq.matches;
@@ -52,6 +54,33 @@ export function initMobile() {
   syncMediaState();
 
   initGestureGuard();
+  initTimelineCollapse(timelineBar, timelineCollapseBtn);
+}
+
+// §50.4: タイムライン折りたたみ（モバイルのみ。つまみボタン自体はCSSでデスクトップ非表示のため
+// リスナーは常時登録して問題ない）。折りたたむと#tagBar/#frameList/操作列(再生ボタン以外)を
+// CSS側（.is-collapsed）で隠し、高さを最小にする。状態はlocalStorageに保持。
+const TIMELINE_COLLAPSE_KEY = "aiMeglio.timelineCollapsed";
+function initTimelineCollapse(timelineBar, timelineCollapseBtn) {
+  if (!timelineBar || !timelineCollapseBtn) return;
+  function applyCollapsed(collapsed) {
+    timelineBar.classList.toggle("is-collapsed", collapsed);
+    timelineCollapseBtn.textContent = collapsed ? "∧" : "∨";
+    const label = collapsed ? "タイムラインを開く" : "タイムラインを折りたたむ";
+    timelineCollapseBtn.title = label;
+    timelineCollapseBtn.setAttribute("aria-label", label);
+  }
+  let collapsed = false;
+  try { collapsed = localStorage.getItem(TIMELINE_COLLAPSE_KEY) === "1"; } catch {}
+  applyCollapsed(collapsed);
+  timelineCollapseBtn.addEventListener("click", () => {
+    collapsed = !collapsed;
+    applyCollapsed(collapsed);
+    try { localStorage.setItem(TIMELINE_COLLAPSE_KEY, collapsed ? "1" : "0"); } catch {}
+    // タイムラインの高さが変わりキャンバス領域(#appMainがflex:1で自動追従)が変化するため、
+    // zoomAuto中は既存のresizeリスナー（editor.js）を再利用してフィットズームを再計算させる。
+    window.dispatchEvent(new Event("resize"));
+  });
 }
 
 // §49.9: iOS Safari はページの2本指ピンチズームを user-scalable=no でも無視することがあるため、

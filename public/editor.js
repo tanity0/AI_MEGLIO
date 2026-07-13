@@ -14,8 +14,12 @@ import { extractMainPalette } from "./convert.js";
 const MIN_ZOOM = 2;
 const MAX_ZOOM = 48;
 const BRUSH_SIZES = [1, 2, 3, 4, 8];
+// §49.1と同一クエリ。§50.6のフィット余白・パン可動域拡張をモバイルのみに限定するため
+// editor.js側でも独立に判定する（mobile.jsのMOBILE_QUERYと同じ値。既存の重複踏襲の流儀）。
+const MOBILE_QUERY = "(max-width: 820px)";
 
 export function initEditor(store, toast) {
+  const mobileMQ = window.matchMedia(MOBILE_QUERY);
   const canvas = document.getElementById("mainCanvas");
   const cursorCanvas = document.getElementById("cursorCanvas");
   const cctx = cursorCanvas.getContext("2d");
@@ -58,8 +62,9 @@ export function initEditor(store, toast) {
   const mainPaletteCount = document.getElementById("mainPaletteCount");
   const canvasSizeLabel = document.getElementById("canvasSizeLabel");
   const cursorPosLabel = document.getElementById("cursorPosLabel");
-  const toolButtons = Array.from(document.querySelectorAll(".tool-btn"));
+  const toolButtons = Array.from(document.querySelectorAll(".tool-btn")); // §50.4: フローティングツールバーの.tool-btnもここに含まれる
   const brushSizeButtons = Array.from(document.querySelectorAll(".brush-size-btn"));
+  const mobileColorChipBtn = document.getElementById("mobileColorChipBtn"); // §50.4
 
   // §31.2: ブラシサイズ（UIの初期状態が無ければ既定1px）
   if (!BRUSH_SIZES.includes(store.state.brushSize)) store.state.brushSize = 1;
@@ -331,11 +336,51 @@ export function initEditor(store, toast) {
 
   function computeAutoZoom() {
     const p = project();
-    const availW = wrap.clientWidth - 8;
-    const availH = wrap.clientHeight - 8;
+    // §50.6: モバイルのみ、フローティングUI（ツールバー・ズームボタン等）と被らないよう
+    // 上下左右≈48pxの余白をフィット計算に確保する。デスクトップは従来どおり0。
+    const margin = mobileMQ.matches ? 48 : 0;
+    const availW = wrap.clientWidth - 8 - margin * 2;
+    const availH = wrap.clientHeight - 8 - margin * 2;
     if (availW <= 0 || availH <= 0) return store.state.zoom;
     const z = Math.floor(Math.min(availW / p.width, availH / p.height));
     return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, z || MIN_ZOOM));
+  }
+
+  // ---------------------------------------------------------------------
+  // §50.6: 2本指パンのクランプ緩和（モバイルのみ）。
+  // #canvasWrap に「見えない余白」をパディングとして動的に付与し、ネイティブスクロール
+  // （wrap.scrollLeft/scrollTop。§31.3のパン/ピンチ実装がそのまま使う）が届く範囲を拡張する。
+  // wrap.clientWidth/clientHeight は wrap 自身のflexレイアウトで決まる箱のサイズであり、
+  // border-box のためこの余白パディング自体には影響されない（循環計算にならない）。
+  // 余白 = clientWidth/2, clientHeight/2 とすることで、パンの端でキャンバスの当該辺が
+  // ちょうど画面（wrapの可視領域）中央に来る計算になり、かつキャンバスの反対側半分は
+  // 常に可視領域内に残る＝完全に画面外へ消えない下限を兼ねる。
+  let lastPanPadX = -1, lastPanPadY = -1;
+  function updateMobilePanExtent() {
+    if (!mobileMQ.matches) {
+      if (lastPanPadX !== 0 || lastPanPadY !== 0) {
+        wrap.style.paddingLeft = wrap.style.paddingRight = wrap.style.paddingTop = wrap.style.paddingBottom = "";
+        lastPanPadX = 0; lastPanPadY = 0;
+      }
+      return;
+    }
+    const p = project();
+    const canvasW = store.state.zoom * p.width;
+    const canvasH = store.state.zoom * p.height;
+    const cw = wrap.clientWidth, ch = wrap.clientHeight;
+    const padX = canvasW > cw ? Math.round(cw / 2) : 0;
+    const padY = canvasH > ch ? Math.round(ch / 2) : 0;
+    if (padX === lastPanPadX && padY === lastPanPadY) return; // 無変化ならDOM書き込みを省く
+    wrap.style.paddingLeft = wrap.style.paddingRight = padX + "px";
+    wrap.style.paddingTop = wrap.style.paddingBottom = padY + "px";
+    lastPanPadX = padX; lastPanPadY = padY;
+  }
+  // フィット/初期表示時にパン位置も可動域の中央（=キャンバス中央が見える位置）へ戻す。
+  // 手動ズーム(+/-・ピンチ)や描画中の毎render()では呼ばない（ユーザーの現在位置を保つ）。
+  function centerCanvasScroll() {
+    if (!mobileMQ.matches) return;
+    wrap.scrollLeft = Math.max(0, (wrap.scrollWidth - wrap.clientWidth) / 2);
+    wrap.scrollTop = Math.max(0, (wrap.scrollHeight - wrap.clientHeight) / 2);
   }
 
   function setZoom(z, opts = {}) {
@@ -1075,6 +1120,7 @@ export function initEditor(store, toast) {
     render();
     zoomRange.value = String(store.state.zoom);
     zoomLabel.textContent = `${store.state.zoom}x`;
+    centerCanvasScroll(); // §50.6: フィット時はパン位置も可動域の中央へ戻す
   });
 
   clearSelectionBtn.addEventListener("click", () => {
@@ -1425,6 +1471,7 @@ export function initEditor(store, toast) {
     fpState.visible = !!visible;
     floatPalette.hidden = !fpState.visible;
     floatPaletteToggleBtn.classList.toggle("is-active", fpState.visible);
+    mobileColorChipBtn?.classList.toggle("is-active", fpState.visible); // §50.4
     if (fpState.visible) {
       fpClampPosition();
       fpLastSignature = ""; // 再表示時は必ず再構築
@@ -1468,6 +1515,7 @@ export function initEditor(store, toast) {
 
   floatPaletteCloseBtn.addEventListener("click", () => fpSetVisible(false));
   floatPaletteToggleBtn.addEventListener("click", () => fpSetVisible(!fpState.visible));
+  mobileColorChipBtn?.addEventListener("click", () => fpSetVisible(!fpState.visible)); // §50.4
   floatPaletteTabs.addEventListener("click", (ev) => {
     const btn = ev.target.closest(".fp-tab");
     if (!btn) return;
@@ -2001,7 +2049,22 @@ export function initEditor(store, toast) {
     document.getElementById("selMoveBtn")?.classList.toggle("is-active", !!floating); // §32
     renderLayerPanel(); // §35
     updateFloatPalette(); // §37: 編集のたび使用色を再集計（シグネチャ一致ならDOM再構築なし）
+    updateMobileColorChip(); // §50.4: 現在色チップの追従
+    updateMobilePanExtent(); // §50.6: ズーム/キャンバスサイズ変化に合わせてパン余白を更新
     renderCursorOverlay();
+  }
+
+  // §50.4: フローティングツールバー右端の現在色チップ。左パネルのスウォッチ選択と
+  // 同じ store.state.colorIndex を参照するため、render() のたび自動で追従する。
+  function updateMobileColorChip() {
+    if (!mobileColorChipBtn) return;
+    const p = project();
+    const idx = store.state.colorIndex;
+    const hex = p.palette[idx];
+    const isTransparent = !hex || idx === 0;
+    mobileColorChipBtn.style.backgroundColor = isTransparent ? "" : hex;
+    mobileColorChipBtn.style.backgroundImage = isTransparent ? "" : "none";
+    mobileColorChipBtn.title = `現在の色: index ${idx}${hex ? ` (${hex})` : ""}（タップでパレット窓）`;
   }
 
   for (const id of ["tabPatchBtn", "tabMotionBtn", "tabRigBtn"]) {
@@ -2012,6 +2075,9 @@ export function initEditor(store, toast) {
     if (store.state.zoomAuto) {
       store.state.zoom = computeAutoZoom();
       render();
+      centerCanvasScroll(); // §50.6
+    } else {
+      updateMobilePanExtent(); // §50.6: 手動ズーム時もwrapサイズ変化（回転等）にパン余白を追従させる
     }
   });
 
@@ -2019,6 +2085,7 @@ export function initEditor(store, toast) {
   requestAnimationFrame(() => {
     store.state.zoom = computeAutoZoom();
     render();
+    centerCanvasScroll(); // §50.6
   });
 
   store.subscribe(render);
