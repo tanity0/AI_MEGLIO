@@ -65,6 +65,12 @@ export function initEditor(store, toast) {
   const toolButtons = Array.from(document.querySelectorAll(".tool-btn")); // §50.4: フローティングツールバーの.tool-btnもここに含まれる
   const brushSizeButtons = Array.from(document.querySelectorAll(".brush-size-btn"));
   const mobileColorChipBtn = document.getElementById("mobileColorChipBtn"); // §50.4
+  // §51: マジック選択ツールのオプションUI
+  const magicOptionsEl = document.getElementById("magicOptions");
+  const magicThresholdRange = document.getElementById("magicThresholdRange");
+  const magicThresholdLabel = document.getElementById("magicThresholdLabel");
+  const magicConnectedToggle = document.getElementById("magicConnectedToggle");
+  const magicModeButtons = Array.from(document.querySelectorAll(".magic-mode-btn"));
 
   // §31.2: ブラシサイズ（UIの初期状態が無ければ既定1px）
   if (!BRUSH_SIZES.includes(store.state.brushSize)) store.state.brushSize = 1;
@@ -88,6 +94,17 @@ export function initEditor(store, toast) {
   try {
     if (localStorage.getItem(FINGER_OFFSET_KEY) === "1") store.state.fingerOffset = true;
   } catch {}
+
+  // §51: マジック選択ツール（しきい値つきマジックワンド）のオプション。
+  // しきい値のみ localStorage 保持（連結/モードはセッション内のみ・既定=連結ON/新規）。
+  const MAGIC_THRESHOLD_KEY = "aiMeglio.magicThreshold";
+  const magicOpts = { threshold: 0, connected: true, mode: "new" };
+  try {
+    const savedT = Number(localStorage.getItem(MAGIC_THRESHOLD_KEY));
+    if (Number.isFinite(savedT) && savedT >= 0 && savedT <= 96) magicOpts.threshold = savedT;
+  } catch {}
+  // 直前のタップ点（しきい値/連結の変更時にここから即再選択するための記憶。§51.2）
+  let lastMagicTap = null; // { frameIndex, x, y, mode, baseMask }
 
   let dragging = false;
   let dragTool = null;
@@ -119,18 +136,31 @@ export function initEditor(store, toast) {
     }
     return currentSelRect();
   }
-  // 現在の選択領域のピクセルをフローティングバッファへ持ち上げる（フレームは未変更）
+  // 現在の選択領域のピクセルをフローティングバッファへ持ち上げる（フレームは未変更）。
+  // §51: マスク選択（sel.mask がキャンバスサイズのUint8Array）の場合、マスク画素のみを
+  // buf へコピーし（非マスク画素は buf=0=透明のまま=浮かせない）、bbox ローカル座標の
+  // origMask（origW×origH。変形しても不変・commit時の「元位置クリア」専用）を残す。
   function liftSelection(copy) {
     const sel = currentSelRect();
     if (!sel || sel.w <= 0 || sel.h <= 0) return false;
     const p = project();
     const buf = new Uint8Array(sel.w * sel.h);
     const px = frameActiveLayerPixels(p.frames[sel.frameIndex]); // §35: 変形はアクティブレイヤー対象
+    const mask = sel.mask;
+    const origMask = mask ? new Uint8Array(sel.w * sel.h) : undefined;
     for (let yy = 0; yy < sel.h; yy++) {
       for (let xx = 0; xx < sel.w; xx++) {
         const sx = sel.x + xx, sy = sel.y + yy;
         if (sx >= 0 && sy >= 0 && sx < p.width && sy < p.height) {
-          buf[yy * sel.w + xx] = px[sy * p.width + sx];
+          const gIdx = sy * p.width + sx;
+          if (mask) {
+            if (mask[gIdx] === 1) {
+              origMask[yy * sel.w + xx] = 1;
+              buf[yy * sel.w + xx] = px[gIdx];
+            }
+          } else {
+            buf[yy * sel.w + xx] = px[gIdx];
+          }
         }
       }
     }
@@ -138,6 +168,8 @@ export function initEditor(store, toast) {
       buf, w: sel.w, h: sel.h, x: sel.x, y: sel.y,
       origX: sel.x, origY: sel.y, origW: sel.w, origH: sel.h,
       frameIndex: sel.frameIndex, copy: !!copy,
+      origMask, // §51: undefined = 矩形選択（従来どおり）
+      origSelMask: mask, // §51: Esc取消時に元のマスク選択を復元するための参照
     };
     return true;
   }
@@ -150,12 +182,23 @@ export function initEditor(store, toast) {
     store.pushUndo();
     const frame = p.frames[f.frameIndex];
     const px = frameActiveLayerPixels(frame); // §35: アクティブレイヤーへ焼き込む
-    // 元領域をクリア（コピー移動でなければ）
+    // 元領域をクリア（コピー移動でなければ）。§51: マスク選択なら元マスク画素のみクリア
+    // （非選択画素は素通しのまま＝bbox内の周囲の絵柄を巻き込まない）。
     if (!f.copy) {
-      for (let yy = 0; yy < f.origH; yy++) {
-        for (let xx = 0; xx < f.origW; xx++) {
-          const dx = f.origX + xx, dy = f.origY + yy;
-          if (dx >= 0 && dy >= 0 && dx < p.width && dy < p.height) px[dy * p.width + dx] = 0;
+      if (f.origMask) {
+        for (let yy = 0; yy < f.origH; yy++) {
+          for (let xx = 0; xx < f.origW; xx++) {
+            if (!f.origMask[yy * f.origW + xx]) continue;
+            const dx = f.origX + xx, dy = f.origY + yy;
+            if (dx >= 0 && dy >= 0 && dx < p.width && dy < p.height) px[dy * p.width + dx] = 0;
+          }
+        }
+      } else {
+        for (let yy = 0; yy < f.origH; yy++) {
+          for (let xx = 0; xx < f.origW; xx++) {
+            const dx = f.origX + xx, dy = f.origY + yy;
+            if (dx >= 0 && dy >= 0 && dx < p.width && dy < p.height) px[dy * p.width + dx] = 0;
+          }
         }
       }
     }
@@ -169,16 +212,19 @@ export function initEditor(store, toast) {
       }
     }
     recompositeFrame(frame); // §35: 合成キャッシュ更新
-    // 新しい選択 = 焼き込み後の矩形（キャンバス内でクランプ）
+    // 新しい選択 = 焼き込み後の矩形（キャンバス内でクランプ）。マスク形状は変形/移動で
+    // 崩れうるため、確定後は矩形選択に戻す（§51.3: floating化後は既存挙動）。
     store.state.selection = clampSelToCanvas(f.frameIndex, f.x, f.y, f.w, f.h);
     store.notify();
   }
-  // フローティングを破棄（フレーム未変更なので元の選択に戻す）
+  // フローティングを破棄（フレーム未変更なので元の選択に戻す）。
+  // §51: マスク選択から持ち上げていた場合は、元のマスク選択そのものを復元する。
   function cancelFloating() {
     if (!floating) return;
     const f = floating;
     floating = null;
-    store.state.selection = clampSelToCanvas(f.frameIndex, f.origX, f.origY, f.origW, f.origH);
+    const base = clampSelToCanvas(f.frameIndex, f.origX, f.origY, f.origW, f.origH);
+    store.state.selection = base && f.origSelMask ? { ...base, mask: f.origSelMask } : base;
     store.notify();
   }
   function clampSelToCanvas(frameIndex, x, y, w, h) {
@@ -255,17 +301,22 @@ export function initEditor(store, toast) {
     const btn = document.getElementById("selPasteBtn");
     if (btn) btn.disabled = !clipboard;
   }
-  // 現在フレームの選択領域をクリップボードへ複製（フレーム未変更）
+  // 現在フレームの選択領域をクリップボードへ複製（フレーム未変更）。
+  // §51: マスク選択なら非マスク画素は buf=0（透明）のまま＝マスク外は透明でコピー。
   function copySelectionToClipboard() {
     const sel = currentSelRect();
     if (!sel) return false;
     const p = project();
     const px = frameActiveLayerPixels(p.frames[sel.frameIndex]); // §35: コピペはアクティブレイヤー対象
+    const mask = sel.mask;
     const buf = new Uint8Array(sel.w * sel.h);
     for (let yy = 0; yy < sel.h; yy++) {
       for (let xx = 0; xx < sel.w; xx++) {
         const sx = sel.x + xx, sy = sel.y + yy;
-        if (sx >= 0 && sy >= 0 && sx < p.width && sy < p.height) buf[yy * sel.w + xx] = px[sy * p.width + sx];
+        if (sx >= 0 && sy >= 0 && sx < p.width && sy < p.height) {
+          const gIdx = sy * p.width + sx;
+          if (!mask || mask[gIdx] === 1) buf[yy * sel.w + xx] = px[gIdx];
+        }
       }
     }
     clipboard = { buf, w: sel.w, h: sel.h, x: sel.x, y: sel.y }; // x,y = コピー元位置（フレーム間貼付の初期位置に流用）
@@ -286,10 +337,14 @@ export function initEditor(store, toast) {
     const p = project();
     const frame = p.frames[sel.frameIndex];
     const px = frameActiveLayerPixels(frame); // §35: 切り取りはアクティブレイヤー対象
+    const mask = sel.mask; // §51: マスク選択ならマスク画素のみ透明化
     for (let yy = 0; yy < sel.h; yy++) {
       for (let xx = 0; xx < sel.w; xx++) {
         const dx = sel.x + xx, dy = sel.y + yy;
-        if (dx >= 0 && dy >= 0 && dx < p.width && dy < p.height) px[dy * p.width + dx] = 0;
+        if (dx >= 0 && dy >= 0 && dx < p.width && dy < p.height) {
+          const gIdx = dy * p.width + dx;
+          if (!mask || mask[gIdx] === 1) px[gIdx] = 0;
+        }
       }
     }
     recompositeFrame(frame);
@@ -509,6 +564,110 @@ export function initEditor(store, toast) {
       stack.push([x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]);
     }
     recompositeFrame(frame); // §35: 合成キャッシュ更新
+  }
+
+  // ------------------------------------------------------------------ §51
+  // マジック選択ツール（しきい値つきマジックワンド）。判定は「合成表示色」
+  // （frame.pixels＝可視レイヤーの不透明合成キャッシュ）基準、操作対象（浮かせて
+  // 動かす実体）はアクティブレイヤーというdesignのとおり、ここでは選択マスクの
+  // 算出のみ行う（実際の画素操作は liftSelection/copy/cut 等の既存経路が担う）。
+  function rgbDistance(hexA, hexB) {
+    const [r1, g1, b1] = hexToRgba(hexA);
+    const [r2, g2, b2] = hexToRgba(hexB);
+    return Math.sqrt((r1 - r2) ** 2 + (g1 - g2) ** 2 + (b1 - b2) ** 2);
+  }
+  // タップ点から「連結のみ」or「画面全体」で色一致マスク（キャンバスサイズ）を算出。
+  // 透明タップは透明領域（alpha=0のセルすべて）にマッチ、しきい値は無関係（§51.2）。
+  function computeMagicRegion(frameIndex, startX, startY, threshold, connected) {
+    const p = project();
+    if (!inBounds(startX, startY)) return null;
+    const frame = p.frames[frameIndex];
+    const pixels = frame.pixels; // §51.1: 合成表示色で判定
+    const pal = p.palette;
+    const W = p.width, H = p.height;
+    const startIdx = startY * W + startX;
+    const targetHex = pal[pixels[startIdx]] || "#00000000";
+    const targetTransparent = hexToRgba(targetHex)[3] === 0;
+    function matches(idx) {
+      const hex = pal[pixels[idx]] || "#00000000";
+      const a = hexToRgba(hex)[3];
+      if (targetTransparent) return a === 0;
+      if (a === 0) return false;
+      return rgbDistance(hex, targetHex) <= threshold;
+    }
+    const region = new Uint8Array(W * H);
+    if (connected) {
+      const seen = new Uint8Array(W * H);
+      const stack = [startIdx];
+      seen[startIdx] = 1;
+      while (stack.length) {
+        const idx = stack.pop();
+        if (!matches(idx)) continue;
+        region[idx] = 1;
+        const x = idx % W, y = (idx / W) | 0;
+        if (x > 0 && !seen[idx - 1]) { seen[idx - 1] = 1; stack.push(idx - 1); }
+        if (x < W - 1 && !seen[idx + 1]) { seen[idx + 1] = 1; stack.push(idx + 1); }
+        if (y > 0 && !seen[idx - W]) { seen[idx - W] = 1; stack.push(idx - W); }
+        if (y < H - 1 && !seen[idx + W]) { seen[idx + W] = 1; stack.push(idx + W); }
+      }
+    } else {
+      for (let idx = 0; idx < W * H; idx++) if (matches(idx)) region[idx] = 1;
+    }
+    return region;
+  }
+  function computeMaskBBox(mask, W, H) {
+    let x0 = W, y0 = H, x1 = -1, y1 = -1;
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        if (!mask[y * W + x]) continue;
+        if (x < x0) x0 = x;
+        if (x > x1) x1 = x;
+        if (y < y0) y0 = y;
+        if (y > y1) y1 = y;
+      }
+    }
+    if (x1 < 0) return null;
+    return { x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 };
+  }
+  // region（今回のタップで求めた色一致マスク）を base（直前までの選択マスク・
+  // 足す/引くの土台）とモードに応じて合成し、選択状態を更新する。
+  function combineAndApplyMagic(frameIndex, region, mode, baseMask) {
+    const p = project();
+    const mask = new Uint8Array(p.width * p.height);
+    if (mode === "subtract") {
+      for (let i = 0; i < mask.length; i++) mask[i] = baseMask[i] && !region[i] ? 1 : 0;
+    } else {
+      for (let i = 0; i < mask.length; i++) mask[i] = baseMask[i] || region[i] ? 1 : 0;
+    }
+    const bbox = computeMaskBBox(mask, p.width, p.height);
+    if (!bbox) {
+      store.state.selection = null;
+    } else {
+      store.state.selection = { frameIndex, x: bbox.x, y: bbox.y, w: bbox.w, h: bbox.h, mask };
+    }
+    store.notify();
+  }
+  // タップ位置での本選択（新規/足す/引く）。矩形選択との相互排他は、矩形選択が
+  // sel.mask を持たないため「足す/引く」の土台は空マスク扱いになることで自然に成立する。
+  function magicSelectAt(frameIndex, x, y) {
+    const region = computeMagicRegion(frameIndex, x, y, magicOpts.threshold, magicOpts.connected);
+    if (!region) return;
+    const p = project();
+    const sel = currentSelRect();
+    const mode = magicOpts.mode;
+    const baseMask = mode !== "new" && sel && sel.mask && sel.frameIndex === frameIndex
+      ? sel.mask
+      : new Uint8Array(p.width * p.height);
+    lastMagicTap = { frameIndex, x, y, mode, baseMask }; // §51.2: しきい値/連結の変更時の再選択用
+    combineAndApplyMagic(frameIndex, region, mode, baseMask);
+  }
+  // しきい値/連結トグルの変更時、直前のタップ点から即再選択（プレビュー的に効く・§51.2）。
+  function reapplyLastMagicTap() {
+    if (!lastMagicTap) return;
+    const { frameIndex, x, y, mode, baseMask } = lastMagicTap;
+    const region = computeMagicRegion(frameIndex, x, y, magicOpts.threshold, magicOpts.connected);
+    if (!region) return;
+    combineAndApplyMagic(frameIndex, region, mode, baseMask);
   }
 
   function normalizedSelectionRect(a, b) {
@@ -772,6 +931,10 @@ export function initEditor(store, toast) {
       }
     } else if (tool === "eyedropper") {
       pickColorAt(x, y);
+    } else if (tool === "magic") {
+      // §51: マジック選択はドラッグ不要（タップ/クリック一発）。選択状態のみ変更するため
+      // pushUndo は不要（矩形選択と同じくアンドゥ非対象）。
+      magicSelectAt(frameIndex, x, y);
     }
   });
 
@@ -1048,11 +1211,48 @@ export function initEditor(store, toast) {
     cctx.restore();
   }
 
+  // §51.1: マスク選択の表示（半透明塗り＋輪郭。マーチングアントは不要）。
+  // floating中はsel.maskが存在しない（liftSelectionでbbox矩形選択に退避済み）ため、
+  // 通常の選択矩形描画やフローティング描画と競合しない。
+  function drawMaskSelectionOverlay() {
+    const sel = store.state.selection;
+    if (!sel || !sel.mask || sel.frameIndex !== store.state.currentFrame) return;
+    const p = project();
+    const cellSize = store.state.zoom;
+    const mask = sel.mask;
+    const W = p.width, H = p.height;
+    const x0 = Math.max(0, sel.x), y0 = Math.max(0, sel.y);
+    const x1 = Math.min(W, sel.x + sel.w), y1 = Math.min(H, sel.y + sel.h);
+    cctx.save();
+    cctx.fillStyle = "rgba(110, 231, 200, 0.28)";
+    for (let y = y0; y < y1; y++) {
+      for (let x = x0; x < x1; x++) {
+        if (mask[y * W + x]) cctx.fillRect(x * cellSize, y * cellSize, cellSize, cellSize);
+      }
+    }
+    cctx.strokeStyle = "#6ee7c8";
+    cctx.lineWidth = 1.5;
+    cctx.beginPath();
+    for (let y = y0; y < y1; y++) {
+      for (let x = x0; x < x1; x++) {
+        const idx = y * W + x;
+        if (!mask[idx]) continue;
+        if (x === 0 || !mask[idx - 1]) { cctx.moveTo(x * cellSize, y * cellSize); cctx.lineTo(x * cellSize, (y + 1) * cellSize); }
+        if (x === W - 1 || !mask[idx + 1]) { cctx.moveTo((x + 1) * cellSize, y * cellSize); cctx.lineTo((x + 1) * cellSize, (y + 1) * cellSize); }
+        if (y === 0 || !mask[idx - W]) { cctx.moveTo(x * cellSize, y * cellSize); cctx.lineTo((x + 1) * cellSize, y * cellSize); }
+        if (y === H - 1 || !mask[idx + W]) { cctx.moveTo(x * cellSize, (y + 1) * cellSize); cctx.lineTo((x + 1) * cellSize, (y + 1) * cellSize); }
+      }
+    }
+    cctx.stroke();
+    cctx.restore();
+  }
+
   function renderCursorOverlay() {
     syncCursorCanvasSize();
     cctx.clearRect(0, 0, cursorCanvas.width, cursorCanvas.height);
     drawGridOverlay(); // §34.2
     drawMirrorAxisOverlay(); // §34.3
+    drawMaskSelectionOverlay(); // §51.1: マスク選択の半透明塗り+輪郭
     drawFingerOffsetMarker(); // §50.3: 実描画点を常時表示（タッチ×指先オフセットON時のみ）
     const tool = store.state.tool;
     if (hoverCell && (tool === "pen" || tool === "eraser")) {
@@ -1632,11 +1832,35 @@ export function initEditor(store, toast) {
     });
   }
 
+  // --- §51: マジック選択ツールのオプション（しきい値/連結のみ/モード） ---
+  magicThresholdRange.value = String(magicOpts.threshold);
+  magicThresholdLabel.textContent = String(magicOpts.threshold);
+  magicThresholdRange.addEventListener("input", () => {
+    magicOpts.threshold = Math.max(0, Math.min(96, Number(magicThresholdRange.value) || 0));
+    magicThresholdLabel.textContent = String(magicOpts.threshold);
+    try { localStorage.setItem(MAGIC_THRESHOLD_KEY, String(magicOpts.threshold)); } catch {}
+    reapplyLastMagicTap(); // §51.2: 直前のタップ点で即再選択
+  });
+  magicConnectedToggle.addEventListener("change", () => {
+    magicOpts.connected = magicConnectedToggle.checked;
+    reapplyLastMagicTap();
+  });
+  magicModeButtons.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      magicOpts.mode = btn.dataset.mode;
+      magicModeButtons.forEach((b) => b.classList.toggle("is-active", b === btn));
+    });
+  });
+
   // --- ロック領域（§13.2-3）---
   lockSelectionBtn.addEventListener("click", () => {
     const sel = store.state.selection;
     if (!sel) {
       toast("先に矩形選択ツールでロックする範囲を選択してください", "error");
+      return;
+    }
+    if (sel.mask) {
+      toast("マスク選択中はロックできません（矩形選択に切り替えてください）", "error");
       return;
     }
     const p = project();
@@ -1660,7 +1884,7 @@ export function initEditor(store, toast) {
   // ---------------------------------------------------------------------
   // ツール切替
   // ---------------------------------------------------------------------
-  const TOOL_KEYS = { b: "pen", e: "eraser", f: "fill", s: "select", i: "eyedropper" };
+  const TOOL_KEYS = { b: "pen", e: "eraser", f: "fill", s: "select", i: "eyedropper", w: "magic" };
   function switchTool(tool) {
     if (floating && tool !== store.state.tool) commitFloating(); // §32: ツール切替で焼き込み
     store.state.tool = tool;
@@ -1688,6 +1912,12 @@ export function initEditor(store, toast) {
         cancelFloating();
         // undo/redo 自体は app.js のグローバルショートカットが処理する
       }
+    } else if (ev.key === "Escape" && store.state.selection && store.state.selection.mask) {
+      // §51.3: マスク選択はEscでもクリアできる（floating化していない=通常の選択解除）
+      store.state.selection = null;
+      store.notify();
+      ev.preventDefault();
+      return;
     }
     // §37: P = フローティングパレット窓のトグル
     if (ev.key.toLowerCase() === "p" && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
@@ -1863,10 +2093,21 @@ export function initEditor(store, toast) {
 
     // §32: フローティング（持ち上げ中の選択ピクセル）を合成表示。
     // コピー移動でなければ元領域を透明の「穴」として見せてから、フロートを上に描く。
+    // §51: マスク選択から持ち上げた場合は origMask==1 のセルだけを穴にする
+    // （bbox内の非選択画素＝周囲の絵柄は表示上も欠けさせない）。
     if (floating && floating.frameIndex === store.state.currentFrame) {
       const f = floating;
       if (!f.copy) {
-        ctx.clearRect(f.origX * cellSize, f.origY * cellSize, f.origW * cellSize, f.origH * cellSize);
+        if (f.origMask) {
+          for (let yy = 0; yy < f.origH; yy++) {
+            for (let xx = 0; xx < f.origW; xx++) {
+              if (!f.origMask[yy * f.origW + xx]) continue;
+              ctx.clearRect((f.origX + xx) * cellSize, (f.origY + yy) * cellSize, cellSize, cellSize);
+            }
+          }
+        } else {
+          ctx.clearRect(f.origX * cellSize, f.origY * cellSize, f.origW * cellSize, f.origH * cellSize);
+        }
       }
       const pal = p.palette;
       for (let yy = 0; yy < f.h; yy++) {
@@ -1968,8 +2209,9 @@ export function initEditor(store, toast) {
       ctx.restore();
     }
 
-    // 選択範囲（点線）
-    if (sel && sel.frameIndex === store.state.currentFrame) {
+    // 選択範囲（点線）。§51: マスク選択は bbox の点線でなく、輪郭+半透明塗りの
+    // オーバーレイ（cursorCanvas 側・drawMaskSelectionOverlay）で表現するため、ここでは出さない。
+    if (sel && sel.frameIndex === store.state.currentFrame && !sel.mask) {
       ctx.save();
       ctx.strokeStyle = "#6ee7c8";
       ctx.lineWidth = 2;
@@ -2047,6 +2289,9 @@ export function initEditor(store, toast) {
     toolButtons.forEach((btn) => btn.classList.toggle("is-active", btn.dataset.tool === store.state.tool));
     brushSizeButtons.forEach((btn) => btn.classList.toggle("is-active", Number(btn.dataset.size) === store.state.brushSize));
     document.getElementById("selMoveBtn")?.classList.toggle("is-active", !!floating); // §32
+    magicOptionsEl.hidden = store.state.tool !== "magic"; // §51: マジック選択ツール選択時のみオプション表示
+    // §51: 範囲ロックはマスク選択中は disable（rect のみ対応）
+    lockSelectionBtn.disabled = !!(sel && sel.mask);
     renderLayerPanel(); // §35
     updateFloatPalette(); // §37: 編集のたび使用色を再集計（シグネチャ一致ならDOM再構築なし）
     updateMobileColorChip(); // §50.4: 現在色チップの追従

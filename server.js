@@ -527,6 +527,15 @@ function validateEditRequest(body) {
       throw new Error("allowedMask のサイズまたは文字が不正です");
     }
   }
+  // §51: mode=patch + scope=selection でマジック選択（マスク）を使う場合、allowedMask は
+  // 任意（矩形選択なら送られない）だが、送られてきた場合は形式を検証する。
+  if (mode === "patch" && allowedMask !== undefined && allowedMask !== null) {
+    if (typeof allowedMask !== "string") throw new Error("allowedMask が不正です");
+    const maskRows = allowedMask.split("\n");
+    if (maskRows.length !== height || !maskRows.every((r) => r.length === width && /^[01]*$/.test(r))) {
+      throw new Error("allowedMask のサイズまたは文字が不正です");
+    }
+  }
   // §22.5-2: redraw のマスクbboxクロップ（モデルはクロップローカル座標で edits を返す）
   if (body.cropRect !== undefined && body.cropRect !== null) {
     if (mode !== "redraw") throw new Error("cropRect は mode=redraw でのみ指定できます");
@@ -747,6 +756,10 @@ ${instruction}`;
     scopeText = `対象スコープ: フレーム${frameIndex} 全体`;
   } else {
     scopeText = `対象スコープ: フレーム${frameIndex} の矩形 (${selection.x}, ${selection.y}) 〜 (${selection.x + selection.w}, ${selection.y + selection.h})`;
+    // §51: マジック選択（マスク）の場合は、矩形の中でも不定形の範囲だけが対象であることを明示
+    if (mode === "patch" && typeof allowedMask === "string") {
+      scopeText += `\n（この矩形の中でも、以下のマスクで '1' のセルだけが対象です。マスク選択＝不定形の範囲なので、'0' のセルは変更しないでください。'0' への edits はサーバー側で破棄されます）\n${allowedMask}`;
+    }
   }
 
   let baseSection = "";
@@ -1007,6 +1020,25 @@ function validateAndClampPatch(rawPatch, body) {
       continue;
     }
     cleanNewFrames.push({ insertAfter, rows: tokRows });
+  }
+
+  // --- §51: マジック選択スコープ（mode=patch + scope=selection + allowedMask指定時）---
+  // 矩形クリップに加えて、マスク外（不定形の非選択部分）への edits を追加で切り捨てる。
+  // 矩形選択（allowedMask未指定）は従来どおり影響なし。
+  if (mode === "patch" && scope === "selection" && typeof body.allowedMask === "string") {
+    const maskRows = body.allowedMask.split("\n");
+    let discardedMask = 0;
+    for (const e of cleanEdits) {
+      e.rows = e.rows.map((tr, ry) => tr.map((tok, rx) => {
+        const ax = e.x + rx, ay = e.y + ry;
+        if (tok !== KEEP && (!maskRows[ay] || maskRows[ay][ax] !== "1")) {
+          discardedMask++;
+          return KEEP;
+        }
+        return tok;
+      }));
+    }
+    if (discardedMask > 0) warnings.push(`選択マスク外の ${discardedMask} セルの編集を破棄しました`);
   }
 
   // --- ロック領域の強制上書き（§13.2-3）---

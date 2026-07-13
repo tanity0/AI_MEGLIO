@@ -196,6 +196,26 @@ aside, #canvasPanel {
 .brush-size-btn.is-active { border-color: var(--accent); background: var(--bg-3); color: var(--text-0); }
 #zoomLabel { width: 32px; text-align: right; color: var(--text-2); }
 
+/* ---------- §51: マジック選択ツール（しきい値つきマジックワンド） ---------- */
+.magic-row { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--text-1); }
+.magic-threshold-row { display: flex; align-items: center; gap: 6px; }
+.magic-threshold-row input[type=range] { flex: 1; min-width: 50px; }
+#magicThresholdLabel { width: 24px; text-align: right; color: var(--text-2); }
+.magic-mode-group { display: flex; gap: 4px; }
+.magic-mode-btn {
+  flex: 1 1 auto;
+  appearance: none;
+  padding: 5px 4px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  color: var(--text-1);
+  font-size: 11px;
+  cursor: pointer;
+}
+.magic-mode-btn:hover { border-color: var(--accent-dark); }
+.magic-mode-btn.is-active { border-color: var(--accent); background: var(--bg-3); color: var(--text-0); }
+
 /* ---------- §34 エディタ拡張 ---------- */
 .onion-row, .grid-row, .mirror-row {
   display: flex;
@@ -1530,12 +1550,14 @@ body.mc-gallery-open #timelineBar { position: relative; z-index: 600; }
   /* ---- §50.4: フローティングツールバー（キャンバス下端中央・タイムライン直上） ----
      左右のクイックアンドゥ(§49.5・left:12px幅44px)/ズーム(§49.3・right:12px幅44px)と
      水平方向で重ならないよう、中央帯（左右とも56px以上の余白）に収まるボタンサイズ・
-     間隔にしてある（5ツール(38px)+色チップ(34px)+gap(5px)×5=249px。390px幅なら
-     中央配置で左右とも約70pxの余白が残り、コーナーの44px幅ボタンと非重複）。 */
+     間隔にしてある。§51でマジック選択ツールが増えて6ツールになったため、
+     ボタン径を38→34px・色チップを34→30pxに縮小して収める
+     （6ツール(34px)+色チップ(30px)+gap(4px)×6=258px。390px幅なら中央配置で
+     左右とも約66pxの余白が残り、コーナーの44px幅ボタンと非重複）。 */
   #mobileToolbar {
     display: flex;
     align-items: center;
-    gap: 5px;
+    gap: 4px;
     position: absolute;
     left: 50%;
     bottom: 8px;
@@ -1546,21 +1568,21 @@ body.mc-gallery-open #timelineBar { position: relative; z-index: 600; }
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 38px;
-    height: 38px;
+    width: 34px;
+    height: 34px;
     border-radius: 50%;
     background: rgba(36, 38, 49, 0.8);
     border: 1px solid var(--border);
     color: var(--text-0);
-    font-size: 16px;
+    font-size: 15px;
     padding: 0;
     touch-action: manipulation;
   }
   .mobile-tool-btn span { display: none; } /* 左パネル版のラベル<span>は円形ボタンでは非表示 */
   .mobile-tool-btn.is-active { border-color: var(--accent); background: var(--bg-3); }
   #mobileColorChipBtn {
-    width: 34px;
-    height: 34px;
+    width: 30px;
+    height: 30px;
     border-radius: 50%;
     border: 2px solid var(--border);
     padding: 0;

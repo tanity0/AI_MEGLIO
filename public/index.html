@@ -74,9 +74,24 @@
       <button class="tool-btn" data-tool="fill" title="塗りつぶし (F)">🪣<span>塗りつぶし</span></button>
       <button class="tool-btn" data-tool="select" title="矩形選択 (S)">▭<span>矩形選択</span></button>
       <button class="tool-btn" data-tool="eyedropper" title="スポイト (I)">💧<span>スポイト</span></button>
+      <button class="tool-btn" data-tool="magic" title="マジック選択 (W)">🪄<span>マジック選択</span></button>
     </div>
 
     <div class="tool-options">
+      <!-- §51: マジック選択ツールのオプション（ツール選択時のみ表示） -->
+      <div class="magic-row" id="magicOptions" hidden title="マジック選択（しきい値つきマジックワンド）のオプション">
+        <div class="magic-threshold-row">
+          <span class="hint">しきい値</span>
+          <input type="range" id="magicThresholdRange" min="0" max="96" step="1" value="0">
+          <span id="magicThresholdLabel">0</span>
+        </div>
+        <label class="check-row"><input type="checkbox" id="magicConnectedToggle" checked> 連結のみ（4近傍）</label>
+        <div class="magic-mode-group" id="magicModeGroup" role="group" aria-label="マジック選択モード">
+          <button type="button" class="magic-mode-btn is-active" data-mode="new">新規</button>
+          <button type="button" class="magic-mode-btn" data-mode="add">＋足す</button>
+          <button type="button" class="magic-mode-btn" data-mode="subtract">－引く</button>
+        </div>
+      </div>
       <div class="onion-row" title="オニオンスキン（前後フレームの薄表示・色付き・書き出しには非影響）">
         <span class="hint">オニオン</span>
         <select id="onionModeSelect">
@@ -248,6 +263,7 @@
       <button type="button" class="tool-btn mobile-tool-btn" data-tool="fill" title="塗りつぶし (F)" aria-label="塗りつぶし">🪣</button>
       <button type="button" class="tool-btn mobile-tool-btn" data-tool="select" title="矩形選択 (S)" aria-label="矩形選択">▭</button>
       <button type="button" class="tool-btn mobile-tool-btn" data-tool="eyedropper" title="スポイト (I)" aria-label="スポイト">💧</button>
+      <button type="button" class="tool-btn mobile-tool-btn" data-tool="magic" title="マジック選択 (W)" aria-label="マジック選択">🪄</button>
       <button type="button" id="mobileColorChipBtn" class="mobile-color-chip" title="現在の色（タップでパレット窓）" aria-label="現在の色・パレット窓を開閉"></button>
     </div>
   </section>

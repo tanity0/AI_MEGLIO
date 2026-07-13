@@ -308,6 +308,10 @@ export function initAi(store, toast) {
     if (scope === "selection") {
       const sel = store.state.selection;
       body.selection = { x: sel.x, y: sel.y, w: sel.w, h: sel.h };
+      // §51: マスク選択（§51 マジック選択）なら、bboxに加えてマスクも送る。
+      // サーバー側は許可セル外の edits を追加で破棄する（従来のbboxクリップに、
+      // 不定形マスクによる追加の絞り込みが乗る形。矩形選択時は送らず従来どおり）。
+      if (sel.mask) body.allowedMask = buildSelectionMask(project, sel);
     }
 
     await executeEdit(body, instruction, (patch) => applyPatch(patch));
@@ -610,13 +614,29 @@ export function initAi(store, toast) {
     refineBtn.title = sel ? "選択範囲のラフ編集を綺麗なドットに清書（§19）" : "範囲を選択してください";
   });
 
-  // 選択矩形+外周1px の許可マスク（§19.1）
+  // 選択矩形+外周1px の許可マスク（§19.1）。
+  // §51: sel.mask（マジック選択のキャンバスサイズマスク）があれば、bbox全面ではなく
+  // マスク画素+その8近傍（外周1px相当のダイレーション）だけを許可する（allowedMaskに
+  // そのまま渡せる形＝bbox+マスクをマスクで表現）。矩形選択（sel.mask無し）は従来どおり。
   function buildSelectionMask(project, sel) {
+    const mask = sel.mask;
     const rows = [];
     for (let y = 0; y < project.height; y++) {
       let row = "";
       for (let x = 0; x < project.width; x++) {
-        row += x >= sel.x - 1 && x < sel.x + sel.w + 1 && y >= sel.y - 1 && y < sel.y + sel.h + 1 ? "1" : "0";
+        let allowed;
+        if (mask) {
+          allowed = false;
+          for (let dy = -1; dy <= 1 && !allowed; dy++) {
+            for (let dx = -1; dx <= 1 && !allowed; dx++) {
+              const nx = x + dx, ny = y + dy;
+              if (nx >= 0 && ny >= 0 && nx < project.width && ny < project.height && mask[ny * project.width + nx]) allowed = true;
+            }
+          }
+        } else {
+          allowed = x >= sel.x - 1 && x < sel.x + sel.w + 1 && y >= sel.y - 1 && y < sel.y + sel.h + 1;
+        }
+        row += allowed ? "1" : "0";
       }
       rows.push(row);
     }
@@ -663,7 +683,7 @@ export function initAi(store, toast) {
     }
 
     const common = baseRequestFields();
-    const mask = buildSelectionMask(project, rect);
+    const mask = buildSelectionMask(project, sel); // §51: sel.mask があればマスク優先（無ければ従来のbbox+1px）
     const makeBody = (fi) => ({
       ...common,
       mode: "refine",
