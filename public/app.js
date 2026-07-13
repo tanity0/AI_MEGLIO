@@ -16,6 +16,7 @@ import { initSendGpt } from "./sendgpt.js"; // §36 「GPTへ送る」
 import { initBackdrop } from "./backdrop.js"; // §45 背景色の変更（表示専用）
 import { initMobile } from "./mobile.js"; // §49 スマホレイアウト（ドロワー化）
 import { initAutosave } from "./autosave.js"; // §50.1 自動保存＆復元（IndexedDB）
+import { initSwUpdate } from "./swupdate.js"; // §50.7 SW更新チェック（新バージョン案内バナー）
 
 // ---------------------------------------------------------------------------
 // テキストグリッド文字割当て（サーバー側 server.js と同一の規則）
@@ -1179,6 +1180,7 @@ async function main() {
   initBackdrop(); // §45 背景色の変更（透明部分の表示色・localStorage 復元）
   initMobile(); // §49 スマホレイアウト（サイドパネルのドロワー化）
   initAutosave(store, toast); // §50.1 自動保存＆復元（IndexedDB）
+  initSwUpdate(); // §50.7 SW更新チェック（新バージョン案内バナー）
   initHelp();
   applyStaticModeUI(); // §48.2: サーバー前提UIの非表示・ギャラリーを開くの復活
   renderBackendLabel();

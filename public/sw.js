@@ -1,6 +1,8 @@
-// sw.js — §50.2 PWA化: Service Worker
+// sw.js — §50.2 PWA化: Service Worker（§50.7 でページ側の呼び出し漏れを修正・追補）
 // サブパス配信（/AI_MEGLIO/ 等）前提のため、資産パスは self.registration.scope からの
 // 相対URLとして解決する（絶対パス "/..." は書かない）。
+// §50.7: このファイル自体のバイト変更は、既存ユーザーの古いSWインストールを
+// registration.update() で検知させ再インストールを起こすためのもの（swupdate.js 参照）。
 //
 // 戦略:
 //   - 静的資産: cache-first（無ければネットワーク取得→キャッシュへ追加）
@@ -18,6 +20,7 @@ const ASSET_PATHS = [
   "backdrop.js", "canvasresize.js", "gameexport.js", "gif.js",
   "help.js", "import.js", "livesync.js", "mobile.js", "motionstudio.js",
   "rig.js", "sendgpt.js", "studio.js", "styleref.js", "timeline.js", "autosave.js",
+  "swupdate.js", // §50.7: SW更新チェック（ページ側が AI_MEGLIO_CHECK_VERSION を呼ぶようになった）
   "version.json", "manifest.webmanifest", "icon-192.png", "icon-512.png",
 ];
 
@@ -32,7 +35,10 @@ async function resolveCacheName() {
     const v = typeof data.version === "string" && data.version ? data.version : "unknown";
     return CACHE_PREFIX + v;
   } catch {
-    return CACHE_PREFIX + "unknown";
+    // §50.7-4: version.json が一時的に取れない場合（オフライン/瞬断）は、直前に確定済みの
+    // キャッシュ名があればそれを維持する（"unknown" 固定にして毎回キャッシュを無意味に
+    // 切替えない）。まだ何も確定していない初回インストール時のみ "unknown" にフォールバックする。
+    return currentCacheName || (CACHE_PREFIX + "unknown");
   }
 }
 

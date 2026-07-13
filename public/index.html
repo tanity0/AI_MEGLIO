@@ -56,6 +56,15 @@
   </div>
 </div>
 
+<!-- §50.7: SW更新チェックのバナー（ページロード毎・可視性復帰時にチェックし、SWのキャッシュが
+     現在ロード中のバージョンと異なるときだけ表示。通常は hidden。自動リロードはしない） -->
+<div id="updateBanner" class="resume-banner" hidden>
+  <span class="resume-banner-text">新しいバージョンがあります。再読み込みすると最新版が使えます。</span>
+  <div class="resume-banner-actions">
+    <button id="updateBannerReloadBtn" class="btn btn-small btn-accent" type="button">再読み込み</button>
+  </div>
+</div>
+
 <div id="profileBar">
   <label class="profile-row">プロファイル
     <select id="profileSelect"><option value="">プロファイルなし</option></select>

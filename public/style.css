@@ -815,8 +815,8 @@ body.mc-gallery-open #timelineBar { position: relative; z-index: 600; }
 .fps-row { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-1); }
 .fps-row input { width: 48px; background: var(--bg-2); color: var(--text-0); border: 1px solid var(--border); border-radius: 4px; padding: 3px 4px; }
 
-/* ---------- §50.1 自動保存からの再開バナー ---------- */
-#resumeBanner {
+/* ---------- §50.1 自動保存からの再開バナー / §50.7 SW更新案内バナー（同系デザイン） ---------- */
+#resumeBanner, #updateBanner {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -828,7 +828,7 @@ body.mc-gallery-open #timelineBar { position: relative; z-index: 600; }
   font-size: 12px;
   color: var(--text-0);
 }
-#resumeBanner[hidden] { display: none; }
+#resumeBanner[hidden], #updateBanner[hidden] { display: none; }
 .resume-banner-text { flex: 1 1 240px; min-width: 0; }
 .resume-banner-actions { display: flex; gap: 8px; flex: 0 0 auto; }
 
