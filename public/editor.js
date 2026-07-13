@@ -72,6 +72,8 @@ export function initEditor(store, toast) {
   const magicThresholdLabel = document.getElementById("magicThresholdLabel");
   const magicConnectedToggle = document.getElementById("magicConnectedToggle");
   const magicModeButtons = Array.from(document.querySelectorAll(".magic-mode-btn"));
+  const magicGrowBtn = document.getElementById("magicGrowBtn"); // §51.6
+  const magicShrinkBtn = document.getElementById("magicShrinkBtn"); // §51.6
 
   // §31.2: ブラシサイズ（UIの初期状態が無ければ既定1px）
   if (!BRUSH_SIZES.includes(store.state.brushSize)) store.state.brushSize = 1;
@@ -688,6 +690,60 @@ export function initEditor(store, toast) {
     lastMagicTap = { frameIndex, x, y, mode, baseMask }; // §51.2: しきい値/連結の変更時の再選択用
     combineAndApplyMagic(frameIndex, region, mode, baseMask);
   }
+  // ------------------------------------------------------------------ §51.6
+  // マスク選択の拡張(+1px)/縮小(-1px)。4近傍のみ（対角は含めない＝モルフォロジー的な
+  // 「角が育たない」性質。連打で複数pxに対応するため、常に「今のマスク」から1回分だけ計算する）。
+  function growMask4(mask, W, H) {
+    const out = new Uint8Array(W * H);
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const idx = y * W + x;
+        if (mask[idx]) { out[idx] = 1; continue; }
+        if (
+          (x > 0 && mask[idx - 1]) ||
+          (x < W - 1 && mask[idx + 1]) ||
+          (y > 0 && mask[idx - W]) ||
+          (y < H - 1 && mask[idx + W])
+        ) {
+          out[idx] = 1;
+        }
+      }
+    }
+    return out;
+  }
+  function shrinkMask4(mask, W, H) {
+    const out = new Uint8Array(W * H);
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const idx = y * W + x;
+        if (!mask[idx]) continue;
+        // キャンバス外は「マスク外」扱い（境界に接するセルは1px削られる。標準的なモルフォロジー収縮）。
+        const left = x > 0 ? mask[idx - 1] : 0;
+        const right = x < W - 1 ? mask[idx + 1] : 0;
+        const up = y > 0 ? mask[idx - W] : 0;
+        const down = y < H - 1 ? mask[idx + W] : 0;
+        if (left && right && up && down) out[idx] = 1;
+      }
+    }
+    return out;
+  }
+  // 現在のマスク選択を1px膨張/収縮し、bbox再計算・オーバーレイ即時更新。
+  // 矩形選択中・選択なしは呼び出し元（ボタンのdisabled同期）で弾かれる前提だが、念のため
+  // ここでも sel.mask が無ければ何もしない。縮小して空になったら選択解除扱い（§51.6）。
+  function morphMagicSelection(dir) {
+    const sel = store.state.selection;
+    if (!sel || !sel.mask) return;
+    const p = project();
+    const newMask = dir === "grow" ? growMask4(sel.mask, p.width, p.height) : shrinkMask4(sel.mask, p.width, p.height);
+    const bbox = computeMaskBBox(newMask, p.width, p.height);
+    if (!bbox) {
+      store.state.selection = null;
+    } else {
+      store.state.selection = { frameIndex: sel.frameIndex, x: bbox.x, y: bbox.y, w: bbox.w, h: bbox.h, mask: newMask };
+    }
+    store.notify();
+  }
+
   // しきい値/連結トグルの変更時、直前のタップ点から即再選択（プレビュー的に効く・§51.2）。
   function reapplyLastMagicTap() {
     if (!lastMagicTap) return;
@@ -1879,6 +1935,9 @@ export function initEditor(store, toast) {
       magicModeButtons.forEach((b) => b.classList.toggle("is-active", b === btn));
     });
   });
+  // §51.6: 拡張+1 / 縮小−1（連打で複数px。disabled同期はrender()側）
+  magicGrowBtn.addEventListener("click", () => morphMagicSelection("grow"));
+  magicShrinkBtn.addEventListener("click", () => morphMagicSelection("shrink"));
 
   // --- ロック領域（§13.2-3）---
   lockSelectionBtn.addEventListener("click", () => {
@@ -2326,6 +2385,10 @@ export function initEditor(store, toast) {
     lockSelectionBtn.disabled = !!(sel && sel.mask);
     // §51.5: 選択が無いときはクリアボタンを disable
     selClearBtn.disabled = !(sel && sel.frameIndex === store.state.currentFrame);
+    // §51.6: 拡張+1/縮小−1はマスク選択があるときのみ有効（矩形選択中・選択なしはdisable）
+    const hasMagicMask = !!(sel && sel.mask);
+    magicGrowBtn.disabled = !hasMagicMask;
+    magicShrinkBtn.disabled = !hasMagicMask;
     renderLayerPanel(); // §35
     updateFloatPalette(); // §37: 編集のたび使用色を再集計（シグネチャ一致ならDOM再構築なし）
     updateMobileColorChip(); // §50.4: 現在色チップの追従

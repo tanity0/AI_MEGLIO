@@ -85,11 +85,16 @@
           <input type="range" id="magicThresholdRange" min="0" max="96" step="1" value="0">
           <span id="magicThresholdLabel">0</span>
         </div>
-        <label class="check-row"><input type="checkbox" id="magicConnectedToggle" checked> 連結のみ（4近傍）</label>
+        <label class="check-row" title="ONでタップ点とつながる範囲のみ。OFFで画面全体の同色"><input type="checkbox" id="magicConnectedToggle" checked> 隣接</label>
         <div class="magic-mode-group" id="magicModeGroup" role="group" aria-label="マジック選択モード">
           <button type="button" class="magic-mode-btn is-active" data-mode="new">新規</button>
           <button type="button" class="magic-mode-btn" data-mode="add">＋足す</button>
           <button type="button" class="magic-mode-btn" data-mode="subtract">－引く</button>
+        </div>
+        <!-- §51.6: マスク選択の拡張/縮小（4近傍1pxモルフォロジー。矩形選択中/選択なしはdisable） -->
+        <div class="magic-morph-row" id="magicMorphRow">
+          <button type="button" id="magicGrowBtn" class="btn btn-small" title="選択マスクを4近傍で1px膨張">拡張+1</button>
+          <button type="button" id="magicShrinkBtn" class="btn btn-small" title="選択マスクを4近傍で1px収縮">縮小−1</button>
         </div>
       </div>
       <div class="onion-row" title="オニオンスキン（前後フレームの薄表示・色付き・書き出しには非影響）">

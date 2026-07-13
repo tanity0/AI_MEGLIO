@@ -215,6 +215,9 @@ aside, #canvasPanel {
 }
 .magic-mode-btn:hover { border-color: var(--accent-dark); }
 .magic-mode-btn.is-active { border-color: var(--accent); background: var(--bg-3); color: var(--text-0); }
+/* §51.6: マスク選択の拡張/縮小ボタン */
+.magic-morph-row { display: flex; gap: 4px; }
+.magic-morph-row .btn { flex: 1 1 auto; }
 
 /* ---------- §34 エディタ拡張 ---------- */
 .onion-row, .grid-row, .mirror-row {
