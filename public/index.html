@@ -153,7 +153,10 @@
         <button id="undoBtn" class="btn btn-small" title="元に戻す (Ctrl+Z)">↩ 戻す</button>
         <button id="redoBtn" class="btn btn-small" title="やり直し (Ctrl+Shift+Z)">↪ やり直し</button>
       </div>
-      <button id="clearSelectionBtn" class="btn btn-small">選択解除</button>
+      <div class="sel-clear-row">
+        <button id="clearSelectionBtn" class="btn btn-small">選択解除</button>
+        <button id="selClearBtn" class="btn btn-small" title="選択範囲内のアクティブレイヤー画素を透明化（クリップボードは使わない・アンドゥ1手） (Delete/Backspace)">クリア</button>
+      </div>
       <button id="lockSelectionBtn" class="btn btn-small" title="選択中の矩形を変更禁止のロック領域にする">この範囲をロック</button>
       <button id="clearLocksBtn" class="btn btn-small" title="すべてのロック領域を解除">全ロック解除 (<span id="lockCount">0</span>)</button>
       <div class="sel-transform" title="選択ピクセルの変形（§32・現在フレーム・パレット不変）">

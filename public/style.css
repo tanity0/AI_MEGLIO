@@ -1185,6 +1185,10 @@ body.mc-gallery-open #timelineBar { position: relative; z-index: 600; }
 .undo-row { display: flex; gap: 4px; }
 .undo-row .btn { flex: 1; }
 
+/* §51.5: 選択解除の隣にクリアボタン */
+.sel-clear-row { display: flex; gap: 4px; }
+.sel-clear-row .btn { flex: 1; }
+
 /* §32: 選択範囲の変形 */
 .sel-transform { display: flex; flex-direction: column; gap: 4px; }
 .sel-transform-btns { display: flex; flex-wrap: wrap; gap: 4px; }

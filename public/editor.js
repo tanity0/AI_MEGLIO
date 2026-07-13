@@ -54,6 +54,7 @@ export function initEditor(store, toast) {
   const zoomRange = document.getElementById("zoomRange");
   const zoomLabel = document.getElementById("zoomLabel");
   const clearSelectionBtn = document.getElementById("clearSelectionBtn");
+  const selClearBtn = document.getElementById("selClearBtn"); // §51.5
   const paletteGrid = document.getElementById("paletteGrid");
   const paletteAddBtn = document.getElementById("paletteAddBtn");
   const mainPaletteRow = document.getElementById("mainPaletteRow");
@@ -350,6 +351,32 @@ export function initEditor(store, toast) {
     recompositeFrame(frame);
     store.notify();
     toast(`切り取りました（${clipboard.w}×${clipboard.h}）`);
+  }
+  // ------------------------------------------------------------------ §51.5
+  // 選択範囲のクリア：選択内（矩形・§51マスクの両対応。マスク時はマスク画素のみ）の
+  // アクティブレイヤー画素を透明化。アンドゥ1手。切り取りと違いクリップボードには触れない。
+  // floating選択中はfloatingを確定せず破棄（キャンセル）してから通常選択として動作。
+  function doClear() {
+    if (floating) cancelFloating(); // 確定なしでキャンセル→通常選択として動作
+    const sel = currentSelRect();
+    if (!sel) { toast("クリアする範囲を選択してください", "error"); return; }
+    store.pushUndo();
+    const p = project();
+    const frame = p.frames[sel.frameIndex];
+    const px = frameActiveLayerPixels(frame); // §35: クリアはアクティブレイヤー対象
+    const mask = sel.mask; // §51: マスク選択ならマスク画素のみ透明化
+    for (let yy = 0; yy < sel.h; yy++) {
+      for (let xx = 0; xx < sel.w; xx++) {
+        const dx = sel.x + xx, dy = sel.y + yy;
+        if (dx >= 0 && dy >= 0 && dx < p.width && dy < p.height) {
+          const gIdx = dy * p.width + dx;
+          if (!mask || mask[gIdx] === 1) px[gIdx] = 0;
+        }
+      }
+    }
+    recompositeFrame(frame);
+    store.notify();
+    toast("選択範囲をクリアしました");
   }
   function doPaste() {
     if (!clipboard) { toast("クリップボードが空です", "error"); return; }
@@ -1328,6 +1355,7 @@ export function initEditor(store, toast) {
     store.state.selection = null;
     store.notify();
   });
+  selClearBtn.addEventListener("click", doClear); // §51.5
 
   // --- §32: 選択範囲の変形ボタン ---
   document.getElementById("selMoveBtn").addEventListener("click", () => {
@@ -1903,6 +1931,10 @@ export function initEditor(store, toast) {
       if (k === "x" && (currentSelRect() || floating)) { doCut(); ev.preventDefault(); return; }
       if (k === "v" && clipboard) { doPaste(); ev.preventDefault(); return; }
     }
+    // §51.5: Delete / Backspace で選択範囲をクリア（floating中も可＝floatingを破棄してから実行）
+    if (!ev.ctrlKey && !ev.metaKey && !ev.altKey && (ev.key === "Delete" || ev.key === "Backspace")) {
+      if (currentSelRect() || floating) { doClear(); ev.preventDefault(); return; }
+    }
     // §32: フローティング中の確定/取消・アンドゥ整合
     if (floating) {
       if (ev.key === "Escape") { cancelFloating(); ev.preventDefault(); return; }
@@ -2292,6 +2324,8 @@ export function initEditor(store, toast) {
     magicOptionsEl.hidden = store.state.tool !== "magic"; // §51: マジック選択ツール選択時のみオプション表示
     // §51: 範囲ロックはマスク選択中は disable（rect のみ対応）
     lockSelectionBtn.disabled = !!(sel && sel.mask);
+    // §51.5: 選択が無いときはクリアボタンを disable
+    selClearBtn.disabled = !(sel && sel.frameIndex === store.state.currentFrame);
     renderLayerPanel(); // §35
     updateFloatPalette(); // §37: 編集のたび使用色を再集計（シグネチャ一致ならDOM再構築なし）
     updateMobileColorChip(); // §50.4: 現在色チップの追従
