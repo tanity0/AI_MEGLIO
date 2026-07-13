@@ -90,6 +90,8 @@ export function initLiveSync(store, toast) {
 
   async function enable() {
     enabled = true;
+    store.state.liveSyncEnabled = true; // §50.1: 自動保存を停止させる
+    store.notify();
     lastSyncedMtime = 0;
     syncedSnapshot = serializeProject();
     saveBtn.hidden = false;
@@ -114,11 +116,13 @@ export function initLiveSync(store, toast) {
 
   function disable() {
     enabled = false;
+    store.state.liveSyncEnabled = false; // §50.1: 自動保存を再開させる
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
     saveBtn.hidden = true;
     statusEl.hidden = true;
     statusEl.textContent = "";
     syncedSnapshot = null;
+    store.notify();
   }
 
   async function saveToLive() {

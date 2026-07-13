@@ -15,6 +15,7 @@ import { initLiveSync } from "./livesync.js"; // §29 ライブプロジェク�
 import { initSendGpt } from "./sendgpt.js"; // §36 「GPTへ送る」
 import { initBackdrop } from "./backdrop.js"; // §45 背景色の変更（表示専用）
 import { initMobile } from "./mobile.js"; // §49 スマホレイアウト（ドロワー化）
+import { initAutosave } from "./autosave.js"; // §50.1 自動保存＆復元（IndexedDB）
 
 // ---------------------------------------------------------------------------
 // テキストグリッド文字割当て（サーバー側 server.js と同一の規則）
@@ -672,6 +673,9 @@ class Store {
       // §48.1: 静的モード（GitHub Pages 等・サーバー無し）。起動時の GET /api/config 失敗で true。
       // 判定はこの1箇所（detectStaticMode）のみ。各モジュールは store.state.staticMode を参照する。
       staticMode: false,
+      // §50.1: ライブ同期（§29）が ON かどうか。ON の間は自動保存を停止する（二重管理防止）。
+      // livesync.js の enable()/disable() が更新する。
+      liveSyncEnabled: false,
       highlightGroup: null, // §18.3: メイングループハイライト
       zoom: 12,
       zoomAuto: true,
@@ -1174,6 +1178,7 @@ async function main() {
   initSendGpt(store, toast); // §36 「GPTへ送る」ワンクリック
   initBackdrop(); // §45 背景色の変更（透明部分の表示色・localStorage 復元）
   initMobile(); // §49 スマホレイアウト（サイドパネルのドロワー化）
+  initAutosave(store, toast); // §50.1 自動保存＆復元（IndexedDB）
   initHelp();
   applyStaticModeUI(); // §48.2: サーバー前提UIの非表示・ギャラリーを開くの復活
   renderBackendLabel();

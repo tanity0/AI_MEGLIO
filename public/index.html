@@ -5,6 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>AI Meglio — ドット絵アニメーション AI編集スタジオ</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%2314151c'/%3E%3Crect x='6' y='2' width='4' height='4' fill='%236ee7c8'/%3E%3Crect x='2' y='6' width='4' height='4' fill='%236ee7c8'/%3E%3Crect x='10' y='6' width='4' height='4' fill='%236ee7c8'/%3E%3Crect x='6' y='10' width='4' height='4' fill='%236ee7c8'/%3E%3C/svg%3E">
+<!-- §50.2: PWA化。サブパス配信（/AI_MEGLIO/ 等）前提のため全て相対パス。 -->
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="theme-color" content="#14151c">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -41,6 +45,16 @@
     <span id="liveSyncStatus" class="live-sync-status" hidden></span>
   </div>
 </header>
+
+<!-- §50.1: 自動保存からの再開バナー（IndexedDB。起動時に自動保存があり、かつ現在が
+     空プロジェクト相当のときだけ表示。通常は hidden） -->
+<div id="resumeBanner" class="resume-banner" hidden>
+  <span class="resume-banner-text">前回の続きから再開しますか？（自動保存されたプロジェクトがあります）</span>
+  <div class="resume-banner-actions">
+    <button id="resumeBannerResumeBtn" class="btn btn-small btn-accent" type="button">再開</button>
+    <button id="resumeBannerDiscardBtn" class="btn btn-small" type="button">破棄</button>
+  </div>
+</div>
 
 <div id="profileBar">
   <label class="profile-row">プロファイル
@@ -763,5 +777,14 @@
 <div id="toastRoot" aria-live="polite"></div>
 
 <script type="module" src="app.js"></script>
+<script>
+// §50.2: Service Worker 登録。相対パスで登録（サブパス配信でもスコープが自動で合う）。
+// 登録に失敗しても（非対応ブラウザ・file://・登録エラー等）アプリの動作には影響させない。
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("sw.js").catch(() => {});
+  });
+}
+</script>
 </body>
 </html>

@@ -341,6 +341,7 @@ const MIME = {
   ".svg": "image/svg+xml",
   ".png": "image/png",
   ".ico": "image/x-icon",
+  ".webmanifest": "application/manifest+json", // §50.2 PWA化
 };
 
 async function serveStatic(req, res) {

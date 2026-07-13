@@ -792,6 +792,23 @@ body.mc-gallery-open #timelineBar { position: relative; z-index: 600; }
 .fps-row { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-1); }
 .fps-row input { width: 48px; background: var(--bg-2); color: var(--text-0); border: 1px solid var(--border); border-radius: 4px; padding: 3px 4px; }
 
+/* ---------- §50.1 自動保存からの再開バナー ---------- */
+#resumeBanner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  padding: 8px 14px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--accent-dark);
+  font-size: 12px;
+  color: var(--text-0);
+}
+#resumeBanner[hidden] { display: none; }
+.resume-banner-text { flex: 1 1 240px; min-width: 0; }
+.resume-banner-actions { display: flex; gap: 8px; flex: 0 0 auto; }
+
 /* ---------- toast ---------- */
 #toastRoot {
   position: fixed;
