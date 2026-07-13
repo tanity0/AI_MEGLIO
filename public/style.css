@@ -1605,4 +1605,87 @@ body.mc-gallery-open #timelineBar { position: relative; z-index: 600; }
     display: none;
   }
   #timelineBar.is-collapsed .timeline-controls { flex: 0 0 auto; }
+
+  /* ---- §50.5: 取り込み系のモバイル最適化 ----
+     range要素はブラウザ既定のサムが小さく（実機実測で18px前後）指での微調整が難しいため、
+     モバイル幅では -webkit-appearance:none 等で見た目を作り直し、要素の当たり判定（高さ）
+     ≈32px・サム≈24pxを保証する。デスクトップ（>820px）は無指定のままブラウザ既定。
+     対象は変換スタジオ（.studio-knobs）のつまみに限定する。一時的に input[type=range] 全体
+     （#mcModal .mc-import-knobs の背景除去閾値/フチ光彩除去つまみ等を含む）に適用したところ、
+     ギャラリー表示中だけ #timelineBar が前面にせり出す仕様（body.mc-gallery-open時
+     z-index:600・下のコメント参照）と衝突し、取り込みプレビューの高さが押し広げられて
+     OK/キャンセルボタンがタイムラインの裏に隠れる回帰が実機相当のテストで確認されたため。 */
+  .studio-knobs input[type=range] {
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
+    height: 32px;
+    padding: 0;
+    margin: 0;
+    background: transparent;
+    vertical-align: middle;
+    touch-action: manipulation;
+  }
+  .studio-knobs input[type=range]::-webkit-slider-runnable-track {
+    height: 6px;
+    border-radius: 3px;
+    background: var(--bg-3);
+  }
+  .studio-knobs input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 1px solid var(--accent-dark);
+    margin-top: -9px; /* (24px - 6px)/2 でトラック中央に揃える */
+    cursor: pointer;
+  }
+  .studio-knobs input[type=range]::-moz-range-track {
+    height: 6px;
+    border-radius: 3px;
+    background: var(--bg-3);
+  }
+  .studio-knobs input[type=range]::-moz-range-thumb {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 1px solid var(--accent-dark);
+    cursor: pointer;
+  }
+
+  /* 変換スタジオ（#studioPanel）のつまみ行: 2列グリッドは指幅では窮屈なので1列化し、
+     行間も広げる。ラベル+スライダーが1行に収まらない場合は .form-row の
+     flex-wrap:wrap により自動的に折り返して縦積みになる（justify-content:space-betweenは維持）。 */
+  .studio-knobs {
+    grid-template-columns: 1fr;
+    gap: 10px 0;
+  }
+  .studio-knobs .form-row {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+  .studio-knobs .form-row input[type=range] {
+    flex: 1 1 160px;
+    width: auto;
+    min-width: 120px;
+  }
+
+  /* ギャラリー（モーション候補スタジオ）・書き出しダイアログのボタンをタップしやすい
+     40px以上の高さに拡大する（.btn-small の小さいpaddingも上書き。デスクトップは
+     .btn/.btn-small の既定サイズのまま）。
+     注意: #mcModal 全体（.mc-cell-actions のナッジ矢印・.mc-import-preview の取り込み
+     チェック列・.mc-merge の部位取り込みツール列など）に一律で適用すると、モーダル内の
+     縦積みコンテンツが押し広げられ、ギャラリー表示中だけ #timelineBar が前面に
+     せり出す仕様（body.mc-gallery-openでのz-index:600・上のコメント参照）と衝突して
+     スクロール後もタイムラインの裏に隠れてタップ不能になる回帰が実機相当のテストで
+     確認された。ヘッダーの主要操作列（.mc-head-actions＝候補追加/反転/中断/確定/閉じる等）
+     だけを対象にし、モーダル本文でスクロール位置に依存する深いネストのボタン群は
+     従来サイズのまま維持する。 */
+  .mc-head-actions .btn,
+  #exportPanel .btn {
+    min-height: 40px;
+    padding: 8px 14px;
+  }
 }
