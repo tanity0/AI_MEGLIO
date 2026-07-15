@@ -1786,3 +1786,24 @@ API不要の draw→GPT 最短経路の最後の1ピース。現在フレーム�
 
 - MOCK E2E: config.gemini=true → 画像エンジン経路で2ムーブ生成（参照エコー→1体複製）→ サムネ全ok・書き出し一式が §52.4 と同値で通る。`?engine=text` で従来経路の退行なし。
 - プロンプト構築・分割フォールバック（1体/N体/その他）の数値検証。バージョン繰り上げ。
+
+## 54. クイック生成の Codex CLI 画像エンジン（$imagegen / gpt-image-2・APIキー不要）
+
+Codex CLI は組み込みの `image_gen` ツール（gpt-image-2）でラスター画像を生成できる（`$imagegen` スキル・ChatGPTサブスク認証で動きAPIキー不要）。会社ルール等でAPIキーの平文管理が難しい環境向けに、§53 の Gemini と並ぶ**第2の画像エンジン**として追加する。生成後のパイプライン（ストリップ分割→ドット化→パレットスナップ・§53.3）は共通。
+
+### 54.1 エンジン解決
+
+- `/api/config` の `gemini` フラグを `spriteEngine: "gemini" | "codex" | "mock" | null` に置き換える。既定の優先順位: **GEMINI_API_KEY があれば gemini → BACKEND=codex なら codex → null（テキストにフォールバック）**。環境変数 `SPRITE_ENGINE`（gemini|codex|text）で明示上書き可（codex 指定は BACKEND に依らず有効）。
+- クライアントは `spriteEngine` 非nullで画像エンジン経路（§53.3）を使う。`?engine=text` の強制は §53 のまま。フッターにエンジン名を表示。
+
+### 54.2 Codex 実行（/api/spriteframe の codex 分岐）
+
+- 一時ディレクトリ（os.tmpdir 配下）に `reference.png` を書き出し、`codex exec --sandbox workspace-write --skip-git-repo-check -`（cwd=一時ディレクトリ・stdin プロンプト）で起動。§23.4 の .cmd シム対応（buildSpawnCommand）と §15.2 の同時実行スロット（acquireCliSlot）を共用する。
+- プロンプト: `$imagegen` + §53 のムーブ記述（buildSpritePrompt）+「Image 1 (reference.png) = キャラ参照（絵柄・配色・頭身を厳密維持）」+「image_gen ツールでラスター生成（SVG/HTML/CSS禁止）」+「結果を `output.png` に保存」。
+- 成功判定は終了コード0かつ `output.png` の存在。読み取り後に一時ディレクトリを削除して dataURL を返す。タイムアウトは `IMAGEGEN_TIMEOUT`（秒・既定300）。
+- 失敗時のエラーメッセージに codex 未ログイン/未インストール時の対処（`codex login` 等）を含める。
+
+### 54.3 検証
+
+- 偽 codex（stdin のプロンプトから reference/output パスを抽出し reference を output にコピーして exit 0 するスタブを CODEX_PATH に指定）で /api/spriteframe の codex 分岐を数値検証（返却dataURL=参照PNG・一時ディレクトリ掃除）。
+- SPRITE_ENGINE の解決順・config 反映・MOCK E2E（§53.4）の退行なし。バージョン繰り上げ。
