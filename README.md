@@ -22,14 +22,22 @@
 
 ヘッダーの「⚡ クイック生成」（または `http://localhost:8787/autosprite.html`）から、エディタを経由せずに**1枚のキャラ画像 → ムーブセット一式のスプライトシート**を最短経路で作れます。
 
-### 品質のために: Gemini画像生成エンジン（推奨・§53）
+### 品質のために: 画像生成エンジン（§53/§54）
 
-クイック生成は **Gemini の画像生成AI**（既定 `gemini-2.5-flash-image`）でフレームを描くと品質が大幅に上がります（テキストAIによる生成はフォールバックで、品質は低めです）。
+クイック生成は**画像生成AI**でフレームを描くと品質が大幅に上がります（テキストAIによる生成はフォールバックで、品質は低めです）。エンジンは2つから選べます：
+
+**A. Codex CLI（$imagegen / gpt-image-2）— APIキー不要・いちばん簡単（§54）**
+
+ChatGPTサブスクで `codex login` 済みなら、**`start-gpt.bat` で起動するだけ**でクイック生成が自動的に Codex の画像生成（`image_gen` ツール）を使います。`BACKEND=codex` 以外のバックエンドで起動する場合は `SPRITE_ENGINE=codex` を併せて設定してください。Codex CLI は `$imagegen` 対応の最新版が必要です（`npm i -g @openai/codex` で更新）。
+
+**B. Gemini API（既定 `gemini-2.5-flash-image`）（§53）**
 
 1. https://aistudio.google.com/apikey で**無料のAPIキー**を取得（Googleアカウントでログイン →「APIキーを作成」）
 2. `start-gemini.bat` をダブルクリックで起動 → 黒い窓でキーの入力を求められるので貼り付けて Enter → `http://localhost:8787/autosprite.html`
 
 キーは**ファイルに保存されません**（その黒い窓を閉じるまでの環境変数としてだけ保持され、Google のAPI呼び出し以外には使われません）。毎回入力したくない場合のみ、自己責任で環境変数 `GEMINI_API_KEY` を事前に設定してください（設定済みなら入力はスキップされます）。
+
+両方使える状態では Gemini が優先されます（`SPRITE_ENGINE=codex|gemini|text` で明示切替）。現在のエンジンはページ下部のフッターに表示されます。
 
 環境変数で直接指定する場合は `GEMINI_API_KEY`（必須）、`GEMINI_MODEL`（既定 `gemini-2.5-flash-image`）、`GEMINI_TIMEOUT`（秒・既定120）。キーが設定されていれば、`start-claude.bat` 等の他のバックエンドと併用してもクイック生成は自動でGeminiを使います（`?engine=text` で従来エンジンを強制）。無料枠にはレート制限があるため、大量生成で429エラーが出たら少し待ってから再生成してください。
 
@@ -123,6 +131,8 @@ APIを呼ばず、選択範囲（選択が無ければフレーム全体の中�
 | `GEMINI_API_KEY` | 未設定 | §53: クイック生成の画像生成エンジン用（https://aistudio.google.com/apikey で無料取得）。未設定時はテキストエンジンにフォールバック |
 | `GEMINI_MODEL` | `gemini-2.5-flash-image` | §53: 画像生成モデル |
 | `GEMINI_TIMEOUT` | `120` | §53: Gemini APIのタイムアウト（秒） |
+| `SPRITE_ENGINE` | 自動 | §54: クイック生成の画像エンジンを明示指定（`gemini` / `codex` / `text`）。既定はキーあり→gemini、BACKEND=codex→codex、それ以外→テキスト |
+| `IMAGEGEN_TIMEOUT` | `300` | §54: Codex CLI 画像生成のタイムアウト（秒） |
 | `MODEL` | `claude-opus-4-8` | 使用するClaudeモデル（BACKEND=api） |
 | `CLI_MODEL` | `sonnet` | 使用するモデル（BACKEND=cli）。遅い場合は `haiku` を推奨 |
 | `CLI_TIMEOUT` | `900` | CLI呼び出しのタイムアウト秒数（BACKEND=cli / codex 共通） |

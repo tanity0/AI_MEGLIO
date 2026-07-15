@@ -43,6 +43,17 @@ const EXPORT_ROOT = process.env.EXPORT_ROOT || ""; // §16.4: 未設定なら /a
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash-image";
 const GEMINI_TIMEOUT_MS = (Number(process.env.GEMINI_TIMEOUT) > 0 ? Number(process.env.GEMINI_TIMEOUT) : 120) * 1000;
+// §54: Codex CLI 画像エンジン（$imagegen / gpt-image-2・APIキー不要）
+const IMAGEGEN_TIMEOUT_MS = (Number(process.env.IMAGEGEN_TIMEOUT) > 0 ? Number(process.env.IMAGEGEN_TIMEOUT) : 300) * 1000;
+// エンジン解決: SPRITE_ENGINE で明示上書き、既定は gemini（キーあり）→ codex（BACKEND=codex）→ null
+const SPRITE_ENGINE = (() => {
+  const forced = process.env.SPRITE_ENGINE || "";
+  if (forced === "gemini" || forced === "codex") return forced;
+  if (forced === "text") return null;
+  if (GEMINI_API_KEY) return "gemini";
+  if (BACKEND === "codex") return "codex";
+  return null;
+})();
 // §25.8: GPT往復用の共有フォルダ。既定はプロジェクト直下、環境変数 EXCHANGE_DIR で
 // 上書き可能（例: Google Drive for Desktop 配下を指してスマホ→Drive→PC の自動取り込み）
 const EXCHANGE_DIR = process.env.EXCHANGE_DIR ? path.resolve(process.env.EXCHANGE_DIR) : path.join(process.cwd(), "gpt-exchange");
@@ -2141,7 +2152,7 @@ async function handleApiConfig(req, res) {
     exchangeIn: EXCHANGE_IN,
     version: APP_VERSION, // §24: フッター表示用
     commit: APP_COMMIT || null,
-    gemini: MOCK || !!GEMINI_API_KEY, // §53: クイック生成の画像エンジン可否
+    spriteEngine: MOCK ? "mock" : SPRITE_ENGINE, // §53/§54: クイック生成の画像エンジン（null=テキストにフォールバック）
     geminiModel: GEMINI_MODEL,
   });
   res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Content-Length": Buffer.byteLength(body) });
@@ -2764,6 +2775,72 @@ async function callGeminiImage(prompt, referenceB64, aspectRatio) {
   return `data:${mime};base64,${b64}`;
 }
 
+// §54: Codex CLI の $imagegen（image_gen ツール / gpt-image-2）でストリップ/1コマ画像を生成。
+// 一時ディレクトリに reference.png を置き、workspace-write サンドボックスで output.png に保存させる。
+// .cmd シム対応（§23.4 buildSpawnCommand）と CLI 同時実行スロット（§15.2）は既存を共用。
+async function spawnCodexImageGen(prompt, referenceB64) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "ai-meglio-imagegen-"));
+  const refPath = path.join(dir, "reference.png");
+  const outPath = path.join(dir, "output.png");
+  await fs.writeFile(refPath, Buffer.from(referenceB64, "base64"));
+  const fullPrompt = [
+    `$imagegen ${prompt}`,
+    `Image 1 (${refPath}): the character reference — match its design, colors, proportions and pixel-art style exactly.`,
+    "Generate a raster image with the image_gen tool. Never produce SVG, HTML or CSS.",
+    `Save the final image as a PNG file to exactly this path: ${outPath}`,
+  ].join("\n");
+
+  await acquireCliSlot();
+  try {
+    await new Promise((resolve, reject) => {
+      const args = ["exec", "--sandbox", "workspace-write", "--skip-git-repo-check", "-"];
+      let child;
+      try {
+        const sc = buildSpawnCommand(CODEX_CMD, args);
+        child = spawn(sc.cmd, sc.args, { cwd: dir, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, ...sc.options });
+      } catch (err) {
+        reject(spawnStartError(err, CODEX_SPAWN_ERR));
+        return;
+      }
+      let stdout = "", stderr = "", settled = false;
+      const settle = (fn, arg) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        fn(arg);
+      };
+      const timer = setTimeout(() => {
+        try { child.kill("SIGKILL"); } catch {}
+        settle(reject, userError(`Codex CLI の画像生成がタイムアウトしました（${IMAGEGEN_TIMEOUT_MS / 1000}秒）。IMAGEGEN_TIMEOUT で延長できます。`));
+      }, IMAGEGEN_TIMEOUT_MS);
+      child.on("error", (err) => settle(reject, spawnStartError(err, CODEX_SPAWN_ERR)));
+      child.stdout.on("data", (d) => { stdout += d; });
+      child.stderr.on("data", (d) => { stderr += d; });
+      child.on("close", (code) => {
+        if (code !== 0) {
+          const peek = (stderr || stdout).trim().replace(/\s+/g, " ").slice(0, 200);
+          settle(reject, userError(`Codex CLI がエラー終了しました (code ${code})。未ログインの場合は「codex login」を実行してください。${peek ? ` 出力: ${peek}` : ""}`));
+          return;
+        }
+        settle(resolve);
+      });
+      console.log(`[imagegen] spawn ${CODEX_CMD} exec ($imagegen) prompt=${fullPrompt.length}B dir=${dir}`);
+      child.stdin.write(fullPrompt);
+      child.stdin.end();
+    });
+    let png;
+    try {
+      png = await fs.readFile(outPath);
+    } catch {
+      throw userError("Codex CLI が output.png を保存しませんでした（$imagegen スキルが無効の可能性。codex を最新版に更新してください）。");
+    }
+    return `data:image/png;base64,${png.toString("base64")}`;
+  } finally {
+    releaseCliSlot();
+    fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 async function handleSpriteFrame(req, res) {
   let raw;
   try {
@@ -2795,24 +2872,28 @@ async function handleSpriteFrame(req, res) {
     respond(200, { image: body.reference, mock: true });
     return;
   }
-  if (!GEMINI_API_KEY) {
-    respond(503, { error: "GEMINI_API_KEY が設定されていません（https://aistudio.google.com/apikey で取得できます）" });
+  if (!SPRITE_ENGINE) {
+    respond(503, { error: "画像エンジンが未設定です。GEMINI_API_KEY を設定するか（https://aistudio.google.com/apikey）、Codex CLI バックエンド（BACKEND=codex または SPRITE_ENGINE=codex）で起動してください" });
     return;
   }
 
   const prompt = buildSpritePrompt(body);
-  // コマ数に応じた横長アスペクト（ストリップのみ）。未対応モデルの400は imageConfig なしで1回リトライ
-  const aspect = body.kind === "strip" && body.count > 1 ? (body.count >= 4 ? "21:9" : "16:9") : null;
   try {
     let image;
-    try {
-      image = await callGeminiImage(prompt, referenceB64, aspect);
-    } catch (err) {
-      if (aspect && err.status === 400) image = await callGeminiImage(prompt, referenceB64, null);
-      else throw err;
+    if (SPRITE_ENGINE === "codex") {
+      image = await spawnCodexImageGen(prompt, referenceB64); // §54
+    } else {
+      // §53: コマ数に応じた横長アスペクト（ストリップのみ）。未対応モデルの400は imageConfig なしで1回リトライ
+      const aspect = body.kind === "strip" && body.count > 1 ? (body.count >= 4 ? "21:9" : "16:9") : null;
+      try {
+        image = await callGeminiImage(prompt, referenceB64, aspect);
+      } catch (err) {
+        if (aspect && err.status === 400) image = await callGeminiImage(prompt, referenceB64, null);
+        else throw err;
+      }
     }
     respond(200, { image });
-    console.log(`[spriteframe] ${body.kind} ${body.preset} count=${body.count}${body.kind === "single" ? ` index=${body.index}` : ""} OK`);
+    console.log(`[spriteframe] ${SPRITE_ENGINE} ${body.kind} ${body.preset} count=${body.count}${body.kind === "single" ? ` index=${body.index}` : ""} OK`);
   } catch (err) {
     const msg = err.name === "AbortError" ? `Gemini APIがタイムアウトしました（${GEMINI_TIMEOUT_MS / 1000}秒）` : err.message;
     respond(err.status === 429 ? 429 : 502, { error: msg });

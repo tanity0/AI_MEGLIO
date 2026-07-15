@@ -129,16 +129,20 @@ async function detectServer() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const cfg = await res.json();
     state.serverOk = true;
-    // §53: 画像エンジン優先。?engine=text で従来のテキストエンジンを強制（検証用）
+    // §53/§54: 画像エンジン優先。?engine=text で従来のテキストエンジンを強制（検証用）
     const forced = new URLSearchParams(location.search).get("engine");
-    state.engine = forced === "text" ? "text" : cfg.gemini ? "image" : "text";
+    state.engine = forced === "text" ? "text" : cfg.spriteEngine ? "image" : "text";
     const textBackend = cfg.backend === "cli" ? "Claude Code CLI" : cfg.backend === "codex" ? "Codex CLI" : "API";
-    const engineLabel = cfg.mock ? "MOCK" : state.engine === "image" ? `Gemini画像生成（${cfg.geminiModel}）` : `テキスト（${textBackend}）`;
-    $("footerInfo").textContent = `AI Meglio — クイック生成ウィザード（§52/§53）｜生成エンジン: ${engineLabel}`;
-    if (!cfg.mock && state.engine === "text") {
+    const engineLabel =
+      cfg.spriteEngine === "mock" ? "MOCK"
+      : state.engine === "image"
+        ? (cfg.spriteEngine === "codex" ? "Codex CLI画像生成（$imagegen / gpt-image-2）" : `Gemini画像生成（${cfg.geminiModel}）`)
+        : `テキスト（${textBackend}）`;
+    $("footerInfo").textContent = `AI Meglio — クイック生成ウィザード（§52〜§54）｜生成エンジン: ${engineLabel}`;
+    if (cfg.spriteEngine !== "mock" && state.engine === "text") {
       const b = $("serverBanner");
       b.style.display = "block";
-      b.textContent = "テキストAIで生成します（品質は低めです）。Gemini APIキー（https://aistudio.google.com/apikey で無料取得）を GEMINI_API_KEY に設定して起動すると、画像生成AIで大幅に品質が上がります。";
+      b.textContent = "テキストAIで生成します（品質は低めです）。Codexバックエンド（start-gpt.bat・APIキー不要）か、Gemini APIキー（https://aistudio.google.com/apikey で無料取得）を設定して起動すると、画像生成AIで大幅に品質が上がります。";
     }
   } catch {
     state.serverOk = false;
