@@ -1754,3 +1754,35 @@ API不要の draw→GPT 最短経路の最後の1ピース。現在フレーム�
 - MOCK=1 でE2E: 画像取り込み→変換プレビュー→2ムーブ生成→プレビュー再生→シートPNG/アトラスJSON/.tres/プロジェクトJSONのダウンロード内容（数値: シート寸法・フレーム矩形・タグ範囲）。
 - アトラスの整合: 汎用JSONの frame 矩形 = (col*W*scale, row*H*scale, W*scale, H*scale)。Phaser hash のキーは `{move}_{i}`。.tres は AtlasTexture の region と SpriteFrames の animation 名がムーブ名と一致。
 - 本体は無変更で退行なし（導線リンクとsw precache追加のみ）。バージョン繰り上げ。
+
+## 53. クイック生成の画像生成エンジン（Gemini・品質改善）
+
+実機フィードバック: §52 のテキストAI（motionframe）による生成は autosprite.io と比べて品質が段違いに低い。根因はモデル種別（テキストAIにグリッド編集で絵を描かせている）であり、プロンプト調整では埋まらない。**フレーム生成を画像生成AI（Gemini の画像出力モデル・Nano Banana系）に差し替える**。テキスト経路は鍵なし環境のフォールバックとして残す。
+
+### 53.1 エンジン構成
+
+- 環境変数 `GEMINI_API_KEY`（Google AI Studio で無料取得可）と `GEMINI_MODEL`（既定 `gemini-2.5-flash-image`）、`GEMINI_TIMEOUT`（秒・既定120）。
+- `/api/config` に `gemini: boolean` を追加（MOCK時は true）。クイック生成ページはこれを見て**画像エンジン優先・無ければ従来のテキストエンジン**に自動切替（URLに `?engine=text` で強制テキスト、検証用）。
+- 起動補助: `start-gemini.bat`（キーを貼るだけ）を追加。
+
+### 53.2 生成方式（ムーブ単位の1枚ストリップ）
+
+フレーム1枚ずつ独立生成するとコマ間の一貫性が出ないため、**1ムーブ=1リクエスト**で「Nコマを等間隔の横一列に並べたストリップ画像」を生成させる（Nano Banana の定石）。
+
+- `POST /api/spriteframe`: `{ kind: "strip"|"single", preset, customText?, count(1..8), index?, desc?, reference(dataUrl PNG) }` → Gemini generateContent（参照画像+英語プロンプト、responseModalities TEXT+IMAGE、count>1 は imageConfig.aspectRatio をコマ数に応じ 16:9 / 21:9。400なら imageConfig なしで1回リトライ）→ `{ image: dataUrl }`。
+- プロンプト: 参照キャラの絵柄・配色・頭身を全コマで厳密維持 / 白無地背景 / コマ同士を離す / 枠線・文字なし / 向きは参照に合わせる。ムーブごとの局面記述は §13 の定石（歩き=コンタクト→ダウン→パッシング→アップ等）を英訳して埋め込む。
+- `single` は ↻（1コマ再生成）用（局面 index/count をプロンプトで指定）。
+- MOCK: 参照画像をそのまま返す（1秒遅延）。
+
+### 53.3 クライアント側の変換（既存パイプライン再利用）
+
+受信ストリップ → `removeBackground` → `detectComponents` でコマ分割：
+
+- 検出数 == N: そのまま採用。1個: その1体を全コマに複製（MOCK・生成失敗時の縮退）。それ以外: 全体bboxをN等分割にフォールバック。
+- 各コマを `convertImage`（targetH = **ベース素体のセル高**・色数 = ベースと同じ）でドット化 → ベースキャンバス（W×H）へ**足元基準（ベースbbox下端）・中央合わせ**で配置 → 各色を**ベースパレットへ最近色スナップ**。全フレームがベースと同一サイズ・同一パレットになるので、プレビュー/シート/アトラス/プロジェクトJSON（§52.2）は無変更で動く。
+- 制約（v1）: ジャンプの滞空高さは足元基準合わせのため表現されない（既知の割り切り）。
+
+### 53.4 検証
+
+- MOCK E2E: config.gemini=true → 画像エンジン経路で2ムーブ生成（参照エコー→1体複製）→ サムネ全ok・書き出し一式が §52.4 と同値で通る。`?engine=text` で従来経路の退行なし。
+- プロンプト構築・分割フォールバック（1体/N体/その他）の数値検証。バージョン繰り上げ。
