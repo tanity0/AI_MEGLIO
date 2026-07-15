@@ -18,9 +18,19 @@
 - CDN・外部ライブラリを一切使わない。GIFエンコーダも自前実装。
 - ドット絵を「パレット番号のテキストグリッド」として表現し、AIには参考用PNG画像とテキストグリッドの両方を渡す。出力は構造化JSON（差分パッチ）で受け取り、再生成ではなく確定的な差分編集を行う。
 
-## クイック生成ウィザード（AutoSprite風・§52）
+## クイック生成ウィザード（AutoSprite風・§52/§53）
 
 ヘッダーの「⚡ クイック生成」（または `http://localhost:8787/autosprite.html`）から、エディタを経由せずに**1枚のキャラ画像 → ムーブセット一式のスプライトシート**を最短経路で作れます。
+
+### 品質のために: Gemini画像生成エンジン（推奨・§53）
+
+クイック生成は **Gemini の画像生成AI**（既定 `gemini-2.5-flash-image`）でフレームを描くと品質が大幅に上がります（テキストAIによる生成はフォールバックで、品質は低めです）。
+
+1. https://aistudio.google.com/apikey で**無料のAPIキー**を取得（Googleアカウントでログイン →「APIキーを作成」）
+2. `start-gemini.bat` をメモ帳で開き、`set GEMINI_API_KEY=` の後ろにキーを貼り付けて保存
+3. `start-gemini.bat` をダブルクリックで起動 → `http://localhost:8787/autosprite.html`
+
+環境変数で直接指定する場合は `GEMINI_API_KEY`（必須）、`GEMINI_MODEL`（既定 `gemini-2.5-flash-image`）、`GEMINI_TIMEOUT`（秒・既定120）。キーが設定されていれば、`start-claude.bat` 等の他のバックエンドと併用してもクイック生成は自動でGeminiを使います（`?engine=text` で従来エンジンを強制）。無料枠にはレート制限があるため、大量生成で429エラーが出たら少し待ってから再生成してください。
 
 1. キャラ画像（PNG/JPG/WebP・ドット絵でなくてもOK）をドロップ → 自動でドット絵に変換
 2. ムーブ（待機/歩き/走り/ジャンプ/攻撃/カスタム）とフレーム数を選択
@@ -109,6 +119,9 @@ APIを呼ばず、選択範囲（選択が無ければフレーム全体の中�
 | `PORT` | `8787` | サーバーのリッスンポート |
 | `EXPORT_ROOT` | 未設定 | ゲームリポジトリのパス。設定すると「ゲーム書き出し」からこの配下に直接書き出せる（未設定時は /api/export 無効） |
 | `BACKEND` | `api` | `api` = Anthropic API / `cli` = ローカルの Claude Code CLI / `codex` = OpenAI Codex CLI |
+| `GEMINI_API_KEY` | 未設定 | §53: クイック生成の画像生成エンジン用（https://aistudio.google.com/apikey で無料取得）。未設定時はテキストエンジンにフォールバック |
+| `GEMINI_MODEL` | `gemini-2.5-flash-image` | §53: 画像生成モデル |
+| `GEMINI_TIMEOUT` | `120` | §53: Gemini APIのタイムアウト（秒） |
 | `MODEL` | `claude-opus-4-8` | 使用するClaudeモデル（BACKEND=api） |
 | `CLI_MODEL` | `sonnet` | 使用するモデル（BACKEND=cli）。遅い場合は `haiku` を推奨 |
 | `CLI_TIMEOUT` | `900` | CLI呼び出しのタイムアウト秒数（BACKEND=cli / codex 共通） |

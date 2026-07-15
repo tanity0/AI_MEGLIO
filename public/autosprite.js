@@ -4,7 +4,7 @@
 // app.js（本体エントリ）には依存しない自己完結モジュール。グリッド文字規則の小ヘルパは
 // server.js / app.js と同一の規則（透明= '.'、1-9、a-v。33色以上は2文字hex）を複製している。
 import { streamEdit } from "./api.js";
-import { removeBackground, convertImage } from "./convert.js";
+import { removeBackground, convertImage, detectComponents } from "./convert.js";
 import { encodeGif } from "./gif.js";
 
 // ---------------------------------------------------------------------------
@@ -114,6 +114,8 @@ const state = {
   total: 0,
   startedAt: 0,
   serverOk: false,
+  engine: "text",      // §53: "image"（Gemini）| "text"（motionframe フォールバック）
+  referencePng: null,  // §53: Gemini に渡す参照画像（元画像を白背景合成・最大768px）
 };
 
 const $ = (id) => document.getElementById(id);
@@ -127,8 +129,17 @@ async function detectServer() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const cfg = await res.json();
     state.serverOk = true;
-    const backend = cfg.mock ? "MOCK" : cfg.backend === "cli" ? "Claude Code CLI" : cfg.backend === "codex" ? "Codex CLI" : "API";
-    $("footerInfo").textContent = `AI Meglio — クイック生成ウィザード（§52）｜バックエンド: ${backend}`;
+    // §53: 画像エンジン優先。?engine=text で従来のテキストエンジンを強制（検証用）
+    const forced = new URLSearchParams(location.search).get("engine");
+    state.engine = forced === "text" ? "text" : cfg.gemini ? "image" : "text";
+    const textBackend = cfg.backend === "cli" ? "Claude Code CLI" : cfg.backend === "codex" ? "Codex CLI" : "API";
+    const engineLabel = cfg.mock ? "MOCK" : state.engine === "image" ? `Gemini画像生成（${cfg.geminiModel}）` : `テキスト（${textBackend}）`;
+    $("footerInfo").textContent = `AI Meglio — クイック生成ウィザード（§52/§53）｜生成エンジン: ${engineLabel}`;
+    if (!cfg.mock && state.engine === "text") {
+      const b = $("serverBanner");
+      b.style.display = "block";
+      b.textContent = "テキストAIで生成します（品質は低めです）。Gemini APIキー（https://aistudio.google.com/apikey で無料取得）を GEMINI_API_KEY に設定して起動すると、画像生成AIで大幅に品質が上がります。";
+    }
   } catch {
     state.serverOk = false;
     const b = $("serverBanner");
@@ -203,10 +214,28 @@ function renderBasePreview() {
   $("baseInfo").textContent = `${b.width}×${b.height}px・${b.palette.length - 1}色`;
 }
 
+// §53: Gemini に渡す参照画像（元画像を白背景に合成・最大768px・PNG dataURL）
+function buildReferencePng() {
+  const { data, w, h } = sourceImageData;
+  const sc = Math.min(1, 768 / Math.max(w, h));
+  const tmp = document.createElement("canvas");
+  tmp.width = w; tmp.height = h;
+  tmp.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(data), w, h), 0, 0);
+  const out = document.createElement("canvas");
+  out.width = Math.max(1, Math.round(w * sc));
+  out.height = Math.max(1, Math.round(h * sc));
+  const ctx = out.getContext("2d");
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, out.width, out.height);
+  ctx.drawImage(tmp, 0, 0, out.width, out.height);
+  return out.toDataURL("image/png");
+}
+
 async function acceptFile(file) {
   if (!file || !file.type.startsWith("image/")) return;
   try {
     sourceImageData = await fileToImageData(file);
+    state.referencePng = buildReferencePng();
     reconvert();
   } catch (err) {
     alert(err.message);
@@ -325,15 +354,189 @@ async function runJob(move, index, regen = false) {
   updateExportState();
 }
 
+// ---------------------------------------------------------------------------
+// §53: 画像生成エンジン（Gemini）— ムーブ単位のストリップ生成 → 分割 → ドット絵化
+// ---------------------------------------------------------------------------
+function dataUrlToImageData(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0);
+      resolve({ data: ctx.getImageData(0, 0, canvas.width, canvas.height).data, w: canvas.width, h: canvas.height });
+    };
+    img.onerror = () => reject(new Error("生成画像を読み込めませんでした"));
+    img.src = dataUrl;
+  });
+}
+
+// ベース素体の bbox（足元基準・中央合わせとセル高の基準。§53.3）
+function baseCharMetrics() {
+  const b = state.base;
+  let x0 = b.width, y0 = b.height, x1 = -1, y1 = -1;
+  for (let y = 0; y < b.height; y++) {
+    for (let x = 0; x < b.width; x++) {
+      if (b.pixels[y * b.width + x] !== 0) {
+        if (x < x0) x0 = x; if (x > x1) x1 = x;
+        if (y < y0) y0 = y; if (y > y1) y1 = y;
+      }
+    }
+  }
+  if (x1 < 0) return { charH: b.height, baselineY: b.height - 1, centerX: b.width / 2 };
+  return { charH: y1 - y0 + 1, baselineY: y1, centerX: (x0 + x1 + 1) / 2 };
+}
+
+// 変換結果（独自パレット）をベースキャンバスへ配置し、ベースパレットへ最近色スナップ
+function composeToBase(conv, metrics) {
+  const b = state.base;
+  const baseRgb = b.palette.map(hexToRgba);
+  const snap = conv.palette.map((hex, i) => {
+    if (i === 0) return 0;
+    const [r, g, bl] = hexToRgba(hex);
+    let best = 1, bd = Infinity;
+    for (let j = 1; j < baseRgb.length; j++) {
+      if (baseRgb[j][3] === 0) continue;
+      const d = (baseRgb[j][0] - r) ** 2 + (baseRgb[j][1] - g) ** 2 + (baseRgb[j][2] - bl) ** 2;
+      if (d < bd) { bd = d; best = j; }
+    }
+    return best;
+  });
+  const out = new Uint8Array(b.width * b.height);
+  const offX = Math.round(metrics.centerX - conv.width / 2);
+  const offY = metrics.baselineY + 1 - conv.height;
+  for (let y = 0; y < conv.height; y++) {
+    for (let x = 0; x < conv.width; x++) {
+      const idx = conv.pixels[y * conv.width + x];
+      if (idx === 0) continue;
+      const tx = offX + x, ty = offY + y;
+      if (tx < 0 || ty < 0 || tx >= b.width || ty >= b.height) continue;
+      out[ty * b.width + tx] = snap[idx];
+    }
+  }
+  return out;
+}
+
+function cropRegion(data, w, box) {
+  const bw = box.x1 - box.x0 + 1;
+  const bh = box.y1 - box.y0 + 1;
+  const out = new Uint8ClampedArray(bw * bh * 4);
+  for (let y = 0; y < bh; y++) {
+    const src = ((box.y0 + y) * w + box.x0) * 4;
+    out.set(data.subarray(src, src + bw * 4), y * bw * 4);
+  }
+  return { data: out, w: bw, h: bh };
+}
+
+// 生成ストリップ → N個のベース互換フレーム（§53.3: N一致 / 1体複製 / N等分のフォールバック）
+function stripToFrames(strip, n) {
+  const bg = removeBackground(strip.data, strip.w, strip.h);
+  let boxes = detectComponents(bg, strip.w, strip.h);
+  if (!boxes.length) throw new Error("生成画像からキャラクターを検出できませんでした");
+  if (boxes.length !== n) {
+    if (boxes.length === 1) {
+      boxes = Array.from({ length: n }, () => boxes[0]); // 1体 → 全コマ複製（MOCK・縮退）
+    } else {
+      // 全体bboxのN等分割にフォールバック
+      const x0 = Math.min(...boxes.map((b) => b.x0)), x1 = Math.max(...boxes.map((b) => b.x1));
+      const y0 = Math.min(...boxes.map((b) => b.y0)), y1 = Math.max(...boxes.map((b) => b.y1));
+      const cw = (x1 - x0 + 1) / n;
+      boxes = Array.from({ length: n }, (_, i) => ({
+        x0: Math.round(x0 + i * cw), x1: Math.round(x0 + (i + 1) * cw) - 1, y0, y1,
+      }));
+    }
+  }
+  const metrics = baseCharMetrics();
+  const colors = state.base.palette.length - 1;
+  return boxes.map((box) => {
+    const sub = cropRegion(bg, strip.w, box);
+    const conv = convertImage(sub.data, sub.w, sub.h, { targetH: metrics.charH, colors });
+    return composeToBase(conv, metrics);
+  });
+}
+
+async function fetchSpriteFrame(payload) {
+  const res = await fetch("/api/spriteframe", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    signal: state.abortController?.signal,
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(json.error || `サーバーエラー (HTTP ${res.status})`);
+  if (!json.image) throw new Error("画像が返されませんでした");
+  return json.image;
+}
+
+function spritePayloadBase(move) {
+  const payload = {
+    preset: move.preset,
+    desc: $("charDesc").value.trim().slice(0, 500),
+    reference: state.referencePng,
+  };
+  if (move.preset === "custom") payload.customText = move.customText.trim().slice(0, 500);
+  return payload;
+}
+
+// 1ムーブぶんを一括生成（ストリップ→分割）。失敗時は全コマ error
+async function runMoveStrip(move) {
+  const slots = state.results.get(move.key);
+  slots.forEach((s, i) => { s.status = "running"; s.error = null; renderThumb(move, i); });
+  try {
+    const image = await fetchSpriteFrame({ ...spritePayloadBase(move), kind: "strip", count: slots.length });
+    const frames = stripToFrames(await dataUrlToImageData(image), slots.length);
+    frames.forEach((pixels, i) => { slots[i].pixels = pixels; slots[i].status = "ok"; });
+  } catch (err) {
+    const msg = err.name === "AbortError" ? "中断しました" : err.message;
+    slots.forEach((s) => { if (s.status === "running") { s.status = "error"; s.error = msg; } });
+  }
+  slots.forEach((_, i) => renderThumb(move, i));
+  updateExportState();
+}
+
+// ↻ 1コマ再生成（画像エンジン: kind=single）
+async function regenSingleImage(move, index) {
+  const slots = state.results.get(move.key);
+  const slot = slots[index];
+  slot.status = "running";
+  slot.error = null;
+  renderThumb(move, index);
+  try {
+    const image = await fetchSpriteFrame({ ...spritePayloadBase(move), kind: "single", count: slots.length, index });
+    const strip = await dataUrlToImageData(image);
+    const bg = removeBackground(strip.data, strip.w, strip.h);
+    const boxes = detectComponents(bg, strip.w, strip.h);
+    if (!boxes.length) throw new Error("生成画像からキャラクターを検出できませんでした");
+    const box = boxes.reduce((a, b) => ((b.area || 0) > (a.area || 0) ? b : a)); // 最大成分
+    const metrics = baseCharMetrics();
+    const sub = cropRegion(bg, strip.w, box);
+    const conv = convertImage(sub.data, sub.w, sub.h, { targetH: metrics.charH, colors: state.base.palette.length - 1 });
+    slot.pixels = composeToBase(conv, metrics);
+    slot.status = "ok";
+  } catch (err) {
+    slot.status = "error";
+    slot.error = err.name === "AbortError" ? "中断しました" : err.message;
+  }
+  renderThumb(move, index);
+  updateExportState();
+}
+
 async function generateAll() {
   const moves = activeMoves();
   if (!moves.length) { alert("ムーブを1つ以上選択してください（カスタムはテキスト必須）"); return; }
   if (!state.base) return;
   state.results.clear();
-  const jobs = [];
   for (const m of moves) {
     state.results.set(m.key, Array.from({ length: m.frames }, () => ({ status: "pending", pixels: null, error: null })));
-    for (let i = 0; i < m.frames; i++) jobs.push({ move: m, index: i });
+  }
+  // 画像エンジンはムーブ単位・テキストエンジンはフレーム単位のジョブ列（進捗の分母も対応）
+  const jobs = [];
+  if (state.engine === "image") {
+    for (const m of moves) jobs.push({ run: () => runMoveStrip(m), move: m });
+  } else {
+    for (const m of moves) for (let i = 0; i < m.frames; i++) jobs.push({ run: () => runJob(m, i), move: m, index: i });
   }
   renderResults(moves);
   state.running = true;
@@ -350,15 +553,21 @@ async function generateAll() {
   let next = 0;
   const worker = async () => {
     while (next < jobs.length) {
+      const j = jobs[next++];
       if (state.abortController.signal.aborted) {
         // 未着手ジョブは中断扱いにして抜ける
-        const j = jobs[next++];
-        const slot = state.results.get(j.move.key)[j.index];
-        if (slot.status === "pending") { slot.status = "error"; slot.error = "中断しました"; renderThumb(j.move, j.index); }
+        const slots = state.results.get(j.move.key);
+        const target = j.index !== undefined ? [slots[j.index]] : slots;
+        target.forEach((slot, k) => {
+          if (slot.status === "pending") {
+            slot.status = "error";
+            slot.error = "中断しました";
+            renderThumb(j.move, j.index !== undefined ? j.index : k);
+          }
+        });
         continue;
       }
-      const j = jobs[next++];
-      await runJob(j.move, j.index);
+      await j.run();
       state.done++;
       renderProgress();
     }
@@ -378,9 +587,10 @@ function renderProgress(finished = false) {
   const pct = state.total ? Math.round((state.done / state.total) * 100) : 0;
   $("progressBar").firstElementChild.style.width = `${pct}%`;
   const failed = [...state.results.values()].flat().filter((s) => s.status === "error").length;
+  const unit = state.engine === "image" ? "ムーブ" : "フレーム"; // §53: 画像エンジンはムーブ単位
   $("progressText").textContent = finished
-    ? `完了: ${state.done}/${state.total}${failed ? `（失敗 ${failed} — サムネイルの ↻ で再生成できます）` : ""}・所要 ${sec}秒`
-    : `生成中… ${state.done}/${state.total}・経過 ${sec}秒`;
+    ? `完了: ${state.done}/${state.total}${unit}${failed ? `（失敗 ${failed}コマ — サムネイルの ↻ で再生成できます）` : ""}・所要 ${sec}秒`
+    : `生成中… ${state.done}/${state.total}${unit}・経過 ${sec}秒`;
 }
 
 // ---------------------------------------------------------------------------
@@ -452,7 +662,12 @@ function renderResults(moves) {
       const rb = document.createElement("button");
       rb.textContent = "↻";
       rb.title = "このフレームだけ再生成";
-      rb.addEventListener("click", () => { if (!state.running) { state.abortController = null; runJob(m, i, true); } });
+      rb.addEventListener("click", () => {
+        if (state.running) return;
+        state.abortController = null;
+        if (state.engine === "image") regenSingleImage(m, i); // §53
+        else runJob(m, i, true);
+      });
       st.append(lbl, rb);
       t.append(c, st);
       thumbs.append(t);

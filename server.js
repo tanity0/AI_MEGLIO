@@ -39,6 +39,10 @@ const CLI_CONCURRENCY = Number(process.env.CLI_CONCURRENCY) > 0 ? Number(process
 const CLI_DEBUG = process.env.CLI_DEBUG === "1"; // §22.5-5: プロンプト+生出力を ./cli-logs/ に保存
 const REDRAW_MAX_CELLS = Number(process.env.REDRAW_MAX_CELLS) > 0 ? Number(process.env.REDRAW_MAX_CELLS) : 1800; // §22.6-3: 描き直し1リクエストの大領域ガード閾値（CLI系のみクライアントが確認ダイアログに使用）
 const EXPORT_ROOT = process.env.EXPORT_ROOT || ""; // §16.4: 未設定なら /api/export は無効
+// §53: クイック生成の画像生成エンジン（Gemini）。キーは https://aistudio.google.com/apikey で無料取得可
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash-image";
+const GEMINI_TIMEOUT_MS = (Number(process.env.GEMINI_TIMEOUT) > 0 ? Number(process.env.GEMINI_TIMEOUT) : 120) * 1000;
 // §25.8: GPT往復用の共有フォルダ。既定はプロジェクト直下、環境変数 EXCHANGE_DIR で
 // 上書き可能（例: Google Drive for Desktop 配下を指してスマホ→Drive→PC の自動取り込み）
 const EXCHANGE_DIR = process.env.EXCHANGE_DIR ? path.resolve(process.env.EXCHANGE_DIR) : path.join(process.cwd(), "gpt-exchange");
@@ -2137,6 +2141,8 @@ async function handleApiConfig(req, res) {
     exchangeIn: EXCHANGE_IN,
     version: APP_VERSION, // §24: フッター表示用
     commit: APP_COMMIT || null,
+    gemini: MOCK || !!GEMINI_API_KEY, // §53: クイック生成の画像エンジン可否
+    geminiModel: GEMINI_MODEL,
   });
   res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Content-Length": Buffer.byteLength(body) });
   res.end(body);
@@ -2664,6 +2670,156 @@ async function handleApiEdit(req, res) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// §53: POST /api/spriteframe — クイック生成の画像生成エンジン（Gemini）
+// 参照キャラ画像 + ムーブ指定から、Nコマ横一列のストリップ画像（kind:"strip"）
+// または1コマ（kind:"single"、↻再生成用）を生成して dataURL で返す。
+// コマ分割・ドット絵化・パレットスナップはクライアント側（autosprite.js）が行う。
+// ---------------------------------------------------------------------------
+const SPRITE_MOVE_PROMPTS = {
+  // §13 モーション生成の定石の英訳（画像モデル向け）
+  walk: "a walking cycle (contact, down, passing, up positions; arms swinging opposite to legs; body lowest on contact frames)",
+  run: "a running cycle (leaning forward, wide strides, big arm swings, including airborne frames where both feet leave the ground)",
+  attack: "an attack animation (wind-up anticipation, then the hit pose at maximum reach, then follow-through)",
+  idle: "an idle animation (subtle breathing motion, tiny up-and-down movement, silhouette mostly unchanged)",
+  jump: "a jump animation (crouch, launch upward, stretched airborne pose at the top, landing with bent knees)",
+};
+
+function buildSpritePrompt(body) {
+  const { kind, preset, customText, count, index, desc } = body;
+  const moveDesc = preset === "custom" ? String(customText || "").trim() : SPRITE_MOVE_PROMPTS[preset];
+  const lines = [];
+  if (kind === "strip") {
+    lines.push(`Create a pixel art sprite animation strip of the character in the reference image: exactly ${count} frames of ${moveDesc}.`);
+    lines.push(`Arrange all ${count} frames in a single horizontal row, evenly spaced, with clear gaps between frames so the characters never touch each other.`);
+  } else {
+    lines.push(`Create a single pixel art animation frame of the character in the reference image: frame ${index + 1} of ${count} of ${moveDesc}.`);
+    lines.push("Draw exactly one character, full body.");
+  }
+  lines.push("Keep the character's design, colors, proportions, outline style and pixel-art rendering exactly consistent with the reference image in every frame.");
+  lines.push("Keep the same facing direction as the reference image.");
+  lines.push("Plain solid white background. No grid lines, no frame borders, no text, no labels, no shadows on the ground.");
+  if (desc) lines.push(`Character description: ${desc}`);
+  return lines.join("\n");
+}
+
+function validateSpriteFrameRequest(body) {
+  if (!body || typeof body !== "object") throw new Error("リクエストが不正です");
+  if (!["strip", "single"].includes(body.kind)) throw new Error("kind が不正です");
+  if (!MOTION_PRESETS.includes(body.preset)) throw new Error("preset が不正です");
+  if (body.preset === "custom" && (typeof body.customText !== "string" || !body.customText.trim() || body.customText.length > 500)) {
+    throw new Error("customText が不正です");
+  }
+  if (!Number.isInteger(body.count) || body.count < 1 || body.count > 8) throw new Error("count は1〜8です");
+  if (body.kind === "single" && (!Number.isInteger(body.index) || body.index < 0 || body.index >= body.count)) {
+    throw new Error("index が不正です");
+  }
+  if (body.desc !== undefined && (typeof body.desc !== "string" || body.desc.length > 500)) throw new Error("desc が不正です");
+  const m = /^data:image\/png;base64,([A-Za-z0-9+/=]+)$/.exec(body.reference || "");
+  if (!m) throw new Error("reference（PNG dataURL）が必要です");
+  return m[1]; // base64部
+}
+
+async function callGeminiImage(prompt, referenceB64, aspectRatio) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
+  const payload = {
+    contents: [{
+      parts: [
+        { inline_data: { mime_type: "image/png", data: referenceB64 } },
+        { text: prompt },
+      ],
+    }],
+    generationConfig: { responseModalities: ["TEXT", "IMAGE"] },
+  };
+  if (aspectRatio) payload.generationConfig.imageConfig = { aspectRatio };
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), GEMINI_TIMEOUT_MS);
+  let res;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY },
+      body: JSON.stringify(payload),
+      signal: ac.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!res.ok) {
+    let detail = "";
+    try { detail = (await res.json())?.error?.message || ""; } catch {}
+    const err = new Error(`Gemini APIエラー (HTTP ${res.status})${detail ? `: ${detail}` : ""}`);
+    err.status = res.status;
+    throw err;
+  }
+  const data = await res.json();
+  const parts = data?.candidates?.[0]?.content?.parts || [];
+  const img = parts.find((p) => p.inlineData?.data || p.inline_data?.data);
+  if (!img) {
+    const text = parts.map((p) => p.text || "").join(" ").slice(0, 200);
+    throw new Error(`Geminiが画像を返しませんでした${text ? `（応答: ${text}）` : ""}`);
+  }
+  const b64 = img.inlineData?.data || img.inline_data?.data;
+  const mime = img.inlineData?.mimeType || img.inline_data?.mime_type || "image/png";
+  return `data:${mime};base64,${b64}`;
+}
+
+async function handleSpriteFrame(req, res) {
+  let raw;
+  try {
+    raw = await readBody(req, MAX_BODY_BYTES);
+  } catch {
+    res.writeHead(413, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify({ error: "リクエストサイズが上限（5MB）を超えています" }));
+    return;
+  }
+  let body, referenceB64;
+  try {
+    body = JSON.parse(raw.toString("utf8"));
+    referenceB64 = validateSpriteFrameRequest(body);
+  } catch (err) {
+    res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify({ error: err.message || "リクエストが不正です" }));
+    return;
+  }
+
+  const respond = (status, obj) => {
+    const out = JSON.stringify(obj);
+    res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Content-Length": Buffer.byteLength(out) });
+    res.end(out);
+  };
+
+  if (MOCK) {
+    // 参照画像をそのままエコー（1秒遅延）。クライアントは1体検出→全コマ複製の縮退経路を通る（§53.3）
+    await new Promise((r) => setTimeout(r, 1000));
+    respond(200, { image: body.reference, mock: true });
+    return;
+  }
+  if (!GEMINI_API_KEY) {
+    respond(503, { error: "GEMINI_API_KEY が設定されていません（https://aistudio.google.com/apikey で取得できます）" });
+    return;
+  }
+
+  const prompt = buildSpritePrompt(body);
+  // コマ数に応じた横長アスペクト（ストリップのみ）。未対応モデルの400は imageConfig なしで1回リトライ
+  const aspect = body.kind === "strip" && body.count > 1 ? (body.count >= 4 ? "21:9" : "16:9") : null;
+  try {
+    let image;
+    try {
+      image = await callGeminiImage(prompt, referenceB64, aspect);
+    } catch (err) {
+      if (aspect && err.status === 400) image = await callGeminiImage(prompt, referenceB64, null);
+      else throw err;
+    }
+    respond(200, { image });
+    console.log(`[spriteframe] ${body.kind} ${body.preset} count=${body.count}${body.kind === "single" ? ` index=${body.index}` : ""} OK`);
+  } catch (err) {
+    const msg = err.name === "AbortError" ? `Gemini APIがタイムアウトしました（${GEMINI_TIMEOUT_MS / 1000}秒）` : err.message;
+    respond(err.status === 429 ? 429 : 502, { error: msg });
+    console.log(`[spriteframe] ERROR: ${msg}`);
+  }
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     const urlPath = req.url.split("?")[0];
@@ -2689,6 +2845,8 @@ const server = http.createServer(async (req, res) => {
       await handleOpenFolder(req, res); // §38
     } else if (req.method === "POST" && urlPath === "/api/save-file") {
       await handleSaveFile(req, res); // §38
+    } else if (req.method === "POST" && urlPath === "/api/spriteframe") {
+      await handleSpriteFrame(req, res); // §53
     } else if (req.method === "GET") {
       await serveStatic(req, res);
     } else {
