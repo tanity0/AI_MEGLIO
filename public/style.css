@@ -98,6 +98,7 @@ button, .btn, .tool-btn, .drawer-handle, .tag-chip, .frame-thumb, .check-row, .r
   cursor: pointer;
   transition: background 0.12s, border-color 0.12s;
   white-space: nowrap; /* §27.3 縦一文字折り返し防止 */
+  text-decoration: none; /* §52: <a class="btn">（クイック生成リンク）の下線を消す */
 }
 .btn:hover { background: var(--bg-3); border-color: var(--accent-dark); }
 .btn:active { transform: translateY(1px); }

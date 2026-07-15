@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>クイック生成 — AI Meglio</title>
+<style>
+:root {
+  --bg: #14161c;
+  --panel: #1d2029;
+  --panel2: #242836;
+  --border: #333849;
+  --text: #e6e8ef;
+  --dim: #9aa1b5;
+  --accent: #f5a623;
+  --accent2: #4da3ff;
+  --ok: #4caf7d;
+  --err: #e05c5c;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+}
+header {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 12px 20px; border-bottom: 1px solid var(--border); background: var(--panel);
+  position: sticky; top: 0; z-index: 10;
+}
+header h1 { font-size: 17px; margin: 0; }
+header .sub { color: var(--dim); font-size: 12px; }
+header .spacer { flex: 1; }
+header a { color: var(--accent2); text-decoration: none; font-size: 13px; }
+main { max-width: 980px; margin: 0 auto; padding: 16px 20px 80px; }
+section {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  padding: 16px 18px; margin-top: 16px;
+}
+section.locked { opacity: 0.45; pointer-events: none; }
+section h2 { font-size: 15px; margin: 0 0 10px; display: flex; align-items: center; gap: 8px; }
+section h2 .step {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border-radius: 50%; background: var(--accent); color: #1a1300;
+  font-size: 12px; font-weight: 700; flex: none;
+}
+.hint { color: var(--dim); font-size: 12px; margin: 2px 0 10px; }
+.row { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-start; }
+.col { display: flex; flex-direction: column; gap: 8px; min-width: 220px; flex: 1; }
+label.field { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+label.field > span:first-child { color: var(--dim); min-width: 5.5em; }
+select, input[type="text"], textarea {
+  background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 5px 8px; font-size: 13px; font-family: inherit;
+}
+textarea { width: 100%; resize: vertical; }
+button {
+  background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 6px 14px; font-size: 13px; cursor: pointer; font-family: inherit;
+}
+button:hover:not(:disabled) { border-color: var(--accent2); }
+button:disabled { opacity: 0.45; cursor: default; }
+button.primary { background: var(--accent); color: #1a1300; border-color: var(--accent); font-weight: 700; }
+button.primary:hover:not(:disabled) { filter: brightness(1.1); }
+#dropZone {
+  border: 2px dashed var(--border); border-radius: 10px; padding: 28px 16px;
+  text-align: center; color: var(--dim); cursor: pointer; transition: border-color .15s;
+  min-width: 240px; flex: 1;
+}
+#dropZone.dragover { border-color: var(--accent); color: var(--text); }
+#dropZone strong { color: var(--text); }
+.checker { background: repeating-conic-gradient(#2b2f3d 0% 25%, #20232e 0% 50%) 0 / 16px 16px; border-radius: 6px; }
+#basePreviewWrap { display: none; flex-direction: column; gap: 6px; align-items: center; }
+#basePreview { image-rendering: pixelated; }
+#baseInfo { font-size: 12px; color: var(--dim); }
+.moves { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.moveCard {
+  background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.moveCard.on { border-color: var(--accent); }
+.moveCard .top { display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
+.moveCard .icon { font-size: 18px; }
+.moveCard .frames { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dim); }
+.moveCard select { padding: 2px 4px; font-size: 12px; }
+.moveCard input[type="text"] { font-size: 12px; width: 100%; }
+#progressWrap { display: none; flex-direction: column; gap: 6px; margin-top: 10px; }
+#progressBar { height: 8px; background: var(--panel2); border-radius: 4px; overflow: hidden; }
+#progressBar > div { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+#progressText { font-size: 12px; color: var(--dim); }
+.moveResult {
+  background: var(--panel2); border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 12px; margin-top: 10px; display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-start;
+}
+.moveResult .player { display: flex; flex-direction: column; gap: 6px; align-items: center; }
+.moveResult .player canvas { image-rendering: pixelated; }
+.moveResult .playerCtl { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dim); }
+.moveResult h3 { margin: 0; font-size: 13px; width: 100%; display: flex; align-items: center; gap: 8px; }
+.moveResult h3 .gifBtn { margin-left: auto; font-size: 12px; padding: 3px 10px; }
+.thumbs { display: flex; gap: 8px; flex-wrap: wrap; flex: 1; }
+.thumb { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+.thumb canvas { image-rendering: pixelated; border: 1px solid var(--border); border-radius: 4px; }
+.thumb.ok canvas { border-color: var(--ok); }
+.thumb.error canvas { border-color: var(--err); }
+.thumb.running canvas { border-color: var(--accent); }
+.thumb .st { font-size: 11px; color: var(--dim); display: flex; align-items: center; gap: 4px; }
+.thumb button { padding: 0 6px; font-size: 11px; line-height: 18px; }
+#exportBtns { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+.banner {
+  background: #3a2b17; border: 1px solid #7a5a2a; color: #ffd9a0; border-radius: 8px;
+  padding: 8px 12px; font-size: 13px; margin-top: 12px; display: none;
+}
+footer { text-align: center; color: var(--dim); font-size: 12px; padding: 20px; }
+@media (max-width: 640px) { main { padding: 10px 10px 60px; } section { padding: 12px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>⚡ クイック生成</h1>
+  <span class="sub">1枚のキャラ画像からムーブセット一式のスプライトシートを生成（AutoSprite風）</span>
+  <span class="spacer"></span>
+  <a href="./index.html" title="本体エディタ（生成結果の細かい修正はこちら）">🎨 エディタへ</a>
+</header>
+<main>
+  <div id="serverBanner" class="banner"></div>
+
+  <section id="step1">
+    <h2><span class="step">1</span>キャラ画像を取り込む</h2>
+    <p class="hint">立ち姿1枚（PNG/JPG/WebP）をドロップ。ドット絵でなくてもOK — 自動でドット絵に変換されます。</p>
+    <div class="row">
+      <div id="dropZone" tabindex="0">
+        <strong>ここに画像をドロップ</strong><br>またはクリックして選択 / Ctrl+V で貼り付け
+        <input type="file" id="fileInput" accept="image/*" hidden>
+      </div>
+      <div class="col">
+        <label class="field"><span>出力サイズ</span>
+          <select id="sizeSel">
+            <option value="32">32px（レトロ）</option>
+            <option value="48" selected>48px（標準）</option>
+            <option value="64">64px（高精細）</option>
+          </select>
+        </label>
+        <label class="field"><span>色数</span>
+          <select id="colorSel">
+            <option value="8">8色</option>
+            <option value="16" selected>16色</option>
+            <option value="24">24色</option>
+            <option value="32">32色</option>
+          </select>
+        </label>
+        <label class="field"><span>背景除去</span><input type="checkbox" id="bgRemove" checked></label>
+        <label class="field"><span>キャラ名</span><input type="text" id="charName" value="character" maxlength="32"></label>
+        <label class="field" style="align-items:flex-start"><span>説明（任意）</span>
+          <textarea id="charDesc" rows="2" maxlength="300" placeholder="例: 剣を持った騎士。マントが風になびく"></textarea>
+        </label>
+      </div>
+      <div id="basePreviewWrap">
+        <div class="checker"><canvas id="basePreview"></canvas></div>
+        <span id="baseInfo"></span>
+      </div>
+    </div>
+  </section>
+
+  <section id="step2" class="locked">
+    <h2><span class="step">2</span>ムーブセットを選ぶ</h2>
+    <p class="hint">生成するアニメーションとフレーム数を選択。後から個別フレームの再生成もできます。</p>
+    <div class="moves" id="moveCards"></div>
+    <div class="row" style="margin-top:10px">
+      <label class="field"><span>再生FPS</span>
+        <select id="fpsSel">
+          <option value="6">6</option>
+          <option value="8" selected>8</option>
+          <option value="10">10</option>
+          <option value="12">12</option>
+        </select>
+      </label>
+    </div>
+  </section>
+
+  <section id="step3" class="locked">
+    <h2><span class="step">3</span>生成してプレビュー</h2>
+    <p class="hint">選んだムーブの全フレームをAIが生成します（並列2）。サムネイルの ↻ で個別に再生成。</p>
+    <div class="row">
+      <button id="generateBtn" class="primary">⚡ ムーブセットを生成</button>
+      <button id="abortBtn" disabled>中断</button>
+    </div>
+    <div id="progressWrap">
+      <div id="progressBar"><div></div></div>
+      <span id="progressText"></span>
+    </div>
+    <div id="results"></div>
+  </section>
+
+  <section id="step4" class="locked">
+    <h2><span class="step">4</span>書き出す</h2>
+    <p class="hint">スプライトシートPNG＋アトラスをダウンロード。プロジェクトJSONは本体エディタの「開く」から読み込めます。</p>
+    <div class="row">
+      <label class="field"><span>倍率</span>
+        <select id="scaleSel">
+          <option value="1" selected>×1</option>
+          <option value="2">×2</option>
+          <option value="4">×4</option>
+        </select>
+      </label>
+      <label class="field"><span>アトラス形式</span>
+        <select id="formatSel">
+          <option value="generic" selected>汎用JSON（frames + animations）</option>
+          <option value="phaser">Phaser 3（atlas JSON hash）</option>
+          <option value="godot">Godot 4（SpriteFrames .tres）</option>
+        </select>
+      </label>
+    </div>
+    <div id="exportBtns">
+      <button id="dlSheetBtn" class="primary">🖼 スプライトシートPNG</button>
+      <button id="dlAtlasBtn">📄 アトラスをダウンロード</button>
+      <button id="dlProjectBtn">🎨 プロジェクトJSON（エディタ用）</button>
+    </div>
+    <div class="checker" style="display:inline-block;margin-top:12px"><canvas id="sheetPreview" style="image-rendering:pixelated;max-width:100%"></canvas></div>
+  </section>
+</main>
+<footer id="footerInfo">AI Meglio — クイック生成ウィザード（§52）</footer>
+<script type="module" src="autosprite.js"></script>
+</body>
+</html>

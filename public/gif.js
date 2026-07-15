@@ -1,6 +1,13 @@
 // gif.js — GIF89a エンコーダ（自前実装・依存なし）
 // LZW圧縮を含む最小構成のアニメーションGIFエンコーダ。
-import { hexToRgba } from "./app.js";
+// §52: autosprite.html からも使うため app.js に依存しない（hexToRgba はローカル定義）。
+
+function hexToRgba(hex) {
+  let h = hex.replace("#", "");
+  if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+  if (h.length === 6) h += "ff";
+  return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16), parseInt(h.slice(6, 8), 16)];
+}
 
 class BitWriter {
   constructor() {
