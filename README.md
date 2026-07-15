@@ -27,8 +27,9 @@
 クイック生成は **Gemini の画像生成AI**（既定 `gemini-2.5-flash-image`）でフレームを描くと品質が大幅に上がります（テキストAIによる生成はフォールバックで、品質は低めです）。
 
 1. https://aistudio.google.com/apikey で**無料のAPIキー**を取得（Googleアカウントでログイン →「APIキーを作成」）
-2. `start-gemini.bat` をメモ帳で開き、`set GEMINI_API_KEY=` の後ろにキーを貼り付けて保存
-3. `start-gemini.bat` をダブルクリックで起動 → `http://localhost:8787/autosprite.html`
+2. `start-gemini.bat` をダブルクリックで起動 → 黒い窓でキーの入力を求められるので貼り付けて Enter → `http://localhost:8787/autosprite.html`
+
+キーは**ファイルに保存されません**（その黒い窓を閉じるまでの環境変数としてだけ保持され、Google のAPI呼び出し以外には使われません）。毎回入力したくない場合のみ、自己責任で環境変数 `GEMINI_API_KEY` を事前に設定してください（設定済みなら入力はスキップされます）。
 
 環境変数で直接指定する場合は `GEMINI_API_KEY`（必須）、`GEMINI_MODEL`（既定 `gemini-2.5-flash-image`）、`GEMINI_TIMEOUT`（秒・既定120）。キーが設定されていれば、`start-claude.bat` 等の他のバックエンドと併用してもクイック生成は自動でGeminiを使います（`?engine=text` で従来エンジンを強制）。無料枠にはレート制限があるため、大量生成で429エラーが出たら少し待ってから再生成してください。
 
