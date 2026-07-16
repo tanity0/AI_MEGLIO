@@ -1179,6 +1179,31 @@ async function main() {
   initSendGpt(store, toast); // §36 「GPTへ送る」ワンクリック
   initBackdrop(); // §45 背景色の変更（透明部分の表示色・localStorage 復元）
   initMobile(); // §49 スマホレイアウト（サイドパネルのドロワー化）
+  // §58.2: エディタ→クイック生成の受け渡し。ヘッダーの「⚡ クイック生成」クリック時に
+  // 現在の素体（ベースフレーム or フレーム0）・パレット・元画像を渡す（空プロジェクトなら素のリンク遷移）
+  const quickLink = document.querySelector('a[href="./autosprite.html"]');
+  if (quickLink) {
+    quickLink.addEventListener("click", (e) => {
+      const p = store.state.project;
+      const src = p.baseFrame || p.frames[0]?.pixels;
+      if (!src || !Array.prototype.some.call(src, (v) => v !== 0)) return;
+      const payload = {
+        width: p.width,
+        height: p.height,
+        palette: p.palette.slice(),
+        basePixels: Array.from(src),
+        sourceImage: typeof p.sourceImage === "string" ? p.sourceImage : null,
+      };
+      try {
+        localStorage.setItem("aiMeglioHandoffToQuick", JSON.stringify(payload));
+      } catch {
+        return; // 容量超過などは素のリンク遷移（空のウィザードが開くだけ）
+      }
+      e.preventDefault();
+      window.open("./autosprite.html#editor-handoff", "_blank");
+    });
+  }
+
   // §58: クイック生成からのワンクリック受け渡し（autosprite.js が localStorage に置いた
   // プロジェクトを読み込む）。自動保存の復元バナーより優先させるため initAutosave の前に処理。
   if (location.hash === "#quickgen-handoff") {

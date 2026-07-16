@@ -482,6 +482,40 @@ function setLocked(id, locked) {
   $(id).classList.toggle("locked", locked);
 }
 
+// §58.2: エディタからの受け渡し（エディタの変換スタジオで作った素体・パレットをそのままベースに使う）
+function receiveEditorHandoff() {
+  if (location.hash !== "#editor-handoff") return;
+  history.replaceState(null, "", location.pathname + location.search);
+  let p;
+  try {
+    const raw = localStorage.getItem("aiMeglioHandoffToQuick");
+    if (!raw) return;
+    localStorage.removeItem("aiMeglioHandoffToQuick");
+    p = JSON.parse(raw);
+    if (!Number.isInteger(p.width) || !Number.isInteger(p.height) || !Array.isArray(p.basePixels) || !Array.isArray(p.palette)) throw new Error("形式が不正です");
+  } catch (err) {
+    alert(`エディタからの受け取りに失敗しました: ${err.message}`);
+    return;
+  }
+  state.base = { width: p.width, height: p.height, pixels: Uint8Array.from(p.basePixels), palette: p.palette };
+  state.results.clear();
+  $("results").innerHTML = "";
+  // 参照画像: 元画像があればそれを（再変換つまみも使えるように sourceImageData も復元）、
+  // 無ければエディタのドット絵そのものを拡大して参照にする
+  state.referencePng = pixelsToPngDataUrl(state.base.pixels, p.width, p.height, p.palette, p.width > 64 ? 4 : 8);
+  if (p.sourceImage) {
+    dataUrlToImageData(p.sourceImage).then((img) => {
+      sourceImageData = img;
+      state.referencePng = buildReferencePng();
+    }).catch(() => {});
+  }
+  renderBasePreview();
+  $("baseInfo").textContent += "（エディタから取り込み）";
+  setLocked("step2", false);
+  setLocked("step3", false);
+  setLocked("step4", true);
+}
+
 // ---------------------------------------------------------------------------
 // ステップ2: ムーブセットカード
 // ---------------------------------------------------------------------------
@@ -1369,6 +1403,7 @@ function init() {
   $("openInEditorBtn").addEventListener("click", openInEditor); // §58
 
   requestAnimationFrame(animLoop);
+  receiveEditorHandoff(); // §58.2
 }
 
 init();
