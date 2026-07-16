@@ -18,9 +18,9 @@ export function detectBlockSize(data, width, height) {
   let g = 0;
   const px = (x, y) => {
     const i = (y * width + x) * 4;
-    // 透明(alpha<128)は同一色として扱う
-    if (data[i + 3] < 128) return -1;
-    return (data[i] << 16) | (data[i + 1] << 8) | data[i + 2];
+    // §59.1: ほぼ完全な透明のみ同一色として扱う（半透明はアルファ込みで色とみなす）
+    if (data[i + 3] < 8) return -1;
+    return (((data[i + 3] << 24) | (data[i] << 16) | (data[i + 1] << 8) | data[i + 2]) >>> 0);
   };
   // 行方向のラン
   for (let y = 0; y < height; y++) {
@@ -81,33 +81,43 @@ function downsample(data, width, height, realW, realH) {
   return out;
 }
 
-// パレット抽出: 出現色を頻度順に列挙。32色（透明含む）を超えたら上位31色+透明に量子化
-export function extractPalette(data, count) {
-  const freq = new Map(); // rgbKey -> count
+// パレット抽出: 出現色を頻度順に列挙。上限を超えたら上位色+透明に量子化。
+// §59.1: opts.alpha=true でアルファを色の一部として保持（#rrggbbaa）。
+// 旧来の呼び出し（styleref.js 等）は既定 false のまま（RGBキー・alpha<128=透明）。
+export function extractPalette(data, count, opts = {}) {
+  const useAlpha = opts.alpha === true;
+  const thr = useAlpha ? 8 : 128; // 透明とみなすアルファ閾値
+  const keyAt = (o) => useAlpha
+    ? (((data[o + 3] << 24) | (data[o] << 16) | (data[o + 1] << 8) | data[o + 2]) >>> 0)
+    : ((data[o] << 16) | (data[o + 1] << 8) | data[o + 2]);
+  const freq = new Map(); // key -> count
   for (let i = 0; i < count; i++) {
     const o = i * 4;
-    if (data[o + 3] < 128) continue; // 透明
-    const key = (data[o] << 16) | (data[o + 1] << 8) | data[o + 2];
-    freq.set(key, (freq.get(key) || 0) + 1);
+    if (data[o + 3] < thr) continue; // 透明
+    freq.set(keyAt(o), (freq.get(keyAt(o)) || 0) + 1);
   }
   const sorted = [...freq.entries()].sort((a, b) => b[1] - a[1]).map(([key]) => key);
-  const kept = sorted.slice(0, MAX_COLORS - 1); // 上位31色
+  const kept = sorted.slice(0, MAX_COLORS - 1);
   const keyToIndex = new Map();
   kept.forEach((key, i) => keyToIndex.set(key, i + 1));
 
-  const toHex = (key) =>
-    "#" + [(key >> 16) & 255, (key >> 8) & 255, key & 255]
-      .map((v) => v.toString(16).padStart(2, "0")).join("");
+  const parts = (key) => useAlpha
+    ? [(key >>> 16) & 255, (key >>> 8) & 255, key & 255, (key >>> 24) & 255]
+    : [(key >> 16) & 255, (key >> 8) & 255, key & 255, 255];
+  const toHex = (key) => {
+    const [r, g, b, a] = parts(key);
+    const rgb = "#" + [r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("");
+    return a < 255 ? rgb + a.toString(16).padStart(2, "0") : rgb; // §59.1: 半透明は #rrggbbaa
+  };
   const palette = ["#00000000", ...kept.map(toHex)];
 
-  // 収まらなかった色の最近色マップ（RGB距離）
+  // 収まらなかった色の最近色マップ（RGBA距離）
   const nearest = (key) => {
-    const r = (key >> 16) & 255, g = (key >> 8) & 255, b = key & 255;
+    const [r, g, b, a] = parts(key);
     let best = 1, bestD = Infinity;
     for (let i = 0; i < kept.length; i++) {
-      const k = kept[i];
-      const dr = r - ((k >> 16) & 255), dg = g - ((k >> 8) & 255), db = b - (k & 255);
-      const d = dr * dr + dg * dg + db * db;
+      const [kr, kg, kb, ka] = parts(kept[i]);
+      const d = (r - kr) ** 2 + (g - kg) ** 2 + (b - kb) ** 2 + (a - ka) ** 2;
       if (d < bestD) { bestD = d; best = i + 1; }
     }
     return best;
@@ -116,7 +126,7 @@ export function extractPalette(data, count) {
     keyToIndex.set(key, nearest(key));
   }
 
-  return { palette, keyToIndex, totalColors: sorted.length };
+  return { palette, keyToIndex, totalColors: sorted.length, keyAt, alphaThreshold: thr };
 }
 
 function imageDataFromBitmap(bitmap) {
@@ -152,11 +162,11 @@ export async function probeImage(file) {
     const realH = Math.max(1, Math.round(bitmap.height / block));
     if (block < 2 && (bitmap.width > 128 || bitmap.height > 128)) return { shortcut: false };
     if (realW > 128 || realH > 128) return { shortcut: false };
-    // 生の色数（量子化なし）
+    // 生の色数（量子化なし・§59.1: アルファ込み）
     const colors = new Set();
     for (let i = 0; i < data.length; i += 4) {
-      if (data[i + 3] < 128) continue;
-      colors.add((data[i] << 16) | (data[i + 1] << 8) | data[i + 2]);
+      if (data[i + 3] < 8) continue;
+      colors.add((((data[i + 3] << 24) | (data[i] << 16) | (data[i + 1] << 8) | data[i + 2]) >>> 0));
       if (colors.size > MAX_COLORS - 1) return { shortcut: false }; // §59: 256色パレットまで無劣化経路
     }
     return { shortcut: true };
@@ -201,16 +211,15 @@ export async function importImageFile(file) {
     throw new Error(`実寸 ${realW}×${realH} は上限（${MAX_SIZE}×${MAX_SIZE}）を超えています。画像を縮小するか、より大きなブロックサイズ（例: ${Math.ceil(realW / MAX_SIZE)}倍）を指定してください`);
   }
 
-  // ダウンサンプル → パレット抽出 → ピクセル配列化
+  // ダウンサンプル → パレット抽出 → ピクセル配列化（§59.1: 半透明色はアルファ込みで保持）
   const small = realW === width && realH === height ? data : downsample(data, width, height, realW, realH);
-  const { palette, keyToIndex } = extractPalette(small, realW * realH);
+  const { palette, keyToIndex, keyAt, alphaThreshold } = extractPalette(small, realW * realH, { alpha: true });
 
   const pixels = new Uint8Array(realW * realH);
   for (let i = 0; i < realW * realH; i++) {
     const o = i * 4;
-    if (small[o + 3] < 128) { pixels[i] = 0; continue; }
-    const key = (small[o] << 16) | (small[o + 1] << 8) | small[o + 2];
-    pixels[i] = keyToIndex.get(key) ?? 0;
+    if (small[o + 3] < alphaThreshold) { pixels[i] = 0; continue; }
+    pixels[i] = keyToIndex.get(keyAt(o)) ?? 0;
   }
 
   const minDim = 8;
