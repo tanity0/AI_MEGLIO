@@ -218,6 +218,10 @@ function setupDirectKeyUi() {
 
   $("generateBtn").disabled = true;
   $("footerInfo").textContent = "AI Meglio — クイック生成ウィザード（§52〜§55）｜Web版（キー未設定・生成無効）";
+  // §55.7: 実行中バージョンをフッターに表示（更新が届いているかの確認用）
+  fetch("./version.json", { cache: "no-store" }).then((r) => r.json()).then((v) => {
+    if (v?.version) $("footerInfo").textContent += `｜v${v.version}`;
+  }).catch(() => {});
   let saved = null;
   try { saved = localStorage.getItem(DIRECT_KEY_STORAGE); } catch {}
   if (saved) {

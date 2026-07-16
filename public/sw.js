@@ -104,14 +104,18 @@ self.addEventListener("fetch", (event) => {
   if (url.pathname.includes("/api/")) return;
   if (url.origin !== self.location.origin) return; // 他オリジンは素通し
 
+  // §55.7: クイック生成ページは network-first（swupdate.js を読まないページのため、
+  // cache-first だと修正が恒久的に届かない）。オフライン時のみキャッシュへフォールバック。
+  const isQuickGen = /\/autosprite\.(html|js)$/.test(url.pathname);
+
   event.respondWith((async () => {
     const cache = currentCacheName ? await caches.open(currentCacheName) : null;
-    if (cache) {
+    if (!isQuickGen && cache) {
       const cached = await cache.match(req);
       if (cached) return cached; // cache-first
     }
     try {
-      const res = await fetch(req);
+      const res = await fetch(req, isQuickGen ? { cache: "no-store" } : undefined);
       if (res && res.ok && cache) cache.put(req, res.clone()).catch(() => {});
       return res;
     } catch (err) {
