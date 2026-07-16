@@ -3,7 +3,10 @@
 // frame 0 = ベースフレームのプロジェクトを返す。
 
 const MAX_SIZE = 128;
-const MAX_COLORS = 32; // index 0 = 透明を含む
+// §59: プロジェクトのパレット上限（256・§18.1のワイドパレット）に合わせる。
+// 旧上限32のままだと、変換スタジオ（既定64色）で作った自作ドット絵の書き出しを
+// 読み込み直したとき上位31色へ丸められ「少し崩れる」劣化が起きていた。
+const MAX_COLORS = 256; // index 0 = 透明を含む
 
 function gcd(a, b) {
   while (b) [a, b] = [b, a % b];
@@ -134,7 +137,9 @@ function parseSizeInput(text) {
 
 /**
  * §18.2: ショートカット判定 — ブロック検出が効き（≥2）、実寸≤128、
- * 生の色数が32色以下（量子化不要）の「真ドット絵」のみ従来経路。
+ * 生の色数が量子化不要な範囲の「真ドット絵」のみ従来経路。
+ * §59: 上限を32→256に緩和（33色以上の自作ドット絵が変換スタジオへ回されて
+ * リサンプリング劣化していた問題の修正）。
  */
 export async function probeImage(file) {
   if (!/^image\/(png|gif|webp|jpeg)$/.test(file.type)) return { shortcut: false };
@@ -152,7 +157,7 @@ export async function probeImage(file) {
     for (let i = 0; i < data.length; i += 4) {
       if (data[i + 3] < 128) continue;
       colors.add((data[i] << 16) | (data[i + 1] << 8) | data[i + 2]);
-      if (colors.size > 32) return { shortcut: false };
+      if (colors.size > MAX_COLORS - 1) return { shortcut: false }; // §59: 256色パレットまで無劣化経路
     }
     return { shortcut: true };
   } catch {
