@@ -185,7 +185,7 @@ function setupDirectKeyUi() {
   b.style.display = "block";
   b.innerHTML = "";
   const note = document.createElement("div");
-  note.textContent = "Web版です。Gemini APIキー（https://aistudio.google.com/apikey で無料取得）を入力すると、この端末だけで生成できます。キーはGoogleのAPI呼び出し以外には送信されません。";
+  note.textContent = "Web版です。Gemini APIキー（課金設定のあるもの。現在、画像生成APIに無料枠はありません）を入力すると、この端末だけで生成できます。キーはGoogleのAPI呼び出し以外には送信されません。キーなしでも、Geminiアプリ等で作った「コマを横一列に並べた画像」を各ムーブの📥から取り込んでスプライトシート化できます。";
   const row = document.createElement("div");
   row.style.cssText = "display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:6px";
   const input = document.createElement("input");
@@ -282,7 +282,7 @@ function friendlyGeminiError(err) {
   }
   if (/API_KEY_INVALID|API key not valid/i.test(raw)) return "APIキーが無効です。https://aistudio.google.com/apikey で作成したキーをコピーし直してください";
   if (/API_KEY_HTTP_REFERRER_BLOCKED|referer/i.test(raw)) return "APIキーのウェブサイト制限でブロックされています。キー設定で「なし」または tanity0.github.io を許可してください";
-  if (err.status === 429 && /limit:\s*0/i.test(raw)) return "このキーではこのモデルの無料枠が0になっています（Google側の既知バグ）。AI Studio で新しいプロジェクトを作ってキーを作り直すと直ることが多いです";
+  if (err.status === 429 && /limit:\s*0/i.test(raw)) return "現在、Gemini画像生成APIには無料枠がありません（課金設定のあるキーが必要）。無料で使うには、Geminiアプリで「Nコマ横並び」の画像を作り、ムーブカードの📥から取り込んでください";
   if (err.status === 429 || /RESOURCE_EXHAUSTED|quota/i.test(raw)) return "レート/無料枠の上限です。1〜2分待ってから失敗したムーブだけ再生成してください";
   if (err.status === 404 || /not found/i.test(raw)) return `モデルが見つかりません（${raw.slice(0, 120)}）。モデル選択を変えて試してください`;
   if (err.status === 403 || /PERMISSION_DENIED/i.test(raw)) return `このキーではこのモデルを使えません（${raw.slice(0, 120)}）。モデル選択を変えて試してください`;
@@ -486,12 +486,24 @@ function renderMoveCards() {
     }
     sel.addEventListener("change", () => { m.frames = parseInt(sel.value, 10); });
     fr.append(sel);
+    // §56: 手動ストリップ取り込み（AI不要。Geminiアプリ等で作った「Nコマ横並び画像」をドット化）
+    const imp = document.createElement("button");
+    imp.textContent = "📥";
+    imp.title = "コマ画像を取り込み（AI不要）: Geminiアプリ等で作った「コマを横一列に並べた画像」を選ぶと、自動で分割してこのムーブのフレームにします";
+    imp.style.cssText = "margin-left:auto;padding:0 8px";
+    imp.addEventListener("click", () => {
+      if (!state.base) { alert("先にステップ1でキャラ画像を取り込んでください（サイズとパレットの基準になります）"); return; }
+      pendingImportMove = m;
+      $("stripImportInput").click();
+    });
+    fr.append(imp);
     card.append(top, fr);
     if (m.preset === "custom") {
       const txt = document.createElement("input");
       txt.type = "text";
       txt.maxLength = 300;
       txt.placeholder = "例: しゃがんで盾を構える";
+      txt.value = m.customText || "";
       txt.addEventListener("input", () => { m.customText = txt.value; });
       card.append(txt);
     }
@@ -501,6 +513,37 @@ function renderMoveCards() {
 
 function activeMoves() {
   return MOVES.filter((m) => m.on && (m.preset !== "custom" || m.customText.trim()));
+}
+
+// ---------------------------------------------------------------------------
+// §56: 手動ストリップ取り込み（生成AIを使わないフォールバック）
+// Geminiアプリ/ChatGPT等で作った「コマを横一列に並べた画像」を分割→ドット化して
+// ムーブのフレームにする。コマ数は検出結果（2〜8体）を優先し、ムーブ設定を上書きする。
+// ---------------------------------------------------------------------------
+let pendingImportMove = null;
+
+async function importStripForMove(move, file) {
+  if (!file || !file.type.startsWith("image/") || !state.base) return;
+  try {
+    const strip = await fileToImageData(file);
+    // コマ数の自動判定（検出できたらムーブのフレーム数を合わせる）
+    const bg = removeBackground(strip.data, strip.w, strip.h);
+    const boxes = detectComponents(bg, strip.w, strip.h);
+    if (!boxes.length) throw new Error("キャラクターを検出できませんでした（背景が単色の画像を使ってください）");
+    const n = boxes.length >= 2 && boxes.length <= 8 ? boxes.length : move.frames;
+    move.frames = n;
+    move.on = true;
+    const frames = stripToFrames(strip, n);
+    state.results.set(move.key, frames.map((pixels) => ({ status: "ok", pixels, error: null })));
+    // 結果ブロックを再描画（既存の他ムーブの結果は維持）
+    const withResults = MOVES.filter((m) => state.results.has(m.key));
+    renderResults(withResults);
+    for (const m of withResults) state.results.get(m.key).forEach((_, i) => renderThumb(m, i));
+    renderMoveCards(); // フレーム数・ONを反映
+    updateExportState();
+  } catch (err) {
+    alert(`取り込みに失敗しました: ${err.message}`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1220,6 +1263,13 @@ function init() {
   });
 
   for (const id of ["sizeSel", "colorSel", "bgRemove"]) $(id).addEventListener("change", reconvert);
+  // §56: 手動ストリップ取り込み
+  $("stripImportInput").addEventListener("change", (e) => {
+    const file = e.target.files[0];
+    e.target.value = "";
+    if (pendingImportMove) importStripForMove(pendingImportMove, file);
+    pendingImportMove = null;
+  });
   $("generateBtn").addEventListener("click", generateAll);
   $("abortBtn").addEventListener("click", () => { state.abortController?.abort(); $("abortBtn").disabled = true; });
   $("scaleSel").addEventListener("change", renderSheetPreview);

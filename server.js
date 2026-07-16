@@ -2917,7 +2917,7 @@ async function listGeminiImageModels() {
 function friendlyGeminiServerError(err) {
   const raw = err?.message || String(err);
   if (/API_KEY_INVALID|API key not valid/i.test(raw)) return "APIキーが無効です。https://aistudio.google.com/apikey で作成したキーを確認してください";
-  if (err?.status === 429 && /limit:\s*0/i.test(raw)) return "このキーではこのモデルの無料枠が0になっています（Google側の既知バグ）。AI Studio で新しいプロジェクトを作ってキーを作り直すと直ることが多いです";
+  if (err?.status === 429 && /limit:\s*0/i.test(raw)) return "現在、Gemini画像生成APIには無料枠がありません（課金設定のあるキーが必要）。無料で使うには Codex バックエンド（start-gpt.bat）か、Geminiアプリで作った横並び画像の📥取り込みを使ってください";
   if (err?.status === 429 || /RESOURCE_EXHAUSTED|quota/i.test(raw)) return "レート/無料枠の上限です。1〜2分待ってから失敗したムーブだけ再生成してください";
   return raw;
 }
