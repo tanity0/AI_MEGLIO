@@ -262,6 +262,7 @@ function friendlyGeminiError(err) {
   }
   if (/API_KEY_INVALID|API key not valid/i.test(raw)) return "APIキーが無効です。https://aistudio.google.com/apikey で作成したキーをコピーし直してください";
   if (/API_KEY_HTTP_REFERRER_BLOCKED|referer/i.test(raw)) return "APIキーのウェブサイト制限でブロックされています。キー設定で「なし」または tanity0.github.io を許可してください";
+  if (err.status === 429 && /limit:\s*0/i.test(raw)) return "このキーではこのモデルの無料枠が0になっています（Google側の既知バグ）。AI Studio で新しいプロジェクトを作ってキーを作り直すと直ることが多いです";
   if (err.status === 429 || /RESOURCE_EXHAUSTED|quota/i.test(raw)) return "レート/無料枠の上限です。1〜2分待ってから失敗したムーブだけ再生成してください";
   if (err.status === 404 || /not found/i.test(raw)) return `モデルが見つかりません（${raw.slice(0, 120)}）。モデル選択を変えて試してください`;
   if (err.status === 403 || /PERMISSION_DENIED/i.test(raw)) return `このキーではこのモデルを使えません（${raw.slice(0, 120)}）。モデル選択を変えて試してください`;
@@ -321,7 +322,9 @@ async function callGeminiDirect(payload) {
     } catch (err) {
       if (err.name === "AbortError") throw err;
       lastErr = err;
-      if (err.status !== 404 && err.status !== 403) break; // モデル起因以外は他モデルを試さない
+      // §55.6: モデル起因（404/403、または「429だが limit: 0」=枠ゼロ誤判定バグ）のみ次候補を試す
+      const quotaZero = err.status === 429 && /limit:\s*0/i.test(err.message || "");
+      if (err.status !== 404 && err.status !== 403 && !quotaZero) break;
     }
   }
   const e = new Error(friendlyGeminiError(lastErr));
@@ -665,6 +668,8 @@ async function fetchSpriteFrameWithRetry(payload, onWait) {
     } catch (err) {
       const msg = `${err.message || ""} ${err.raw || ""}`;
       const daily = /PerDay|per day|daily/i.test(msg);
+      // §55.6: 枠ゼロ誤判定（limit: 0）は待っても直らないので再試行しない
+      if (/limit:\s*0|無料枠が0/i.test(msg)) throw err;
       if (err.status !== 429 && !/レート\/無料枠の上限/.test(msg)) throw err;
       if (daily) throw new Error("本日の無料枠を使い切りました（翌日にリセットされます）。フレーム数やムーブ数を減らすか、ローカルのCodexエンジン（無料枠制限なし）をお試しください");
       if (attempt >= 2) throw err;

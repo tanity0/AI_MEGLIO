@@ -2917,6 +2917,7 @@ async function listGeminiImageModels() {
 function friendlyGeminiServerError(err) {
   const raw = err?.message || String(err);
   if (/API_KEY_INVALID|API key not valid/i.test(raw)) return "APIキーが無効です。https://aistudio.google.com/apikey で作成したキーを確認してください";
+  if (err?.status === 429 && /limit:\s*0/i.test(raw)) return "このキーではこのモデルの無料枠が0になっています（Google側の既知バグ）。AI Studio で新しいプロジェクトを作ってキーを作り直すと直ることが多いです";
   if (err?.status === 429 || /RESOURCE_EXHAUSTED|quota/i.test(raw)) return "レート/無料枠の上限です。1〜2分待ってから失敗したムーブだけ再生成してください";
   return raw;
 }
@@ -2946,12 +2947,14 @@ async function generateWithGemini(prompt, referenceB64, body) {
     } catch (err) {
       if (err.name === "AbortError") throw err;
       lastErr = err;
-      if (err.status !== 404 && err.status !== 403) break; // モデル起因以外は他モデルを試さない
+      // §55.6: モデル起因（404/403、または「429だが limit: 0」=枠ゼロ誤判定バグ）のみ次候補を試す
+      const quotaZero = err.status === 429 && /limit:\s*0/i.test(err.message || "");
+      if (err.status !== 404 && err.status !== 403 && !quotaZero) break;
       console.log(`[spriteframe] ${model} 不可 (HTTP ${err.status})、次の候補を試します`);
     }
   }
   // 全滅: このキーで使える画像モデルの一覧を診断としてエラーに含める
-  if (lastErr && (lastErr.status === 404 || lastErr.status === 403)) {
+  if (lastErr && (lastErr.status === 404 || lastErr.status === 403 || (lastErr.status === 429 && /limit:\s*0/i.test(lastErr.message || "")))) {
     const avail = await listGeminiImageModels();
     const hint = avail === null ? "" : avail.length
       ? ` このキーで使える画像モデル: ${avail.join(", ")}（GEMINI_MODEL で指定してください）`
