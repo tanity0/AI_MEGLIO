@@ -114,9 +114,12 @@ const state = {
   total: 0,
   startedAt: 0,
   serverOk: false,
-  engine: "text",      // §53: "image"（Gemini）| "text"（motionframe フォールバック）
+  engine: "text",      // §53: "image"（Gemini/Codex）| "text"（motionframe フォールバック）
   referencePng: null,  // §53: Gemini に渡す参照画像（元画像を白背景合成・最大768px）
+  directKey: null,     // §55: 静的モード（Web版）のGeminiブラウザ直叩き用キー（端末内のみ）
 };
+const DIRECT_GEMINI_MODEL = "gemini-2.5-flash-image"; // §55
+const DIRECT_KEY_STORAGE = "autosprite.geminiKey";
 
 const $ = (id) => document.getElementById(id);
 
@@ -145,11 +148,126 @@ async function detectServer() {
       b.textContent = "テキストAIで生成します（品質は低めです）。Codexバックエンド（start-gpt.bat・APIキー不要）か、Gemini APIキー（https://aistudio.google.com/apikey で無料取得）を設定して起動すると、画像生成AIで大幅に品質が上がります。";
     }
   } catch {
+    // §55: 静的モード（Web版）。Gemini はブラウザから直接呼べるため、キー入力で生成を有効化する
     state.serverOk = false;
-    const b = $("serverBanner");
-    b.style.display = "block";
-    b.textContent = "生成APIに接続できません（Web静的版では生成は使えません）。ローカルで `npm start` したサーバー版で開いてください。";
-    $("generateBtn").disabled = true;
+    setupDirectKeyUi();
+  }
+}
+
+// §55: 静的モードのキー入力UI。キーは既定でメモリ内のみ（「この端末に保存」ONで localStorage）
+function setupDirectKeyUi() {
+  const b = $("serverBanner");
+  b.style.display = "block";
+  b.innerHTML = "";
+  const note = document.createElement("div");
+  note.textContent = "Web版です。Gemini APIキー（https://aistudio.google.com/apikey で無料取得）を入力すると、この端末だけで生成できます。キーはGoogleのAPI呼び出し以外には送信されません。";
+  const row = document.createElement("div");
+  row.style.cssText = "display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:6px";
+  const input = document.createElement("input");
+  input.type = "password";
+  input.placeholder = "GEMINI_API_KEY";
+  input.style.cssText = "flex:1;min-width:180px;background:#242836;color:#e6e8ef;border:1px solid #333849;border-radius:6px;padding:5px 8px";
+  const btn = document.createElement("button");
+  btn.textContent = "生成を有効にする";
+  const remember = document.createElement("label");
+  remember.style.cssText = "display:flex;align-items:center;gap:4px;font-size:12px";
+  const chk = document.createElement("input");
+  chk.type = "checkbox";
+  remember.append(chk, "この端末に保存");
+  const status = document.createElement("span");
+  status.style.fontSize = "12px";
+  row.append(input, btn, remember, status);
+  b.append(note, row);
+
+  const apply = (key) => {
+    state.directKey = key;
+    state.engine = "image";
+    $("generateBtn").disabled = false;
+    status.textContent = "✔ 有効";
+    $("footerInfo").textContent = `AI Meglio — クイック生成ウィザード（§52〜§55）｜生成エンジン: Gemini画像生成（ブラウザ直接・${DIRECT_GEMINI_MODEL}）`;
+  };
+  btn.addEventListener("click", () => {
+    const key = input.value.trim();
+    if (!key) { status.textContent = "キーを入力してください"; return; }
+    if (chk.checked) { try { localStorage.setItem(DIRECT_KEY_STORAGE, key); } catch {} }
+    else { try { localStorage.removeItem(DIRECT_KEY_STORAGE); } catch {} }
+    apply(key);
+  });
+
+  $("generateBtn").disabled = true;
+  $("footerInfo").textContent = "AI Meglio — クイック生成ウィザード（§52〜§55）｜Web版（キー未設定・生成無効）";
+  let saved = null;
+  try { saved = localStorage.getItem(DIRECT_KEY_STORAGE); } catch {}
+  if (saved) {
+    input.value = saved;
+    chk.checked = true;
+    apply(saved);
+  }
+}
+
+// §55: ブラウザ→Gemini 直叩き（サーバー §53.2 buildSpritePrompt/callGeminiImage と同一ロジックの複製）
+const DIRECT_MOVE_PROMPTS = {
+  walk: "a walking cycle (contact, down, passing, up positions; arms swinging opposite to legs; body lowest on contact frames)",
+  run: "a running cycle (leaning forward, wide strides, big arm swings, including airborne frames where both feet leave the ground)",
+  attack: "an attack animation (wind-up anticipation, then the hit pose at maximum reach, then follow-through)",
+  idle: "an idle animation (subtle breathing motion, tiny up-and-down movement, silhouette mostly unchanged)",
+  jump: "a jump animation (crouch, launch upward, stretched airborne pose at the top, landing with bent knees)",
+};
+
+function buildDirectPrompt(payload) {
+  const { kind, preset, customText, count, index, desc } = payload;
+  const moveDesc = preset === "custom" ? String(customText || "").trim() : DIRECT_MOVE_PROMPTS[preset];
+  const lines = [];
+  if (kind === "strip") {
+    lines.push(`Create a pixel art sprite animation strip of the character in the reference image: exactly ${count} frames of ${moveDesc}.`);
+    lines.push(`Arrange all ${count} frames in a single horizontal row, evenly spaced, with clear gaps between frames so the characters never touch each other.`);
+  } else {
+    lines.push(`Create a single pixel art animation frame of the character in the reference image: frame ${index + 1} of ${count} of ${moveDesc}.`);
+    lines.push("Draw exactly one character, full body.");
+  }
+  lines.push("Keep the character's design, colors, proportions, outline style and pixel-art rendering exactly consistent with the reference image in every frame.");
+  lines.push("Keep the same facing direction as the reference image.");
+  lines.push("Plain solid white background. No grid lines, no frame borders, no text, no labels, no shadows on the ground.");
+  if (desc) lines.push(`Character description: ${desc}`);
+  return lines.join("\n");
+}
+
+async function callGeminiDirect(payload) {
+  const referenceB64 = payload.reference.split(",")[1];
+  const prompt = buildDirectPrompt(payload);
+  const aspect = payload.kind === "strip" && payload.count > 1 ? (payload.count >= 4 ? "21:9" : "16:9") : null;
+  const call = async (aspectRatio) => {
+    const req = {
+      contents: [{ parts: [{ inline_data: { mime_type: "image/png", data: referenceB64 } }, { text: prompt }] }],
+      generationConfig: { responseModalities: ["TEXT", "IMAGE"] },
+    };
+    if (aspectRatio) req.generationConfig.imageConfig = { aspectRatio };
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${DIRECT_GEMINI_MODEL}:generateContent`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-goog-api-key": state.directKey },
+      body: JSON.stringify(req),
+      signal: state.abortController?.signal,
+    });
+    if (!res.ok) {
+      let detail = "";
+      try { detail = (await res.json())?.error?.message || ""; } catch {}
+      const err = new Error(`Gemini APIエラー (HTTP ${res.status})${detail ? `: ${detail}` : ""}`);
+      err.status = res.status;
+      throw err;
+    }
+    const data = await res.json();
+    const parts = data?.candidates?.[0]?.content?.parts || [];
+    const img = parts.find((p) => p.inlineData?.data || p.inline_data?.data);
+    if (!img) throw new Error("Geminiが画像を返しませんでした");
+    const b64 = img.inlineData?.data || img.inline_data?.data;
+    const mime = img.inlineData?.mimeType || img.inline_data?.mime_type || "image/png";
+    return `data:${mime};base64,${b64}`;
+  };
+  try {
+    return await call(aspect);
+  } catch (err) {
+    if (aspect && err.status === 400) return call(null);
+    throw err;
   }
 }
 
@@ -462,6 +580,7 @@ function stripToFrames(strip, n) {
 }
 
 async function fetchSpriteFrame(payload) {
+  if (state.directKey) return callGeminiDirect(payload); // §55: Web版はブラウザ直叩き
   const res = await fetch("/api/spriteframe", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

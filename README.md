@@ -39,6 +39,10 @@ ChatGPTサブスクで `codex login` 済みなら、**`start-gpt.bat` で起動�
 
 両方使える状態では Gemini が優先されます（`SPRITE_ENGINE=codex|gemini|text` で明示切替）。現在のエンジンはページ下部のフッターに表示されます。
 
+**C. Web版（外出先のスマホから・§55）**
+
+GitHub Pages のWeb版で `autosprite.html` を開くと、ページ内で Gemini APIキーを入力してブラウザから直接生成できます（サーバー不要・スマホ単体で生成→書き出しまで動作）。キーは既定で**端末のメモリ内のみ**に保持され（タブを閉じると消える）、「この端末に保存」をONにした場合のみ端末のローカルストレージに保存されます。送信先はGoogleのAPIのみです。Codexエンジンはローカルサーバー専用のためWeb版では使えません。
+
 環境変数で直接指定する場合は `GEMINI_API_KEY`（必須）、`GEMINI_MODEL`（既定 `gemini-2.5-flash-image`）、`GEMINI_TIMEOUT`（秒・既定120）。キーが設定されていれば、`start-claude.bat` 等の他のバックエンドと併用してもクイック生成は自動でGeminiを使います（`?engine=text` で従来エンジンを強制）。無料枠にはレート制限があるため、大量生成で429エラーが出たら少し待ってから再生成してください。
 
 1. キャラ画像（PNG/JPG/WebP・ドット絵でなくてもOK）をドロップ → 自動でドット絵に変換
