@@ -7,7 +7,7 @@ name: Deploy static (public/) to GitHub Pages
 
 on:
   push:
-    branches: [claude/ai-asset-refinement-preview-c7o6va]
+    branches: [claude/autosprite-clone-m0a7wv] # §55.2: クイック生成入りのブランチから配信（ユーザー承認済み・2026-07-16）
   workflow_dispatch:
 
 permissions:
