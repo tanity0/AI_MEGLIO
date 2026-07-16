@@ -1807,3 +1807,21 @@ Codex CLI は組み込みの `image_gen` ツール（gpt-image-2）でラスタ�
 
 - 偽 codex（stdin のプロンプトから reference/output パスを抽出し reference を output にコピーして exit 0 するスタブを CODEX_PATH に指定）で /api/spriteframe の codex 分岐を数値検証（返却dataURL=参照PNG・一時ディレクトリ掃除）。
 - SPRITE_ENGINE の解決順・config 反映・MOCK E2E（§53.4）の退行なし。バージョン繰り上げ。
+
+## 55. クイック生成のWeb版対応（外出先スマホ・Geminiブラウザ直叩き）
+
+実機要望: クイック生成を外出先から使いたい。§48 のWeb版（GitHub Pages）は /api が無いため生成が無効だが、Gemini generateContent はCORS対応でブラウザから直接呼べる。**静的モードではページ内で入力したAPIキーで直接生成**できるようにする。
+
+### 55.1 静的モードのキー入力と直叩き
+
+- /api/config 失敗（静的モード）時、バナーを「キー入力UI」に置き換える: パスワード型input + 「生成を有効にする」ボタン + 「この端末に保存」チェック（既定OFF）。キーは**既定でメモリ内のみ**（タブを閉じると消える）。チェックON時のみ localStorage（`autosprite.geminiKey`）に保存し、次回自動復元。**キーはGoogleのAPI呼び出し以外に送信されない**旨を明記。
+- キー設定後は engine="image" とし、fetchSpriteFrame をブラウザ→Gemini REST 直呼びに分岐（プロンプト構築・アスペクト指定・400リトライはサーバー §53.2 と同一ロジックのクライアント複製。モデルは既定 `gemini-2.5-flash-image` 固定）。以降のパイプライン（分割→ドット化→スナップ）は共通。
+- Codexエンジン（§54）はローカルサーバー専用のまま（ブラウザからは不可）。
+
+### 55.2 Pages 配信元の切替
+
+- pages.yml の対象ブランチを本ブランチに変更（現配信元ブランチはベース（main 相当）と同一内容で、切替による機能喪失なし）。sw.js の precache には §52 で追加済み。
+
+### 55.3 検証
+
+- 静的サーバー（/api なし）+ Playwright: キー入力→googleapis へのリクエストをルート差し替え（偽ストリップ応答）→ 生成→分割→書き出しが通ること・キー未入力では生成ボタンdisabled・「端末に保存」OFFでリロード後にキーが消えONで復元されること。ローカルサーバーモードの退行なし（MOCK E2E）。バージョン繰り上げ。
