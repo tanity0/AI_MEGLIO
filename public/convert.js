@@ -789,3 +789,150 @@ export function extractMainPalette(palette, counts, mainCount = 32) {
     groups,
   };
 }
+
+// ---------------------------------------------------------------------------
+// §59.2: 真ドット絵の無劣化1:1変換（変換スタジオ用）
+// 「整数倍スケールのドット絵（全体で≤255色・アルファ込み）」を検出したら、
+// 推定グリッド＋減色のリサンプリングを使わず、ブロック中心の色をそのまま採用する。
+// 検出はラン長GCD（原点に依らない）＋変化点の mod ヒストグラムでグリッド原点を推定。
+// ---------------------------------------------------------------------------
+export function detectExactPixelArt(data, w, h) {
+  // ラン長GCDでブロックサイズ（import.js detectBlockSize と同ロジック・アルファ込み）
+  const px = (x, y) => {
+    const i = (y * w + x) * 4;
+    if (data[i + 3] < 8) return -1;
+    return (((data[i + 3] << 24) | (data[i] << 16) | (data[i + 1] << 8) | data[i + 2]) >>> 0);
+  };
+  let g = 0;
+  const scan = (outer, inner, at) => {
+    for (let a = 0; a < outer; a++) {
+      let run = 1, prev = at(a, 0);
+      for (let b = 1; b < inner; b++) {
+        const c = at(a, b);
+        if (c === prev) run++;
+        else {
+          g = gcd2(g, run);
+          if (g === 1) return false;
+          run = 1;
+          prev = c;
+        }
+      }
+      g = gcd2(g, run);
+      if (g === 1) return false;
+    }
+    return true;
+  };
+  if (!scan(h, w, (y, x) => px(x, y)) || !scan(w, h, (x, y) => px(x, y))) return { ok: false };
+  const block = Math.max(1, g);
+
+  // 色数（≤255・アルファ込み）
+  const colors = new Set();
+  for (let i = 0; i < w * h; i++) {
+    const o = i * 4;
+    if (data[o + 3] < 8) continue;
+    colors.add((((data[o + 3] << 24) | (data[o] << 16) | (data[o + 1] << 8) | data[o + 2]) >>> 0));
+    if (colors.size > 255) return { ok: false };
+  }
+  if (!colors.size) return { ok: false };
+
+  // グリッド原点: 色の変化点位置 mod block の最頻値（クリーンな絵なら全変化点が一致する）
+  const originOf = (horizontal) => {
+    if (block === 1) return 0;
+    const hist = new Array(block).fill(0);
+    const outer = horizontal ? h : w;
+    const inner = horizontal ? w : h;
+    for (let a = 0; a < outer; a++) {
+      let prev = horizontal ? px(0, a) : px(a, 0);
+      for (let b = 1; b < inner; b++) {
+        const c = horizontal ? px(b, a) : px(a, b);
+        if (c !== prev) hist[b % block]++;
+        prev = c;
+      }
+    }
+    let best = 0;
+    for (let i = 1; i < block; i++) if (hist[i] > hist[best]) best = i;
+    return hist.some((v) => v > 0) ? best : 0;
+  };
+  return { ok: true, block, ox: originOf(true), oy: originOf(false), colors: colors.size };
+}
+
+function gcd2(a, b) {
+  while (b) [a, b] = [b, a % b];
+  return a;
+}
+
+// boxes（元画像座標）をブロック格子へスナップし、各セル中心の色をそのまま採用。
+// 戻り値は convertSheetImage / convertFramesShared と同形（共通キャンバス・共有パレット）。
+export function convertFramesExact(data, w, h, boxes, align = "bottom", info) {
+  const { block, ox, oy } = info;
+  if (!boxes || !boxes.length) throw new Error("フレームがありません");
+  const snapped = boxes.map((b) => {
+    const cx0 = Math.floor((b.x0 - ox) / block);
+    const cx1 = Math.floor((b.x1 - ox) / block);
+    const cy0 = Math.floor((b.y0 - oy) / block);
+    const cy1 = Math.floor((b.y1 - oy) / block);
+    return { cx0, cy0, cols: cx1 - cx0 + 1, rows: cy1 - cy0 + 1 };
+  });
+  const PAD_X = 2, PAD_TOP = 2, PAD_BOTTOM = 0;
+  const outW = Math.max(...snapped.map((s) => s.cols)) + PAD_X * 2;
+  const outH = Math.max(...snapped.map((s) => s.rows)) + PAD_TOP + PAD_BOTTOM;
+  if (outW > 128 || outH > 128) throw new Error(`無劣化1:1では出力が128pxを超えます（${outW}×${outH}）。無劣化を外して解像度指定で変換してください`);
+
+  const half = block >> 1;
+  const sample = (cx, cy) => {
+    const sx = Math.min(w - 1, Math.max(0, ox + cx * block + half));
+    const sy = Math.min(h - 1, Math.max(0, oy + cy * block + half));
+    const o = (sy * w + sx) * 4;
+    if (data[o + 3] < 8) return null;
+    return { key: (((data[o + 3] << 24) | (data[o] << 16) | (data[o + 1] << 8) | data[o + 2]) >>> 0), o };
+  };
+
+  // pass1: 全フレームの出現色 → 頻度順の共有パレット（#rrggbbaa・≤255は検出済み）
+  const freq = new Map();
+  for (const s of snapped) {
+    for (let cy = 0; cy < s.rows; cy++) {
+      for (let cx = 0; cx < s.cols; cx++) {
+        const c = sample(s.cx0 + cx, s.cy0 + cy);
+        if (c) freq.set(c.key, (freq.get(c.key) || 0) + 1);
+      }
+    }
+  }
+  const kept = [...freq.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => k).slice(0, 255);
+  const keyToIndex = new Map();
+  kept.forEach((k, i) => keyToIndex.set(k, i + 1));
+  const palette = ["#00000000", ...kept.map((k) => {
+    const a = (k >>> 24) & 255, r = (k >>> 16) & 255, gg = (k >>> 8) & 255, b = k & 255;
+    const rgb = "#" + [r, gg, b].map((v) => v.toString(16).padStart(2, "0")).join("");
+    return a < 255 ? rgb + a.toString(16).padStart(2, "0") : rgb;
+  })];
+
+  // pass2: 共通キャンバスへ配置（下端中央 / 中央）
+  const counts = new Uint32Array(palette.length);
+  const framesPixels = snapped.map((s) => {
+    const pixels = new Uint8Array(outW * outH);
+    const offX = Math.floor((outW - s.cols) / 2);
+    const offY = align === "center" ? Math.floor((outH - s.rows) / 2) : outH - PAD_BOTTOM - s.rows;
+    for (let cy = 0; cy < s.rows; cy++) {
+      for (let cx = 0; cx < s.cols; cx++) {
+        const c = sample(s.cx0 + cx, s.cy0 + cy);
+        if (!c) continue;
+        const idx = keyToIndex.get(c.key) || 0;
+        pixels[(offY + cy) * outW + (offX + cx)] = idx;
+        counts[idx]++;
+      }
+    }
+    return pixels;
+  });
+  return {
+    width: outW,
+    height: outH,
+    pixels: framesPixels[0],
+    framesPixels,
+    palette,
+    counts,
+    originX: boxes[0].x0,
+    originY: boxes[0].y0,
+    srcCellSize: block,
+    exact: true,
+  };
+}

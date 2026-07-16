@@ -1,6 +1,6 @@
 // studio.js — §18.2 変換スタジオ（インポートウィザードv2）UI
 // 候補ギャラリー → つまみでリアルタイム再変換 → 元画像との同期ズーム比較 → 確定
-import { removeBackground, estimateGrid, convertImage, convertSheetImage, convertFramesShared, detectComponents, extractMainPalette } from "./convert.js";
+import { removeBackground, estimateGrid, convertImage, convertSheetImage, convertFramesShared, detectComponents, extractMainPalette, detectExactPixelArt, convertFramesExact } from "./convert.js";
 import { hexToRgba, defaultTags } from "./app.js";
 
 // §30: フレーム別に持つつまみ（サイズ・共有パレット以外＝サンプリング/背景除去系）
@@ -14,6 +14,7 @@ let srcData = null; // {data, w, h} 元画像（フル解像度）
 let srcDataUrl = "";
 let bgCache = null; // 背景除去済み Uint8ClampedArray
 let grid = null; // {s, ox, oy, confidence}
+let exactInfo = null; // §59.2: 真ドット絵検出（{ok, block, ox, oy, colors}。bgCache 更新時に再検出）
 let result = null; // convertImage の結果
 let view = { zoom: 1, panX: 0, panY: 0 };
 let convertGen = 0;
@@ -108,6 +109,9 @@ async function ensureBg() {
       glowWidth: knobs.glowWidth,
     });
     grid = null; // 背景が変わればグリッドも再推定
+    exactInfo = detectExactPixelArt(bgCache, srcData.w, srcData.h); // §59.2
+    const row = $("studioExactRow");
+    if (row) row.hidden = !exactInfo.ok;
     detectSplit(); // §20.1: 連結成分の再検出
   }
   return bgCache;
@@ -206,6 +210,34 @@ async function runConvert() {
     await new Promise((r) => setTimeout(r, 0));
     const boxes = currentBoxes();
     let res;
+    // §59.2: 真ドット絵の無劣化1:1（検出済み＋チェックON）— 推定・減色をバイパス
+    if (exactInfo?.ok && $("studioExactChk")?.checked && !$("studioExactRow")?.hidden) {
+      let exactBoxes = boxes;
+      if (!exactBoxes) {
+        // 単体: 不透明bbox 1個
+        let x0 = srcData.w, y0 = srcData.h, x1 = -1, y1 = -1;
+        for (let y = 0; y < srcData.h; y++) {
+          for (let x = 0; x < srcData.w; x++) {
+            if (bgCache[(y * srcData.w + x) * 4 + 3] >= 8) {
+              if (x < x0) x0 = x; if (x > x1) x1 = x;
+              if (y < y0) y0 = y; if (y > y1) y1 = y;
+            }
+          }
+        }
+        if (x1 < 0) throw new Error("不透明ピクセルがありません");
+        exactBoxes = [{ x0, y0, x1, y1 }];
+      }
+      res = convertFramesExact(bgCache, srcData.w, srcData.h, exactBoxes, split.align, exactInfo);
+      if (res.framesPixels && res.framesPixels[activeFrame]) res.pixels = res.framesPixels[activeFrame];
+      result = res;
+      const nfx = res.framesPixels.length;
+      $("studioStatus").textContent =
+        `出力: ${res.width}×${res.height}・${res.palette.length - 1}色（+透明）・無劣化1:1（${exactInfo.block}×ドット絵を検出）` +
+        (nfx > 1 ? `・${nfx}フレーム（プレビュー: フレーム${activeFrame + 1}）` : "");
+      renderFrameBar();
+      renderCompare();
+      return;
+    }
     if (boxes) {
       // §30: 多フレーム = フレーム別つまみ + 共有パレット（二段構え）
       saveActiveFrameParams();
@@ -577,6 +609,7 @@ function attachKnobs() {
     knobs.oneToOne = $("studioOneToOne").checked;
     scheduleConvert();
   });
+  $("studioExactChk").addEventListener("change", scheduleConvert); // §59.2
   for (const [id, key, cast] of KNOB_BINDINGS) {
     $(id).addEventListener("input", () => {
       knobs[key] = cast($(id).value);

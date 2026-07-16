@@ -721,6 +721,7 @@
     <div class="studio-knobs">
       <label class="form-row">解像度(高さ) <input id="studioTargetH" type="number" min="16" max="128" step="1" value="64"></label>
       <label class="check-row inline"><input type="checkbox" id="studioOneToOne"> 1:1（グリッド推定サイズ）</label>
+      <label class="check-row inline" id="studioExactRow" hidden title="整数倍スケールのドット絵を検出しました。ONで推定・減色を使わず色とドットをそのまま取り込みます（§59.2）"><input type="checkbox" id="studioExactChk" checked> 無劣化1:1（検出済み）</label>
       <label class="form-row">色数 <input id="studioColors" type="range" min="8" max="256" step="1" value="64"> <span id="studioColorsLabel">64</span></label>
       <div class="form-row">セルサイズ
         <span><button id="studioSizeMinus" class="btn btn-small">−0.25</button> <span id="studioSizeDelta">0.00</span> <button id="studioSizePlus" class="btn btn-small">+0.25</button></span>
