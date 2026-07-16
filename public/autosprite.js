@@ -130,6 +130,23 @@ const DIRECT_MODEL_STORAGE = "autosprite.geminiModel";
 
 const $ = (id) => document.getElementById(id);
 
+// §55.8: バージョンは常時表示（ヘッダーとフッター。更新が届いているかの確認用）
+let appVersion = "";
+function setAppVersion(v) {
+  if (!v) return;
+  appVersion = v;
+  $("verBadge").textContent = `v${v}`;
+  renderFooter();
+}
+let footerBase = "AI Meglio — クイック生成ウィザード";
+function setFooter(text) {
+  footerBase = text;
+  renderFooter();
+}
+function renderFooter() {
+  $("footerInfo").textContent = `${footerBase}${appVersion ? `｜v${appVersion}` : ""}`;
+}
+
 // ---------------------------------------------------------------------------
 // サーバー確認（§48: 静的モードでは生成不可）
 // ---------------------------------------------------------------------------
@@ -148,7 +165,8 @@ async function detectServer() {
       : state.engine === "image"
         ? (cfg.spriteEngine === "codex" ? "Codex CLI画像生成（$imagegen / gpt-image-2）" : `Gemini画像生成（${cfg.geminiModel}）`)
         : `テキスト（${textBackend}）`;
-    $("footerInfo").textContent = `AI Meglio — クイック生成ウィザード（§52〜§54）｜生成エンジン: ${engineLabel}`;
+    setAppVersion(cfg.version);
+    setFooter(`AI Meglio — クイック生成ウィザード（§52〜§54）｜生成エンジン: ${engineLabel}`);
     if (cfg.spriteEngine !== "mock" && state.engine === "text") {
       const b = $("serverBanner");
       b.style.display = "block";
@@ -206,7 +224,7 @@ function setupDirectKeyUi() {
     state.engine = "image";
     $("generateBtn").disabled = false;
     status.textContent = "✔ 有効";
-    $("footerInfo").textContent = `AI Meglio — クイック生成ウィザード（§52〜§55）｜生成エンジン: Gemini画像生成（ブラウザ直接・${state.directModel}）`;
+    setFooter(`AI Meglio — クイック生成ウィザード（§52〜§55）｜生成エンジン: Gemini画像生成（ブラウザ直接・${state.directModel}）`);
   };
   btn.addEventListener("click", () => {
     const key = input.value.trim();
@@ -217,11 +235,9 @@ function setupDirectKeyUi() {
   });
 
   $("generateBtn").disabled = true;
-  $("footerInfo").textContent = "AI Meglio — クイック生成ウィザード（§52〜§55）｜Web版（キー未設定・生成無効）";
-  // §55.7: 実行中バージョンをフッターに表示（更新が届いているかの確認用）
-  fetch("./version.json", { cache: "no-store" }).then((r) => r.json()).then((v) => {
-    if (v?.version) $("footerInfo").textContent += `｜v${v.version}`;
-  }).catch(() => {});
+  setFooter("AI Meglio — クイック生成ウィザード（§52〜§55）｜Web版（キー未設定・生成無効）");
+  // §55.7/§55.8: 実行中バージョンを表示（更新が届いているかの確認用）
+  fetch("./version.json", { cache: "no-store" }).then((r) => r.json()).then((v) => setAppVersion(v?.version)).catch(() => {});
   let saved = null;
   try { saved = localStorage.getItem(DIRECT_KEY_STORAGE); } catch {}
   if (saved) {
