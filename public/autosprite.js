@@ -4,7 +4,7 @@
 // app.js（本体エントリ）には依存しない自己完結モジュール。グリッド文字規則の小ヘルパは
 // server.js / app.js と同一の規則（透明= '.'、1-9、a-v。33色以上は2文字hex）を複製している。
 import { streamEdit } from "./api.js";
-import { removeBackground, convertImage, detectComponents } from "./convert.js";
+import { removeBackground, convertImage, convertSheetImage, detectComponents } from "./convert.js";
 import { encodeGif } from "./gif.js";
 
 // ---------------------------------------------------------------------------
@@ -256,6 +256,21 @@ const DIRECT_MOVE_PROMPTS = {
   jump: "a jump animation (crouch, launch upward, stretched airborne pose at the top, landing with bent knees)",
 };
 
+// §57.2: コマ別の局面記述（server.js spritePhaseLines と同一ロジック）
+function directPhaseLines(preset, count) {
+  const pick = (arr, i) => arr[Math.min(arr.length - 1, Math.floor((i * arr.length) / count))];
+  const phases = {
+    walk: ["left foot forward, contact with ground, body slightly low", "passing pose, legs together under the body, body highest", "right foot forward, contact with ground, body slightly low", "passing pose, legs together, body highest"],
+    run: ["left foot contact, deep forward lean", "push-off, both feet airborne, stride fully extended", "right foot contact, deep forward lean", "push-off, both feet airborne"],
+    attack: ["wind-up: weapon/arm pulled back, weight on back foot", "strike: maximum forward reach, widest silhouette", "follow-through: motion settling back toward stance"],
+    idle: ["neutral stance, chest relaxed (exhale)", "chest slightly raised, head up ~1px (inhale)", "neutral stance (exhale)", "chest slightly lowered (deep exhale)"],
+    jump: ["crouch: knees bent, body compressed low", "launch: body fully extended upward, feet leaving ground", "apex: airborne, legs tucked, highest point", "landing: knees bending to absorb impact"],
+  };
+  const arr = phases[preset];
+  if (!arr) return [];
+  return Array.from({ length: count }, (_, i) => `Frame ${i + 1}: ${pick(arr, i)}.`);
+}
+
 function buildDirectPrompt(payload) {
   const { kind, preset, customText, count, index, desc } = payload;
   const moveDesc = preset === "custom" ? String(customText || "").trim() : DIRECT_MOVE_PROMPTS[preset];
@@ -263,12 +278,24 @@ function buildDirectPrompt(payload) {
   if (kind === "strip") {
     lines.push(`Create a pixel art sprite animation strip of the character in the reference image: exactly ${count} frames of ${moveDesc}.`);
     lines.push(`Arrange all ${count} frames in a single horizontal row, evenly spaced, with clear gaps between frames so the characters never touch each other.`);
+    lines.push(...directPhaseLines(preset, count));
+    lines.push("All frames share the same ground line (feet baseline) and the same scale.");
   } else {
     lines.push(`Create a single pixel art animation frame of the character in the reference image: frame ${index + 1} of ${count} of ${moveDesc}.`);
+    const phase = directPhaseLines(preset, count)[index];
+    if (phase) lines.push(`This frame's pose — ${phase}`);
     lines.push("Draw exactly one character, full body.");
+    if (payload.current) {
+      lines.push("Image 2 is the previous attempt of this exact frame. Keep its overall pose and composition.");
+      if (payload.instruction) lines.push(`Change ONLY this: ${payload.instruction}. Keep everything else identical to Image 2.`);
+      else lines.push("Redraw it more cleanly while keeping the same pose.");
+    } else if (payload.instruction) {
+      lines.push(`Additional request: ${payload.instruction}`);
+    }
   }
   lines.push("Keep the character's design, colors, proportions, outline style and pixel-art rendering exactly consistent with the reference image in every frame.");
   lines.push("Keep the same facing direction as the reference image.");
+  lines.push("Crisp pixel-art rendering: hard pixel edges, no blur, no anti-aliasing halos, no gradients beyond the reference's shading style.");
   lines.push("Plain solid white background. No grid lines, no frame borders, no text, no labels, no shadows on the ground.");
   if (desc) lines.push(`Character description: ${desc}`);
   return lines.join("\n");
@@ -295,7 +322,12 @@ async function callGeminiDirect(payload) {
   const aspect = payload.kind === "strip" && payload.count > 1 ? (payload.count >= 4 ? "21:9" : "16:9") : null;
   const call = async (model, aspectRatio) => {
     const req = {
-      contents: [{ parts: [{ inline_data: { mime_type: "image/png", data: referenceB64 } }, { text: prompt }] }],
+      contents: [{ parts: [
+        { inline_data: { mime_type: "image/png", data: referenceB64 } },
+        // §57.3: Image 2 = 前回のコマ（指示つき再生成のとき）
+        ...(payload.current ? [{ inline_data: { mime_type: "image/png", data: payload.current.split(",")[1] } }] : []),
+        { text: prompt },
+      ] }],
       generationConfig: { responseModalities: ["TEXT", "IMAGE"] },
     };
     if (aspectRatio) req.generationConfig.imageConfig = { aspectRatio };
@@ -636,11 +668,10 @@ function baseCharMetrics() {
   return { charH: y1 - y0 + 1, baselineY: y1, centerX: (x0 + x1 + 1) / 2 };
 }
 
-// 変換結果（独自パレット）をベースキャンバスへ配置し、ベースパレットへ最近色スナップ
-function composeToBase(conv, metrics) {
-  const b = state.base;
-  const baseRgb = b.palette.map(hexToRgba);
-  const snap = conv.palette.map((hex, i) => {
+// §57.1: 変換パレット→ベースパレットの最近色スナップ表
+function buildSnapMap(palette) {
+  const baseRgb = state.base.palette.map(hexToRgba);
+  return palette.map((hex, i) => {
     if (i === 0) return 0;
     const [r, g, bl] = hexToRgba(hex);
     let best = 1, bd = Infinity;
@@ -651,12 +682,17 @@ function composeToBase(conv, metrics) {
     }
     return best;
   });
+}
+
+// 変換フレーム（共通キャンバス cw×ch）をベースキャンバスへ足元基準・中央合わせで配置
+function composeGrid(pixels, cw, ch, snap, metrics) {
+  const b = state.base;
   const out = new Uint8Array(b.width * b.height);
-  const offX = Math.round(metrics.centerX - conv.width / 2);
-  const offY = metrics.baselineY + 1 - conv.height;
-  for (let y = 0; y < conv.height; y++) {
-    for (let x = 0; x < conv.width; x++) {
-      const idx = conv.pixels[y * conv.width + x];
+  const offX = Math.round(metrics.centerX - cw / 2);
+  const offY = metrics.baselineY + 1 - ch;
+  for (let y = 0; y < ch; y++) {
+    for (let x = 0; x < cw; x++) {
+      const idx = pixels[y * cw + x];
       if (idx === 0) continue;
       const tx = offX + x, ty = offY + y;
       if (tx < 0 || ty < 0 || tx >= b.width || ty >= b.height) continue;
@@ -664,6 +700,41 @@ function composeToBase(conv, metrics) {
     }
   }
   return out;
+}
+
+// §57.4: はみ出すポーズが来たらキャンバスを自動拡張（上限128・足元は下端基準を維持）
+// ベース・生成済みの全フレームを新キャンバスへ埋め直す
+function expandBaseCanvas(needW, needH) {
+  const b = state.base;
+  const newW = Math.min(128, Math.max(b.width, needW));
+  const newH = Math.min(128, Math.max(b.height, needH));
+  if (newW === b.width && newH === b.height) return;
+  const dx = Math.floor((newW - b.width) / 2);
+  const dy = newH - b.height;
+  const embed = (pixels) => {
+    const out = new Uint8Array(newW * newH);
+    for (let y = 0; y < b.height; y++) {
+      for (let x = 0; x < b.width; x++) {
+        const v = pixels[y * b.width + x];
+        if (v) out[(y + dy) * newW + (x + dx)] = v;
+      }
+    }
+    return out;
+  };
+  const newBase = embed(b.pixels);
+  for (const slots of state.results.values()) {
+    for (const s of slots) if (s.pixels) s.pixels = embed(s.pixels);
+  }
+  b.pixels = newBase;
+  b.width = newW;
+  b.height = newH;
+  renderBasePreview();
+  // キャンバス寸法が変わったので結果ブロックを描画し直す
+  const withResults = MOVES.filter((m) => state.results.has(m.key));
+  if (withResults.length) {
+    renderResults(withResults);
+    for (const m of withResults) state.results.get(m.key).forEach((_, i) => renderThumb(m, i));
+  }
 }
 
 function cropRegion(data, w, box) {
@@ -695,13 +766,12 @@ function stripToFrames(strip, n) {
       }));
     }
   }
+  // §57.1: 全コマ共通のセルサイズ・共通パレットで一括変換（しゃがみ/ジャンプの高さ差を保持し、コマ間の色ブレを防ぐ）
+  const conv = convertSheetImage(bg, strip.w, strip.h, { targetH: baseCharMetrics().charH, colors: state.base.palette.length - 1 }, boxes, "bottom");
+  if (conv.width > state.base.width || conv.height > state.base.height) expandBaseCanvas(conv.width, conv.height); // §57.4
   const metrics = baseCharMetrics();
-  const colors = state.base.palette.length - 1;
-  return boxes.map((box) => {
-    const sub = cropRegion(bg, strip.w, box);
-    const conv = convertImage(sub.data, sub.w, sub.h, { targetH: metrics.charH, colors });
-    return composeToBase(conv, metrics);
-  });
+  const snap = buildSnapMap(conv.palette);
+  return conv.framesPixels.map((px) => composeGrid(px, conv.width, conv.height, snap, metrics));
 }
 
 async function fetchSpriteFrame(payload) {
@@ -796,12 +866,19 @@ async function runMoveStrip(move) {
 async function regenSingleImage(move, index) {
   const slots = state.results.get(move.key);
   const slot = slots[index];
+  // §57.3: 修正指示（任意）。キャンセルで中止。前回のコマがあれば画像も渡して「それ以外は維持」
+  const instruction = window.prompt("このコマへの修正指示（任意。例: 左足を前に / 空欄=描き直しだけ）", "");
+  if (instruction === null) return;
   slot.status = "running";
   slot.error = null;
   renderThumb(move, index);
   try {
+    const b = state.base;
+    const payload = { ...spritePayloadBase(move), kind: "single", count: slots.length, index };
+    if (instruction.trim()) payload.instruction = instruction.trim().slice(0, 300);
+    if (slot.pixels) payload.current = pixelsToPngDataUrl(slot.pixels, b.width, b.height, b.palette, b.width > 64 ? 4 : 8);
     const image = await fetchSpriteFrameWithRetry(
-      { ...spritePayloadBase(move), kind: "single", count: slots.length, index },
+      payload,
       (sec, n) => setMoveNote(move, `⏳ 無料枠のレート制限のため待機中… ${sec}秒後に自動再試行（${n}回目）`)
     );
     setMoveNote(move, "");
@@ -809,11 +886,10 @@ async function regenSingleImage(move, index) {
     const bg = removeBackground(strip.data, strip.w, strip.h);
     const boxes = detectComponents(bg, strip.w, strip.h);
     if (!boxes.length) throw new Error("生成画像からキャラクターを検出できませんでした");
-    const box = boxes.reduce((a, b) => ((b.area || 0) > (a.area || 0) ? b : a)); // 最大成分
-    const metrics = baseCharMetrics();
-    const sub = cropRegion(bg, strip.w, box);
-    const conv = convertImage(sub.data, sub.w, sub.h, { targetH: metrics.charH, colors: state.base.palette.length - 1 });
-    slot.pixels = composeToBase(conv, metrics);
+    const box = boxes.reduce((a, c) => ((c.area || 0) > (a.area || 0) ? c : a)); // 最大成分
+    const conv = convertSheetImage(bg, strip.w, strip.h, { targetH: baseCharMetrics().charH, colors: state.base.palette.length - 1 }, [box], "bottom");
+    if (conv.width > state.base.width || conv.height > state.base.height) expandBaseCanvas(conv.width, conv.height);
+    slot.pixels = composeGrid(conv.framesPixels[0], conv.width, conv.height, buildSnapMap(conv.palette), baseCharMetrics());
     slot.status = "ok";
   } catch (err) {
     slot.status = "error";
@@ -1239,6 +1315,20 @@ function exportProject() {
   downloadBlob(new Blob([buildProjectJson(rows, fps)], { type: "application/json" }), `${safeName($("charName").value)}_project.json`);
 }
 
+// §58: 本体エディタへワンクリック受け渡し（localStorage 経由・別タブ。このページの状態は保持される）
+function openInEditor() {
+  const rows = collectSheet();
+  if (!rows.length) return;
+  const fps = parseInt($("fpsSel").value, 10) || 8;
+  try {
+    localStorage.setItem("aiMeglioHandoff", buildProjectJson(rows, fps));
+  } catch (err) {
+    alert(`受け渡しに失敗しました（容量オーバーの可能性）: ${err.message}。「プロジェクトJSON」でダウンロードしてエディタの読込を使ってください`);
+    return;
+  }
+  window.open("./index.html#quickgen-handoff", "_blank");
+}
+
 // ---------------------------------------------------------------------------
 // 初期化
 // ---------------------------------------------------------------------------
@@ -1276,6 +1366,7 @@ function init() {
   $("dlSheetBtn").addEventListener("click", exportSheet);
   $("dlAtlasBtn").addEventListener("click", exportAtlas);
   $("dlProjectBtn").addEventListener("click", exportProject);
+  $("openInEditorBtn").addEventListener("click", openInEditor); // §58
 
   requestAnimationFrame(animLoop);
 }

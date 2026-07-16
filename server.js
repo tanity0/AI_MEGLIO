@@ -2698,6 +2698,21 @@ const SPRITE_MOVE_PROMPTS = {
   jump: "a jump animation (crouch, launch upward, stretched airborne pose at the top, landing with bent knees)",
 };
 
+// §57.2: コマ別の局面記述（アニメの定石をコマ番号つきで明示）
+function spritePhaseLines(preset, count) {
+  const pick = (arr, i) => arr[Math.min(arr.length - 1, Math.floor((i * arr.length) / count))];
+  const phases = {
+    walk: ["left foot forward, contact with ground, body slightly low", "passing pose, legs together under the body, body highest", "right foot forward, contact with ground, body slightly low", "passing pose, legs together, body highest"],
+    run: ["left foot contact, deep forward lean", "push-off, both feet airborne, stride fully extended", "right foot contact, deep forward lean", "push-off, both feet airborne"],
+    attack: ["wind-up: weapon/arm pulled back, weight on back foot", "strike: maximum forward reach, widest silhouette", "follow-through: motion settling back toward stance"],
+    idle: ["neutral stance, chest relaxed (exhale)", "chest slightly raised, head up ~1px (inhale)", "neutral stance (exhale)", "chest slightly lowered (deep exhale)"],
+    jump: ["crouch: knees bent, body compressed low", "launch: body fully extended upward, feet leaving ground", "apex: airborne, legs tucked, highest point", "landing: knees bending to absorb impact"],
+  };
+  const arr = phases[preset];
+  if (!arr) return [];
+  return Array.from({ length: count }, (_, i) => `Frame ${i + 1}: ${pick(arr, i)}.`);
+}
+
 function buildSpritePrompt(body) {
   const { kind, preset, customText, count, index, desc } = body;
   const moveDesc = preset === "custom" ? String(customText || "").trim() : SPRITE_MOVE_PROMPTS[preset];
@@ -2705,12 +2720,25 @@ function buildSpritePrompt(body) {
   if (kind === "strip") {
     lines.push(`Create a pixel art sprite animation strip of the character in the reference image: exactly ${count} frames of ${moveDesc}.`);
     lines.push(`Arrange all ${count} frames in a single horizontal row, evenly spaced, with clear gaps between frames so the characters never touch each other.`);
+    lines.push(...spritePhaseLines(preset, count)); // §57.2
+    lines.push("All frames share the same ground line (feet baseline) and the same scale.");
   } else {
     lines.push(`Create a single pixel art animation frame of the character in the reference image: frame ${index + 1} of ${count} of ${moveDesc}.`);
+    const phase = spritePhaseLines(preset, count)[index];
+    if (phase) lines.push(`This frame's pose — ${phase}`);
     lines.push("Draw exactly one character, full body.");
+    // §57.3: 指示つき再生成（前回のコマ = Image 2 を維持しつつ1点だけ直す）
+    if (body.current) {
+      lines.push("Image 2 is the previous attempt of this exact frame. Keep its overall pose and composition.");
+      if (body.instruction) lines.push(`Change ONLY this: ${body.instruction}. Keep everything else identical to Image 2.`);
+      else lines.push("Redraw it more cleanly while keeping the same pose.");
+    } else if (body.instruction) {
+      lines.push(`Additional request: ${body.instruction}`);
+    }
   }
   lines.push("Keep the character's design, colors, proportions, outline style and pixel-art rendering exactly consistent with the reference image in every frame.");
   lines.push("Keep the same facing direction as the reference image.");
+  lines.push("Crisp pixel-art rendering: hard pixel edges, no blur, no anti-aliasing halos, no gradients beyond the reference's shading style.");
   lines.push("Plain solid white background. No grid lines, no frame borders, no text, no labels, no shadows on the ground.");
   if (desc) lines.push(`Character description: ${desc}`);
   return lines.join("\n");
@@ -2728,17 +2756,27 @@ function validateSpriteFrameRequest(body) {
     throw new Error("index が不正です");
   }
   if (body.desc !== undefined && (typeof body.desc !== "string" || body.desc.length > 500)) throw new Error("desc が不正です");
+  if (body.instruction !== undefined && (typeof body.instruction !== "string" || body.instruction.length > 300)) throw new Error("instruction が不正です");
   const m = /^data:image\/png;base64,([A-Za-z0-9+/=]+)$/.exec(body.reference || "");
   if (!m) throw new Error("reference（PNG dataURL）が必要です");
-  return m[1]; // base64部
+  // §57.3: 指示つき再生成用の「前回のコマ」（任意）
+  let currentB64 = null;
+  if (body.current !== undefined && body.current !== null) {
+    const c = /^data:image\/png;base64,([A-Za-z0-9+/=]+)$/.exec(body.current || "");
+    if (!c) throw new Error("current（PNG dataURL）が不正です");
+    currentB64 = c[1];
+  }
+  return { referenceB64: m[1], currentB64 };
 }
 
-async function callGeminiImage(prompt, referenceB64, aspectRatio, model = GEMINI_MODEL) {
+async function callGeminiImage(prompt, referenceB64, aspectRatio, model = GEMINI_MODEL, currentB64 = null) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
   const payload = {
     contents: [{
       parts: [
         { inline_data: { mime_type: "image/png", data: referenceB64 } },
+        // §57.3: Image 2 = 前回のコマ（指示つき再生成のとき）
+        ...(currentB64 ? [{ inline_data: { mime_type: "image/png", data: currentB64 } }] : []),
         { text: prompt },
       ],
     }],
@@ -2780,17 +2818,25 @@ async function callGeminiImage(prompt, referenceB64, aspectRatio, model = GEMINI
 // §54: Codex CLI の $imagegen（image_gen ツール / gpt-image-2）でストリップ/1コマ画像を生成。
 // 一時ディレクトリに reference.png を置き、workspace-write サンドボックスで output.png に保存させる。
 // .cmd シム対応（§23.4 buildSpawnCommand）と CLI 同時実行スロット（§15.2）は既存を共用。
-async function spawnCodexImageGen(prompt, referenceB64) {
+async function spawnCodexImageGen(prompt, referenceB64, currentB64 = null) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "ai-meglio-imagegen-"));
   const refPath = path.join(dir, "reference.png");
   const outPath = path.join(dir, "output.png");
   await fs.writeFile(refPath, Buffer.from(referenceB64, "base64"));
-  const fullPrompt = [
+  const promptLines = [
     `$imagegen ${prompt}`,
     `Image 1 (${refPath}): the character reference — match its design, colors, proportions and pixel-art style exactly.`,
+  ];
+  if (currentB64) {
+    const curPath = path.join(dir, "current.png");
+    await fs.writeFile(curPath, Buffer.from(currentB64, "base64"));
+    promptLines.push(`Image 2 (${curPath}): the previous attempt of this frame (see the main prompt for what to keep/change).`);
+  }
+  promptLines.push(
     "Generate a raster image with the image_gen tool. Never produce SVG, HTML or CSS.",
     `Save the final image as a PNG file to exactly this path: ${outPath}`,
-  ].join("\n");
+  );
+  const fullPrompt = promptLines.join("\n");
 
   await acquireCliSlot();
   try {
@@ -2852,10 +2898,10 @@ async function handleSpriteFrame(req, res) {
     res.end(JSON.stringify({ error: "リクエストサイズが上限（5MB）を超えています" }));
     return;
   }
-  let body, referenceB64;
+  let body, referenceB64, currentB64;
   try {
     body = JSON.parse(raw.toString("utf8"));
-    referenceB64 = validateSpriteFrameRequest(body);
+    ({ referenceB64, currentB64 } = validateSpriteFrameRequest(body));
   } catch (err) {
     res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
     res.end(JSON.stringify({ error: err.message || "リクエストが不正です" }));
@@ -2883,9 +2929,9 @@ async function handleSpriteFrame(req, res) {
   try {
     let image;
     if (SPRITE_ENGINE === "codex") {
-      image = await spawnCodexImageGen(prompt, referenceB64); // §54
+      image = await spawnCodexImageGen(prompt, referenceB64, currentB64); // §54/§57.3
     } else {
-      image = await generateWithGemini(prompt, referenceB64, body); // §53/§55.4
+      image = await generateWithGemini(prompt, referenceB64, currentB64, body); // §53/§55.4/§57.3
     }
     respond(200, { image });
     console.log(`[spriteframe] ${SPRITE_ENGINE} ${body.kind} ${body.preset} count=${body.count}${body.kind === "single" ? ` index=${body.index}` : ""} OK`);
@@ -2922,14 +2968,14 @@ function friendlyGeminiServerError(err) {
   return raw;
 }
 
-async function generateWithGemini(prompt, referenceB64, body) {
+async function generateWithGemini(prompt, referenceB64, currentB64, body) {
   // §53: コマ数に応じた横長アスペクト（ストリップのみ）。未対応モデルの400は imageConfig なしで1回リトライ
   const aspect = body.kind === "strip" && body.count > 1 ? (body.count >= 4 ? "21:9" : "16:9") : null;
   const callWithAspectRetry = async (model) => {
     try {
-      return await callGeminiImage(prompt, referenceB64, aspect, model);
+      return await callGeminiImage(prompt, referenceB64, aspect, model, currentB64);
     } catch (err) {
-      if (aspect && err.status === 400) return callGeminiImage(prompt, referenceB64, null, model);
+      if (aspect && err.status === 400) return callGeminiImage(prompt, referenceB64, null, model, currentB64);
       throw err;
     }
   };

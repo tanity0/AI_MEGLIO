@@ -1179,6 +1179,21 @@ async function main() {
   initSendGpt(store, toast); // §36 「GPTへ送る」ワンクリック
   initBackdrop(); // §45 背景色の変更（透明部分の表示色・localStorage 復元）
   initMobile(); // §49 スマホレイアウト（サイドパネルのドロワー化）
+  // §58: クイック生成からのワンクリック受け渡し（autosprite.js が localStorage に置いた
+  // プロジェクトを読み込む）。自動保存の復元バナーより優先させるため initAutosave の前に処理。
+  if (location.hash === "#quickgen-handoff") {
+    try {
+      const raw = localStorage.getItem("aiMeglioHandoff");
+      if (raw) {
+        store.resetProject(projectFromPlain(JSON.parse(raw)));
+        localStorage.removeItem("aiMeglioHandoff");
+        toast("クイック生成の結果を読み込みました（ムーブはタグとして入っています）");
+      }
+    } catch (err) {
+      toast(`クイック生成の結果の読込に失敗しました: ${err.message}`, "error");
+    }
+    history.replaceState(null, "", location.pathname + location.search);
+  }
   initAutosave(store, toast); // §50.1 自動保存＆復元（IndexedDB）
   initSwUpdate(); // §50.7 SW更新チェック（新バージョン案内バナー）
   initHelp();
