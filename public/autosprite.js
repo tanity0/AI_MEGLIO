@@ -1424,6 +1424,20 @@ function init() {
 
   requestAnimationFrame(animLoop);
   receiveEditorHandoff(); // §58.2
+
+  // §59.3: 旧SW（cache-first時代・§55.7以前）を掴んだままのブラウザを自己回復させる。
+  // このページからも SW 本体の更新チェックと version.json の再確認を明示的に起こす
+  // （swupdate.js は index.html 専用のため、ここに最小限を複製）。
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.getRegistration().then((reg) => {
+      if (!reg) return;
+      reg.update().catch(() => {});
+      if (navigator.serviceWorker.controller) {
+        const ch = new MessageChannel();
+        navigator.serviceWorker.controller.postMessage({ type: "AI_MEGLIO_CHECK_VERSION" }, [ch.port2]);
+      }
+    }).catch(() => {});
+  }
 }
 
 init();
