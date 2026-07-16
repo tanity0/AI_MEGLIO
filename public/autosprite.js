@@ -324,7 +324,10 @@ async function callGeminiDirect(payload) {
       if (err.status !== 404 && err.status !== 403) break; // モデル起因以外は他モデルを試さない
     }
   }
-  throw new Error(friendlyGeminiError(lastErr));
+  const e = new Error(friendlyGeminiError(lastErr));
+  e.status = lastErr?.status; // §55.5: 429自動リトライの判定用
+  e.raw = lastErr?.message;   // §55.5: retryDelay秒・1日上限（PerDay）の検出用
+  throw e;
 }
 
 // ---------------------------------------------------------------------------
@@ -644,9 +647,51 @@ async function fetchSpriteFrame(payload) {
     signal: state.abortController?.signal,
   });
   const json = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(json.error || `サーバーエラー (HTTP ${res.status})`);
+  if (!res.ok) {
+    const err = new Error(json.error || `サーバーエラー (HTTP ${res.status})`);
+    err.status = res.status; // §55.5: 429自動リトライの判定用
+    throw err;
+  }
   if (!json.image) throw new Error("画像が返されませんでした");
   return json.image;
+}
+
+// §55.5: 429（無料枠のレート制限）は自動で待って再試行する。1日上限は即失敗（待っても無駄）。
+// onWait(残り秒, 試行回数) で待機状況をUIに流す。
+async function fetchSpriteFrameWithRetry(payload, onWait) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fetchSpriteFrame(payload);
+    } catch (err) {
+      const msg = `${err.message || ""} ${err.raw || ""}`;
+      const daily = /PerDay|per day|daily/i.test(msg);
+      if (err.status !== 429 && !/レート\/無料枠の上限/.test(msg)) throw err;
+      if (daily) throw new Error("本日の無料枠を使い切りました（翌日にリセットされます）。フレーム数やムーブ数を減らすか、ローカルのCodexエンジン（無料枠制限なし）をお試しください");
+      if (attempt >= 2) throw err;
+      // エラー文中の retryDelay（例 "retry in 34s" / "retryDelay: 34s"）があれば従い、無ければ62秒
+      const m = /(\d+(?:\.\d+)?)\s*s/i.exec(msg);
+      const waitSec = Math.min(120, m ? Math.ceil(parseFloat(m[1])) + 2 : 62);
+      for (let s = waitSec; s > 0; s--) {
+        if (state.abortController?.signal.aborted) {
+          const e = new Error("中断しました");
+          e.name = "AbortError";
+          throw e;
+        }
+        onWait?.(s, attempt + 1);
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+    }
+  }
+}
+
+// §55.5: ムーブブロックの注記表示（待機カウントダウン等。エラー行を色違いで流用）
+function setMoveNote(move, text, isError = false) {
+  const block = $("results").querySelector(`.moveResult[data-move="${move.key}"]`);
+  const line = block?.querySelector(".errLine");
+  if (!line) return;
+  line.textContent = text || "";
+  line.style.color = isError ? "#e05c5c" : "#f5a623";
+  line.style.display = text ? "block" : "none";
 }
 
 function spritePayloadBase(move) {
@@ -664,7 +709,11 @@ async function runMoveStrip(move) {
   const slots = state.results.get(move.key);
   slots.forEach((s, i) => { s.status = "running"; s.error = null; renderThumb(move, i); });
   try {
-    const image = await fetchSpriteFrame({ ...spritePayloadBase(move), kind: "strip", count: slots.length });
+    const image = await fetchSpriteFrameWithRetry(
+      { ...spritePayloadBase(move), kind: "strip", count: slots.length },
+      (sec, n) => setMoveNote(move, `⏳ 無料枠のレート制限のため待機中… ${sec}秒後に自動再試行（${n}回目）`)
+    );
+    setMoveNote(move, "");
     const frames = stripToFrames(await dataUrlToImageData(image), slots.length);
     frames.forEach((pixels, i) => { slots[i].pixels = pixels; slots[i].status = "ok"; });
   } catch (err) {
@@ -683,7 +732,11 @@ async function regenSingleImage(move, index) {
   slot.error = null;
   renderThumb(move, index);
   try {
-    const image = await fetchSpriteFrame({ ...spritePayloadBase(move), kind: "single", count: slots.length, index });
+    const image = await fetchSpriteFrameWithRetry(
+      { ...spritePayloadBase(move), kind: "single", count: slots.length, index },
+      (sec, n) => setMoveNote(move, `⏳ 無料枠のレート制限のため待機中… ${sec}秒後に自動再試行（${n}回目）`)
+    );
+    setMoveNote(move, "");
     const strip = await dataUrlToImageData(image);
     const bg = removeBackground(strip.data, strip.w, strip.h);
     const boxes = detectComponents(bg, strip.w, strip.h);
@@ -751,7 +804,8 @@ async function generateAll() {
       renderProgress();
     }
   };
-  await Promise.all(Array.from({ length: CONCURRENCY }, worker));
+  // §55.5: 画像エンジンは直列1本（Gemini無料枠のレート制限対策。ムーブ単位なので所要は十分短い）
+  await Promise.all(Array.from({ length: state.engine === "image" ? 1 : CONCURRENCY }, worker));
 
   clearInterval(tick);
   state.running = false;
@@ -884,8 +938,15 @@ function renderThumb(move, index) {
   const errLine = block.querySelector(".errLine");
   if (errLine) {
     const firstErr = state.results.get(move.key).find((s) => s.status === "error" && s.error);
-    errLine.textContent = firstErr ? `⚠ ${firstErr.error}` : "";
-    errLine.style.display = firstErr ? "block" : "none";
+    if (firstErr) {
+      errLine.textContent = `⚠ ${firstErr.error}`;
+      errLine.style.color = "#e05c5c"; // §55.5: 待機注記（橙）からエラー（赤）へ戻す
+      errLine.style.display = "block";
+    } else if (errLine.style.color !== "rgb(245, 166, 35)") {
+      // 待機カウントダウン表示中は消さない
+      errLine.textContent = "";
+      errLine.style.display = "none";
+    }
   }
 }
 
