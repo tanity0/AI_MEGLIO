@@ -853,7 +853,40 @@ export function detectExactPixelArt(data, w, h) {
     for (let i = 1; i < block; i++) if (hist[i] > hist[best]) best = i;
     return hist.some((v) => v > 0) ? best : 0;
   };
-  return { ok: true, block, ox: originOf(true), oy: originOf(false), colors: colors.size };
+  // §59.4: 原点候補でセル均一率を検証（真のN倍ドット絵なら全セルが単色のはず）。
+  // 合格しない場合は無劣化モードを無効にする（黙ってズレた絵を出さない）。
+  const uniformity = (ox, oy) => {
+    let total = 0, uniform = 0;
+    for (let cy = 0; ; cy++) {
+      const y0 = oy + cy * block;
+      if (y0 >= h) break;
+      for (let cx = 0; ; cx++) {
+        const x0 = ox + cx * block;
+        if (x0 >= w) break;
+        let first = null, same = true, any = false;
+        for (let y = y0; y < Math.min(h, y0 + block); y++) {
+          for (let x = x0; x < Math.min(w, x0 + block); x++) {
+            const c = px(x, y);
+            if (c === -1) continue;
+            any = true;
+            if (first === null) first = c;
+            else if (c !== first) { same = false; }
+          }
+        }
+        if (!any) continue; // 全透明セルは判定外
+        total++;
+        if (same) uniform++;
+      }
+    }
+    return total ? uniform / total : 0;
+  };
+  const candidates = [[originOf(true), originOf(false)], [0, 0]];
+  for (const [ox, oy] of candidates) {
+    if (block === 1 || uniformity(ox, oy) >= 0.99) {
+      return { ok: true, block, ox, oy, colors: colors.size };
+    }
+  }
+  return { ok: false };
 }
 
 function gcd2(a, b) {
@@ -878,13 +911,27 @@ export function convertFramesExact(data, w, h, boxes, align = "bottom", info) {
   const outH = Math.max(...snapped.map((s) => s.rows)) + PAD_TOP + PAD_BOTTOM;
   if (outW > 128 || outH > 128) throw new Error(`無劣化1:1では出力が128pxを超えます（${outW}×${outH}）。無劣化を外して解像度指定で変換してください`);
 
-  const half = block >> 1;
+  // §59.4: セル内の全ピクセル多数決（中心1点だと原点の推定誤差で1マス幅の輪郭が消える）
   const sample = (cx, cy) => {
-    const sx = Math.min(w - 1, Math.max(0, ox + cx * block + half));
-    const sy = Math.min(h - 1, Math.max(0, oy + cy * block + half));
-    const o = (sy * w + sx) * 4;
-    if (data[o + 3] < 8) return null;
-    return { key: (((data[o + 3] << 24) | (data[o] << 16) | (data[o + 1] << 8) | data[o + 2]) >>> 0), o };
+    const x0 = Math.max(0, ox + cx * block);
+    const y0 = Math.max(0, oy + cy * block);
+    const x1 = Math.min(w, x0 + block);
+    const y1 = Math.min(h, y0 + block);
+    const local = new Map();
+    let transparent = 0, opaque = 0;
+    for (let y = y0; y < y1; y++) {
+      for (let x = x0; x < x1; x++) {
+        const o = (y * w + x) * 4;
+        if (data[o + 3] < 8) { transparent++; continue; }
+        opaque++;
+        const key = (((data[o + 3] << 24) | (data[o] << 16) | (data[o + 1] << 8) | data[o + 2]) >>> 0);
+        local.set(key, (local.get(key) || 0) + 1);
+      }
+    }
+    if (!opaque || transparent > opaque) return null;
+    let bestKey = null, bestN = 0;
+    for (const [k, n] of local) if (n > bestN) { bestN = n; bestKey = k; }
+    return { key: bestKey };
   };
 
   // pass1: 全フレームの出現色 → 頻度順の共有パレット（#rrggbbaa・≤255は検出済み）
