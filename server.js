@@ -42,6 +42,8 @@ const EXPORT_ROOT = process.env.EXPORT_ROOT || ""; // §16.4: 未設定なら /a
 // §53: クイック生成の画像生成エンジン（Gemini）。キーは https://aistudio.google.com/apikey で無料取得可
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash-image";
+// §55.4: 404/403時に自動で試す候補（先頭=GEMINI_MODEL。新規キーで旧モデルが使えないケース対策）
+const GEMINI_MODEL_CANDIDATES = [...new Set([GEMINI_MODEL, "gemini-2.5-flash-image", "gemini-3.1-flash-image-preview", "gemini-3-pro-image-preview"])];
 const GEMINI_TIMEOUT_MS = (Number(process.env.GEMINI_TIMEOUT) > 0 ? Number(process.env.GEMINI_TIMEOUT) : 120) * 1000;
 // §54: Codex CLI 画像エンジン（$imagegen / gpt-image-2・APIキー不要）
 const IMAGEGEN_TIMEOUT_MS = (Number(process.env.IMAGEGEN_TIMEOUT) > 0 ? Number(process.env.IMAGEGEN_TIMEOUT) : 300) * 1000;
@@ -2731,8 +2733,8 @@ function validateSpriteFrameRequest(body) {
   return m[1]; // base64部
 }
 
-async function callGeminiImage(prompt, referenceB64, aspectRatio) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
+async function callGeminiImage(prompt, referenceB64, aspectRatio, model = GEMINI_MODEL) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
   const payload = {
     contents: [{
       parts: [
@@ -2883,14 +2885,7 @@ async function handleSpriteFrame(req, res) {
     if (SPRITE_ENGINE === "codex") {
       image = await spawnCodexImageGen(prompt, referenceB64); // §54
     } else {
-      // §53: コマ数に応じた横長アスペクト（ストリップのみ）。未対応モデルの400は imageConfig なしで1回リトライ
-      const aspect = body.kind === "strip" && body.count > 1 ? (body.count >= 4 ? "21:9" : "16:9") : null;
-      try {
-        image = await callGeminiImage(prompt, referenceB64, aspect);
-      } catch (err) {
-        if (aspect && err.status === 400) image = await callGeminiImage(prompt, referenceB64, null);
-        else throw err;
-      }
+      image = await generateWithGemini(prompt, referenceB64, body); // §53/§55.4
     }
     respond(200, { image });
     console.log(`[spriteframe] ${SPRITE_ENGINE} ${body.kind} ${body.preset} count=${body.count}${body.kind === "single" ? ` index=${body.index}` : ""} OK`);
@@ -2899,6 +2894,71 @@ async function handleSpriteFrame(req, res) {
     respond(err.status === 429 ? 429 : 502, { error: msg });
     console.log(`[spriteframe] ERROR: ${msg}`);
   }
+}
+
+// §55.4: Gemini呼び出し（モデル候補の自動フォールバック＋失敗時の診断つき）
+let geminiActiveModel = null; // 一度効いたモデルを以降優先
+
+async function listGeminiImageModels() {
+  try {
+    const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models?pageSize=200", {
+      headers: { "x-goog-api-key": GEMINI_API_KEY },
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return (data.models || [])
+      .map((m) => (m.name || "").replace(/^models\//, ""))
+      .filter((n) => /image/i.test(n));
+  } catch {
+    return null;
+  }
+}
+
+function friendlyGeminiServerError(err) {
+  const raw = err?.message || String(err);
+  if (/API_KEY_INVALID|API key not valid/i.test(raw)) return "APIキーが無効です。https://aistudio.google.com/apikey で作成したキーを確認してください";
+  if (err?.status === 429 || /RESOURCE_EXHAUSTED|quota/i.test(raw)) return "レート/無料枠の上限です。1〜2分待ってから失敗したムーブだけ再生成してください";
+  return raw;
+}
+
+async function generateWithGemini(prompt, referenceB64, body) {
+  // §53: コマ数に応じた横長アスペクト（ストリップのみ）。未対応モデルの400は imageConfig なしで1回リトライ
+  const aspect = body.kind === "strip" && body.count > 1 ? (body.count >= 4 ? "21:9" : "16:9") : null;
+  const callWithAspectRetry = async (model) => {
+    try {
+      return await callGeminiImage(prompt, referenceB64, aspect, model);
+    } catch (err) {
+      if (aspect && err.status === 400) return callGeminiImage(prompt, referenceB64, null, model);
+      throw err;
+    }
+  };
+  const first = geminiActiveModel || GEMINI_MODEL_CANDIDATES[0];
+  const models = [first, ...GEMINI_MODEL_CANDIDATES.filter((m) => m !== first)];
+  let lastErr = null;
+  for (const model of models) {
+    try {
+      const image = await callWithAspectRetry(model);
+      if (model !== geminiActiveModel) {
+        geminiActiveModel = model;
+        console.log(`[spriteframe] gemini model = ${model}`);
+      }
+      return image;
+    } catch (err) {
+      if (err.name === "AbortError") throw err;
+      lastErr = err;
+      if (err.status !== 404 && err.status !== 403) break; // モデル起因以外は他モデルを試さない
+      console.log(`[spriteframe] ${model} 不可 (HTTP ${err.status})、次の候補を試します`);
+    }
+  }
+  // 全滅: このキーで使える画像モデルの一覧を診断としてエラーに含める
+  if (lastErr && (lastErr.status === 404 || lastErr.status === 403)) {
+    const avail = await listGeminiImageModels();
+    const hint = avail === null ? "" : avail.length
+      ? ` このキーで使える画像モデル: ${avail.join(", ")}（GEMINI_MODEL で指定してください）`
+      : " このキーで使える画像モデルが見つかりませんでした（AI Studio で画像生成が有効なキーか確認してください）";
+    throw new Error(`${friendlyGeminiServerError(lastErr)}${hint}`);
+  }
+  throw new Error(friendlyGeminiServerError(lastErr));
 }
 
 const server = http.createServer(async (req, res) => {
