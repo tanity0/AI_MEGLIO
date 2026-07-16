@@ -1193,11 +1193,17 @@ async function main() {
         palette: p.palette.slice(),
         basePixels: Array.from(src),
         sourceImage: typeof p.sourceImage === "string" ? p.sourceImage : null,
+        // §58.3: 編集済みフレームも往復させる（タグ名がムーブ名と一致するものをウィザード側で復元）
+        frames: p.frames.map((f) => Array.from(f.pixels)),
+        tags: (p.tags || []).map((t) => ({ name: t.name, start: t.start, end: t.end })),
       };
       try {
         localStorage.setItem("aiMeglioHandoffToQuick", JSON.stringify(payload));
       } catch {
-        return; // 容量超過などは素のリンク遷移（空のウィザードが開くだけ）
+        // 容量超過時はフレームを落としてベースだけでも渡す
+        delete payload.frames;
+        delete payload.tags;
+        try { localStorage.setItem("aiMeglioHandoffToQuick", JSON.stringify(payload)); } catch { return; }
       }
       e.preventDefault();
       window.open("./autosprite.html#editor-handoff", "_blank");

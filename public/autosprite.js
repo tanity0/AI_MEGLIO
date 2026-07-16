@@ -514,6 +514,26 @@ function receiveEditorHandoff() {
   setLocked("step2", false);
   setLocked("step3", false);
   setLocked("step4", true);
+  // §58.3: エディタで修正済みのフレームをムーブ結果として復元（タグ名 = ムーブ名）
+  if (Array.isArray(p.frames) && Array.isArray(p.tags)) {
+    const size = p.width * p.height;
+    for (const tag of p.tags) {
+      const move = MOVES.find((m) => m.key === tag.name);
+      if (!move || !Number.isInteger(tag.start) || !Number.isInteger(tag.end) || tag.end < tag.start) continue;
+      const frames = p.frames.slice(tag.start, tag.end + 1).filter((f) => Array.isArray(f) && f.length === size);
+      if (!frames.length) continue;
+      move.on = true;
+      move.frames = frames.length;
+      state.results.set(move.key, frames.map((f) => ({ status: "ok", pixels: Uint8Array.from(f), error: null })));
+    }
+    const withResults = MOVES.filter((m) => state.results.has(m.key));
+    if (withResults.length) {
+      renderMoveCards();
+      renderResults(withResults);
+      for (const m of withResults) state.results.get(m.key).forEach((_, i) => renderThumb(m, i));
+      updateExportState();
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
