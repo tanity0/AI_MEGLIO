@@ -117,9 +117,16 @@ const state = {
   engine: "text",      // §53: "image"（Gemini/Codex）| "text"（motionframe フォールバック）
   referencePng: null,  // §53: Gemini に渡す参照画像（元画像を白背景合成・最大768px）
   directKey: null,     // §55: 静的モード（Web版）のGeminiブラウザ直叩き用キー（端末内のみ）
+  directModel: null,   // §55.4: 直叩きモデル（フォールバックで自動更新）
 };
-const DIRECT_GEMINI_MODEL = "gemini-2.5-flash-image"; // §55
+// §55.4: 直叩きの候補モデル（先頭=既定。404/権限エラー時は次を自動で試す）
+const DIRECT_MODELS = [
+  "gemini-2.5-flash-image",
+  "gemini-3.1-flash-image-preview",
+  "gemini-3-pro-image-preview",
+];
 const DIRECT_KEY_STORAGE = "autosprite.geminiKey";
+const DIRECT_MODEL_STORAGE = "autosprite.geminiModel";
 
 const $ = (id) => document.getElementById(id);
 
@@ -174,17 +181,32 @@ function setupDirectKeyUi() {
   const chk = document.createElement("input");
   chk.type = "checkbox";
   remember.append(chk, "この端末に保存");
+  // §55.4: モデル選択（404/権限エラー時は他候補を自動で試す）
+  const modelSel = document.createElement("select");
+  for (const m of DIRECT_MODELS) {
+    const o = document.createElement("option");
+    o.value = m;
+    o.textContent = m;
+    modelSel.append(o);
+  }
+  try { modelSel.value = localStorage.getItem(DIRECT_MODEL_STORAGE) || DIRECT_MODELS[0]; } catch {}
+  if (!modelSel.value) modelSel.value = DIRECT_MODELS[0];
+  modelSel.addEventListener("change", () => {
+    state.directModel = modelSel.value;
+    try { localStorage.setItem(DIRECT_MODEL_STORAGE, modelSel.value); } catch {}
+  });
   const status = document.createElement("span");
   status.style.fontSize = "12px";
-  row.append(input, btn, remember, status);
+  row.append(input, btn, remember, modelSel, status);
   b.append(note, row);
 
   const apply = (key) => {
     state.directKey = key;
+    state.directModel = modelSel.value;
     state.engine = "image";
     $("generateBtn").disabled = false;
     status.textContent = "✔ 有効";
-    $("footerInfo").textContent = `AI Meglio — クイック生成ウィザード（§52〜§55）｜生成エンジン: Gemini画像生成（ブラウザ直接・${DIRECT_GEMINI_MODEL}）`;
+    $("footerInfo").textContent = `AI Meglio — クイック生成ウィザード（§52〜§55）｜生成エンジン: Gemini画像生成（ブラウザ直接・${state.directModel}）`;
   };
   btn.addEventListener("click", () => {
     const key = input.value.trim();
@@ -232,17 +254,31 @@ function buildDirectPrompt(payload) {
   return lines.join("\n");
 }
 
+// §55.4: よくある失敗を日本語の対処つきメッセージに変換
+function friendlyGeminiError(err) {
+  const raw = err.message || String(err);
+  if (err.name === "TypeError" || /Failed to fetch|NetworkError/i.test(raw)) {
+    return "Gemini APIに接続できませんでした（ネットワーク遮断/フィルタの可能性。Wi-Fiを変えるかモバイル回線で試してください）";
+  }
+  if (/API_KEY_INVALID|API key not valid/i.test(raw)) return "APIキーが無効です。https://aistudio.google.com/apikey で作成したキーをコピーし直してください";
+  if (/API_KEY_HTTP_REFERRER_BLOCKED|referer/i.test(raw)) return "APIキーのウェブサイト制限でブロックされています。キー設定で「なし」または tanity0.github.io を許可してください";
+  if (err.status === 429 || /RESOURCE_EXHAUSTED|quota/i.test(raw)) return "レート/無料枠の上限です。1〜2分待ってから失敗したムーブだけ再生成してください";
+  if (err.status === 404 || /not found/i.test(raw)) return `モデルが見つかりません（${raw.slice(0, 120)}）。モデル選択を変えて試してください`;
+  if (err.status === 403 || /PERMISSION_DENIED/i.test(raw)) return `このキーではこのモデルを使えません（${raw.slice(0, 120)}）。モデル選択を変えて試してください`;
+  return raw;
+}
+
 async function callGeminiDirect(payload) {
   const referenceB64 = payload.reference.split(",")[1];
   const prompt = buildDirectPrompt(payload);
   const aspect = payload.kind === "strip" && payload.count > 1 ? (payload.count >= 4 ? "21:9" : "16:9") : null;
-  const call = async (aspectRatio) => {
+  const call = async (model, aspectRatio) => {
     const req = {
       contents: [{ parts: [{ inline_data: { mime_type: "image/png", data: referenceB64 } }, { text: prompt }] }],
       generationConfig: { responseModalities: ["TEXT", "IMAGE"] },
     };
     if (aspectRatio) req.generationConfig.imageConfig = { aspectRatio };
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${DIRECT_GEMINI_MODEL}:generateContent`, {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-goog-api-key": state.directKey },
       body: JSON.stringify(req),
@@ -258,17 +294,37 @@ async function callGeminiDirect(payload) {
     const data = await res.json();
     const parts = data?.candidates?.[0]?.content?.parts || [];
     const img = parts.find((p) => p.inlineData?.data || p.inline_data?.data);
-    if (!img) throw new Error("Geminiが画像を返しませんでした");
+    if (!img) throw new Error("Geminiが画像を返しませんでした（プロンプトが安全フィルタに触れた可能性）");
     const b64 = img.inlineData?.data || img.inline_data?.data;
     const mime = img.inlineData?.mimeType || img.inline_data?.mime_type || "image/png";
     return `data:${mime};base64,${b64}`;
   };
-  try {
-    return await call(aspect);
-  } catch (err) {
-    if (aspect && err.status === 400) return call(null);
-    throw err;
+  const callWithAspectRetry = async (model) => {
+    try {
+      return await call(model, aspect);
+    } catch (err) {
+      if (aspect && err.status === 400) return call(model, null); // imageConfig 未対応モデル
+      throw err;
+    }
+  };
+  // §55.4: 選択モデル→残りの候補の順で自動フォールバック（404/403のみ。キー無効等は即失敗）
+  const models = [state.directModel || DIRECT_MODELS[0], ...DIRECT_MODELS.filter((m) => m !== (state.directModel || DIRECT_MODELS[0]))];
+  let lastErr = null;
+  for (const model of models) {
+    try {
+      const image = await callWithAspectRetry(model);
+      if (model !== state.directModel) {
+        state.directModel = model; // 効いたモデルを記憶
+        try { localStorage.setItem(DIRECT_MODEL_STORAGE, model); } catch {}
+      }
+      return image;
+    } catch (err) {
+      if (err.name === "AbortError") throw err;
+      lastErr = err;
+      if (err.status !== 404 && err.status !== 403) break; // モデル起因以外は他モデルを試さない
+    }
   }
+  throw new Error(friendlyGeminiError(lastErr));
 }
 
 // ---------------------------------------------------------------------------
@@ -709,10 +765,12 @@ function renderProgress(finished = false) {
   const sec = Math.round((Date.now() - state.startedAt) / 1000);
   const pct = state.total ? Math.round((state.done / state.total) * 100) : 0;
   $("progressBar").firstElementChild.style.width = `${pct}%`;
-  const failed = [...state.results.values()].flat().filter((s) => s.status === "error").length;
+  const errSlots = [...state.results.values()].flat().filter((s) => s.status === "error");
   const unit = state.engine === "image" ? "ムーブ" : "フレーム"; // §53: 画像エンジンはムーブ単位
+  // §55.4: 失敗時は最初のエラー内容を進捗行にも出す（スマホで原因が見えるように）
+  const errNote = errSlots.length ? `（失敗 ${errSlots.length}コマ: ${(errSlots[0].error || "").slice(0, 140)} — ↻ で再生成できます）` : "";
   $("progressText").textContent = finished
-    ? `完了: ${state.done}/${state.total}${unit}${failed ? `（失敗 ${failed}コマ — サムネイルの ↻ で再生成できます）` : ""}・所要 ${sec}秒`
+    ? `完了: ${state.done}/${state.total}${unit}${errNote}・所要 ${sec}秒`
     : `生成中… ${state.done}/${state.total}${unit}・経過 ${sec}秒`;
 }
 
@@ -767,6 +825,11 @@ function renderResults(moves) {
     player.append(pc, ctl);
     players.set(m.key, { canvas: pc, idx: 0, lastT: 0, playing: true });
 
+    // §55.4: ムーブ単位のエラー表示（スマホでも見えるように・ツールチップ非依存）
+    const errLine = document.createElement("div");
+    errLine.className = "errLine";
+    errLine.style.cssText = "width:100%;color:#e05c5c;font-size:12px;display:none;word-break:break-all";
+
     const thumbs = document.createElement("div");
     thumbs.className = "thumbs";
     const slots = state.results.get(m.key);
@@ -795,7 +858,7 @@ function renderResults(moves) {
       t.append(c, st);
       thumbs.append(t);
     }
-    block.append(h3, player, thumbs);
+    block.append(h3, player, thumbs, errLine);
     wrap.append(block);
   }
 }
@@ -814,6 +877,16 @@ function renderThumb(move, index) {
   t.title = slot.error || "";
   const lbl = t.querySelector(".st span");
   lbl.textContent = slot.status === "running" ? "…" : slot.status === "error" ? "✕" : `${index + 1}`;
+  // §55.4: ✕タップでエラー全文（モバイル）
+  lbl.style.cursor = slot.status === "error" ? "pointer" : "";
+  lbl.onclick = slot.status === "error" ? () => alert(slot.error || "エラー") : null;
+  // ムーブ内の最初のエラーを赤字で表示
+  const errLine = block.querySelector(".errLine");
+  if (errLine) {
+    const firstErr = state.results.get(move.key).find((s) => s.status === "error" && s.error);
+    errLine.textContent = firstErr ? `⚠ ${firstErr.error}` : "";
+    errLine.style.display = firstErr ? "block" : "none";
+  }
 }
 
 // プレイヤー描画ループ（全ムーブ共通の rAF 1本）
