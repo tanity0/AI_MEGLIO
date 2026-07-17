@@ -1363,7 +1363,24 @@ function renderResults(moves) {
     gifBtn.className = "gifBtn";
     gifBtn.textContent = "GIF保存";
     gifBtn.addEventListener("click", () => downloadMoveGif(m));
-    h3.append(cntSel, gifBtn);
+    // §66: このムーブの生成結果を削除
+    const delBtn = document.createElement("button");
+    delBtn.className = "delBtn";
+    delBtn.textContent = "🗑";
+    delBtn.title = "このムーブの生成結果を削除（ステップ2のカードもOFFになります）";
+    delBtn.addEventListener("click", () => {
+      const slots = state.results.get(m.key);
+      if (state.running || !slots || slots.some((s) => s.status === "running")) return;
+      if (!confirm(`「${m.label}」の生成結果を削除しますか？\n（ステップ2のカードもOFFになります。再度作るにはONにして生成してください）`)) return;
+      state.results.delete(m.key);
+      m.on = false;
+      const withResults = MOVES.filter((mm) => state.results.has(mm.key));
+      renderResults(withResults);
+      for (const mm of withResults) state.results.get(mm.key).forEach((_, i) => renderThumb(mm, i));
+      renderMoveCards();
+      updateExportState();
+    });
+    h3.append(cntSel, gifBtn, delBtn);
 
     const player = document.createElement("div");
     player.className = "player";
