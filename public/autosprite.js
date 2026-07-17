@@ -280,6 +280,14 @@ function buildDirectPrompt(payload) {
     lines.push(`Arrange all ${count} frames in a single horizontal row, evenly spaced, with clear gaps between frames so the characters never touch each other.`);
     lines.push(...directPhaseLines(preset, count));
     lines.push("All frames share the same ground line (feet baseline) and the same scale.");
+    // §60: ムーブ単位の修正指示つき再生成（Image 2 = 前回のストリップ）
+    if (payload.current) {
+      lines.push("Image 2 is the previous attempt of this exact animation strip. Keep the same frame count, layout, poses and style.");
+      if (payload.instruction) lines.push(`Change ONLY this across all frames: ${payload.instruction}. Keep everything else identical to Image 2.`);
+      else lines.push("Redraw it more cleanly while keeping the same poses.");
+    } else if (payload.instruction) {
+      lines.push(`Additional request: ${payload.instruction}`);
+    }
   } else {
     lines.push(`Create a single pixel art animation frame of the character in the reference image: frame ${index + 1} of ${count} of ${moveDesc}.`);
     const phase = directPhaseLines(preset, count)[index];
@@ -665,12 +673,13 @@ function baseGridString() {
   return pixelsToGridString(b.pixels, b.width, b.height, b.palette.length);
 }
 
-function buildJobBody(move, index, total, regen) {
+function buildJobBody(move, index, total, regen, fixText) {
   const b = state.base;
   const grid = baseGridString();
   const mf = { preset: move.preset, index, total, variant: 0 };
   if (move.preset === "custom") mf.customText = move.customText.trim().slice(0, 500);
-  if (regen) mf.instruction = "前回と違うポーズ解釈で描き直してください";
+  if (fixText) mf.instruction = fixText.slice(0, 300); // §60
+  else if (regen) mf.instruction = "前回と違うポーズ解釈で描き直してください";
   const desc = $("charDesc").value.trim();
   let instruction = `「${move.label}」モーションの第${index + 1}/${total}フレームを生成`;
   if (desc) instruction += `。キャラクター: ${desc}`;
@@ -691,14 +700,14 @@ function buildJobBody(move, index, total, regen) {
   };
 }
 
-async function runJob(move, index, regen = false) {
+async function runJob(move, index, regen = false, fixText = "") {
   const slots = state.results.get(move.key);
   const slot = slots[index];
   slot.status = "running";
   slot.error = null;
   renderThumb(move, index);
   try {
-    const body = buildJobBody(move, index, slots.length, regen);
+    const body = buildJobBody(move, index, slots.length, regen, fixText);
     const evt = await streamEdit(body, { signal: state.abortController?.signal });
     const nf = evt.patch?.newFrames?.[0];
     if (!nf || !Array.isArray(nf.rows)) throw new Error("フレームが返されませんでした");
@@ -922,12 +931,37 @@ function spritePayloadBase(move) {
 }
 
 // 1ムーブぶんを一括生成（ストリップ→分割）。失敗時は全コマ error
-async function runMoveStrip(move) {
+// §60: 現在のokコマを横並びストリップPNGに（ムーブ再生成の Image 2 用・白背景・コマ間ギャップ）
+function currentStripPng(move) {
+  const slots = state.results.get(move.key) || [];
+  const frames = slots.filter((s) => s.status === "ok").map((s) => s.pixels);
+  if (!frames.length) return null;
+  const b = state.base;
+  const sc = b.width > 64 ? 2 : 4;
+  const gap = 8 * sc;
+  const canvas = document.createElement("canvas");
+  canvas.width = frames.length * b.width * sc + gap * (frames.length + 1);
+  canvas.height = b.height * sc + gap * 2;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  frames.forEach((px, i) => {
+    drawPixels(ctx, px, b.width, b.height, b.palette, sc, gap + i * (b.width * sc + gap), gap);
+  });
+  return canvas.toDataURL("image/png");
+}
+
+async function runMoveStrip(move, opts = {}) {
   const slots = state.results.get(move.key);
+  // §60: 前回ストリップは running へ変える前に取得する（ok コマから合成するため）
+  const cur = opts.withCurrent ? currentStripPng(move) : null;
   slots.forEach((s, i) => { s.status = "running"; s.error = null; renderThumb(move, i); });
   try {
+    const payload = { ...spritePayloadBase(move), kind: "strip", count: slots.length };
+    if (opts.instruction) payload.instruction = opts.instruction.slice(0, 300);
+    if (cur) payload.current = cur;
     const image = await fetchSpriteFrameWithRetry(
-      { ...spritePayloadBase(move), kind: "strip", count: slots.length },
+      payload,
       (sec, n) => setMoveNote(move, `⏳ 無料枠のレート制限のため待機中… ${sec}秒後に自動再試行（${n}回目）`)
     );
     setMoveNote(move, "");
@@ -976,6 +1010,20 @@ async function regenSingleImage(move, index) {
   }
   renderThumb(move, index);
   updateExportState();
+}
+
+// §60: ムーブ単位の修正指示つき再生成（画像エンジン=ストリップごと・テキスト=フレーム順次）
+async function regenMove(move) {
+  const slots = state.results.get(move.key);
+  if (!slots || state.running || slots.some((s) => s.status === "running")) return;
+  state.abortController = null;
+  const instruction = (move.fixText || "").trim();
+  if (state.engine === "image") {
+    await runMoveStrip(move, { instruction, withCurrent: true });
+  } else {
+    for (let i = 0; i < slots.length; i++) await runJob(move, i, true, instruction);
+    updateExportState();
+  }
 }
 
 async function generateAll() {
@@ -1061,8 +1109,9 @@ function thumbScale() {
   return Math.max(1, Math.floor(64 / Math.max(b.width, b.height)));
 }
 function playerScale() {
+  // §60.2: ステップ1の変換プレビューと同じ大きさ（160px基準）
   const b = state.base;
-  return Math.max(1, Math.floor(128 / Math.max(b.width, b.height)));
+  return Math.max(1, Math.floor(160 / Math.max(b.width, b.height)));
 }
 
 function renderResults(moves) {
@@ -1135,7 +1184,22 @@ function renderResults(moves) {
       t.append(c, st);
       thumbs.append(t);
     }
-    block.append(h3, player, thumbs, errLine);
+    // §60: ムーブ単位の修正指示 + 再生成
+    const fixRow = document.createElement("div");
+    fixRow.style.cssText = "width:100%;display:flex;gap:8px;flex-wrap:wrap;align-items:center";
+    const fixInput = document.createElement("input");
+    fixInput.type = "text";
+    fixInput.maxLength = 300;
+    fixInput.placeholder = "このムーブへの修正指示（例: 腕をもっと大きく振る・もっと前傾で）";
+    fixInput.style.cssText = "flex:1;min-width:160px;background:#1d2029;color:#e6e8ef;border:1px solid #333849;border-radius:6px;padding:4px 8px;font-size:12px";
+    fixInput.value = m.fixText || "";
+    fixInput.addEventListener("input", () => { m.fixText = fixInput.value; });
+    const fixBtn = document.createElement("button");
+    fixBtn.textContent = "🔁 このムーブを再生成";
+    fixBtn.title = "現在のコマ（ストリップ）をAIに渡し、ポーズ構成は維持したまま指示の点だけ変えて描き直します（指示が空なら描き直しのみ）";
+    fixBtn.addEventListener("click", () => regenMove(m));
+    fixRow.append(fixInput, fixBtn);
+    block.append(h3, player, thumbs, errLine, fixRow);
     wrap.append(block);
   }
 }

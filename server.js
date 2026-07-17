@@ -2722,6 +2722,14 @@ function buildSpritePrompt(body) {
     lines.push(`Arrange all ${count} frames in a single horizontal row, evenly spaced, with clear gaps between frames so the characters never touch each other.`);
     lines.push(...spritePhaseLines(preset, count)); // §57.2
     lines.push("All frames share the same ground line (feet baseline) and the same scale.");
+    // §60: ムーブ単位の修正指示つき再生成（Image 2 = 前回のストリップ）
+    if (body.current) {
+      lines.push("Image 2 is the previous attempt of this exact animation strip. Keep the same frame count, layout, poses and style.");
+      if (body.instruction) lines.push(`Change ONLY this across all frames: ${body.instruction}. Keep everything else identical to Image 2.`);
+      else lines.push("Redraw it more cleanly while keeping the same poses.");
+    } else if (body.instruction) {
+      lines.push(`Additional request: ${body.instruction}`);
+    }
   } else {
     lines.push(`Create a single pixel art animation frame of the character in the reference image: frame ${index + 1} of ${count} of ${moveDesc}.`);
     const phase = spritePhaseLines(preset, count)[index];
