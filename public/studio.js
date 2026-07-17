@@ -298,12 +298,30 @@ function renderCompare() {
     c.height = Math.max(50, rect.height - 2);
   }
   const zoom = view.zoom;
-  // ソース側
+  // ソース側（§59.5: 多フレーム時はアクティブフレームの領域だけを切り出して表示。
+  // 右の変換結果が単フレーム表示なので、左も同じフレームだけの方が比較しやすい）
   {
     const ctx = sc.getContext("2d");
     ctx.imageSmoothingEnabled = zoom < 1;
     ctx.clearRect(0, 0, sc.width, sc.height);
-    ctx.drawImage(srcBitmapCanvas, -view.panX * zoom, -view.panY * zoom, srcData.w * zoom, srcData.h * zoom);
+    const boxes = currentBoxes();
+    const box = boxes && boxes[activeFrame];
+    if (box) {
+      const M = 4; // 見切れ防止の余白（元px）
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(
+        (box.x0 - M - view.panX) * zoom,
+        (box.y0 - M - view.panY) * zoom,
+        (box.x1 - box.x0 + 1 + M * 2) * zoom,
+        (box.y1 - box.y0 + 1 + M * 2) * zoom
+      );
+      ctx.clip();
+      ctx.drawImage(srcBitmapCanvas, -view.panX * zoom, -view.panY * zoom, srcData.w * zoom, srcData.h * zoom);
+      ctx.restore();
+    } else {
+      ctx.drawImage(srcBitmapCanvas, -view.panX * zoom, -view.panY * zoom, srcData.w * zoom, srcData.h * zoom);
+    }
   }
   // 結果側（1セル = cs 元px として同倍率で描画）
   {
@@ -577,8 +595,20 @@ function switchFrame(i) {
   // 新フレームのつまみを knobs（アクティブ作業セット）へ読み込み
   const pf = frameParams[i] || {};
   for (const k of PER_FRAME_KEYS) if (pf[k] !== undefined) knobs[k] = pf[k];
+  focusActiveFrame(); // §59.5: 切替時にそのフレームへ視点を寄せる
   syncKnobUi();
   scheduleConvert();
+}
+
+// §59.5: アクティブフレームの領域をソース側プレビューの中央に持ってくる
+function focusActiveFrame() {
+  const boxes = currentBoxes();
+  const box = boxes && boxes[activeFrame];
+  if (!box) return;
+  const sc = $("studioSrcCanvas");
+  const w = sc.width || 400, h = sc.height || 300;
+  view.panX = (box.x0 + box.x1 + 1) / 2 - w / (2 * view.zoom);
+  view.panY = (box.y0 + box.y1 + 1) / 2 - h / (2 * view.zoom);
 }
 
 // ---------------------------------------------------------------------------
