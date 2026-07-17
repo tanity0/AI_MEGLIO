@@ -1185,7 +1185,11 @@ async function main() {
   if (quickLink) {
     quickLink.addEventListener("click", (e) => {
       const p = store.state.project;
-      const src = p.baseFrame || p.frames[0]?.pixels;
+      // §58.6: ベースは「現在表示中のフレーム（編集後）」を最優先。baseFrame は取り込み時の
+      // 原本でドット編集では更新されないため、これを先に使うと編集前の絵が渡ってしまう。
+      const cur = p.frames[store.state.currentFrame]?.pixels || p.frames[0]?.pixels;
+      const curHas = cur && Array.prototype.some.call(cur, (v) => v !== 0);
+      const src = curHas ? cur : (p.baseFrame || p.frames[0]?.pixels);
       if (!src || !Array.prototype.some.call(src, (v) => v !== 0)) return;
       const payload = {
         width: p.width,

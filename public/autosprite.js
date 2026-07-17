@@ -516,14 +516,12 @@ function receiveEditorHandoff() {
   state.base = { width: p.width, height: p.height, pixels: Uint8Array.from(p.basePixels), palette: p.palette };
   state.results.clear();
   $("results").innerHTML = "";
-  // 参照画像: 元画像があればそれを（再変換つまみも使えるように sourceImageData も復元）、
-  // 無ければエディタのドット絵そのものを拡大して参照にする
+  // §58.6: 参照画像は「編集後のドット絵」を使う（sourceImage=元写真で上書きすると、
+  // エディタで消した/直した箇所が生成時に元へ戻ってしまう）。sourceImage は
+  // 再変換つまみ用に sourceImageData として復元だけしておく。
   state.referencePng = pixelsToPngDataUrl(state.base.pixels, p.width, p.height, p.palette, p.width > 64 ? 4 : 8);
   if (p.sourceImage) {
-    dataUrlToImageData(p.sourceImage).then((img) => {
-      sourceImageData = img;
-      state.referencePng = buildReferencePng();
-    }).catch(() => {});
+    dataUrlToImageData(p.sourceImage).then((img) => { sourceImageData = img; }).catch(() => {});
   }
   renderBasePreview();
   $("baseInfo").textContent += "（エディタから取り込み）";
