@@ -1258,4 +1258,12 @@ async function main() {
   window.aiMeglio = { store, openStudio, studioView: getStudioView };
 }
 
+// §61: スマホ長押し対策 — キャンバス/画像の長押しメニューとドラッグ開始を抑止
+document.addEventListener("contextmenu", (e) => {
+  if (e.target instanceof HTMLCanvasElement) e.preventDefault();
+});
+document.addEventListener("dragstart", (e) => {
+  if (e.target instanceof HTMLCanvasElement || e.target instanceof HTMLImageElement) e.preventDefault();
+});
+
 document.addEventListener("DOMContentLoaded", main);

@@ -1719,3 +1719,38 @@ body.mc-gallery-open #timelineBar { position: relative; z-index: 600; }
     padding: 8px 14px;
   }
 }
+
+
+/* ---------- §61: スマホ長押し対策とマジックオプションのフローティング ---------- */
+/* 長押しでのテキスト選択を全域で抑止（入力欄だけ許可） */
+body {
+  -webkit-user-select: none;
+  user-select: none;
+}
+input, textarea, [contenteditable="true"] {
+  -webkit-user-select: text;
+  user-select: text;
+}
+/* 長押しの画像メニュー・ドラッグ開始を抑止（キャンバス/画像全般） */
+canvas, img {
+  -webkit-touch-callout: none;
+  -webkit-user-drag: none;
+  user-select: none;
+}
+/* §61: スマホ時のマジック選択オプション（しきい値バー等）のフローティング表示。
+   モバイルツールバー（下部）に被らない位置に固定。 */
+#magicFloatWrap {
+  position: fixed;
+  left: 8px;
+  right: 8px;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 92px);
+  z-index: 650;
+  background: var(--bg-1, #1d2029);
+  border: 1px solid var(--border, #333849);
+  border-radius: 10px;
+  padding: 8px 10px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+  touch-action: manipulation;
+}
+#magicFloatWrap .magic-row { margin: 0; }
+#magicFloatWrap[hidden] { display: none; }

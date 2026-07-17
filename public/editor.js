@@ -74,6 +74,29 @@ export function initEditor(store, toast) {
   const magicModeButtons = Array.from(document.querySelectorAll(".magic-mode-btn"));
   const magicGrowBtn = document.getElementById("magicGrowBtn"); // §51.6
   const magicShrinkBtn = document.getElementById("magicShrinkBtn"); // §51.6
+  // §61: スマホではマジックオプション（しきい値バー等）を左ドロワーの外へフローティング表示
+  // （ドロワーを閉じたままキャンバス操作しながらしきい値を触れるように）。
+  // DOMノードごと移動するので既存のイベント結線はそのまま生きる。
+  const MAGIC_MOBILE_MQ = window.matchMedia("(max-width: 820px)"); // mobile.js と同一クエリ
+  const magicHome = magicOptionsEl.parentElement;
+  let magicFloatWrap = null;
+  function placeMagicOptions() {
+    const active = store.state.tool === "magic";
+    magicOptionsEl.hidden = !active;
+    if (active && MAGIC_MOBILE_MQ.matches) {
+      if (!magicFloatWrap) {
+        magicFloatWrap = document.createElement("div");
+        magicFloatWrap.id = "magicFloatWrap";
+        document.body.appendChild(magicFloatWrap);
+      }
+      if (magicOptionsEl.parentElement !== magicFloatWrap) magicFloatWrap.appendChild(magicOptionsEl);
+      magicFloatWrap.hidden = false;
+    } else {
+      if (magicFloatWrap) magicFloatWrap.hidden = true;
+      if (magicOptionsEl.parentElement !== magicHome) magicHome.appendChild(magicOptionsEl);
+    }
+  }
+  MAGIC_MOBILE_MQ.addEventListener?.("change", () => placeMagicOptions());
 
   // §31.2: ブラシサイズ（UIの初期状態が無ければ既定1px）
   if (!BRUSH_SIZES.includes(store.state.brushSize)) store.state.brushSize = 1;
@@ -1978,7 +2001,12 @@ export function initEditor(store, toast) {
     store.notify();
   }
   toolButtons.forEach((btn) => {
-    btn.addEventListener("click", () => switchTool(btn.dataset.tool));
+    // §61: data-action 系（選択解除など）の補助ボタンはツール切替の対象外
+    btn.addEventListener("click", () => { if (btn.dataset.tool) switchTool(btn.dataset.tool); });
+  });
+  // §61: 選択解除の外出しボタン（ツールパネル/モバイルツールバー）→ 既存の選択解除と同じ動作
+  document.querySelectorAll('[data-action="deselect"]').forEach((btn) => {
+    btn.addEventListener("click", () => clearSelectionBtn.click());
   });
   window.addEventListener("keydown", (ev) => {
     const tag = document.activeElement?.tagName;
@@ -2380,7 +2408,7 @@ export function initEditor(store, toast) {
     toolButtons.forEach((btn) => btn.classList.toggle("is-active", btn.dataset.tool === store.state.tool));
     brushSizeButtons.forEach((btn) => btn.classList.toggle("is-active", Number(btn.dataset.size) === store.state.brushSize));
     document.getElementById("selMoveBtn")?.classList.toggle("is-active", !!floating); // §32
-    magicOptionsEl.hidden = store.state.tool !== "magic"; // §51: マジック選択ツール選択時のみオプション表示
+    placeMagicOptions(); // §51/§61: マジック選択ツール選択時のみオプション表示（スマホはフローティング）
     // §51: 範囲ロックはマスク選択中は disable（rect のみ対応）
     lockSelectionBtn.disabled = !!(sel && sel.mask);
     // §51.5: 選択が無いときはクリアボタンを disable

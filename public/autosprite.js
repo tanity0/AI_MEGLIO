@@ -1511,6 +1511,14 @@ function init() {
   $("dlProjectBtn").addEventListener("click", exportProject);
   $("openInEditorBtn").addEventListener("click", openInEditor); // §58
 
+  // §61: スマホ長押し対策（キャンバスの長押しメニュー・ドラッグ抑止）
+  document.addEventListener("contextmenu", (e) => {
+    if (e.target instanceof HTMLCanvasElement) e.preventDefault();
+  });
+  document.addEventListener("dragstart", (e) => {
+    if (e.target instanceof HTMLCanvasElement || e.target instanceof HTMLImageElement) e.preventDefault();
+  });
+
   requestAnimationFrame(animLoop);
   receiveEditorHandoff(); // §58.2
 

@@ -18,6 +18,11 @@
   --err: #e05c5c;
 }
 * { box-sizing: border-box; }
+/* §61: スマホ長押し対策（テキスト選択・画像メニュー・ドラッグの抑止） */
+body { -webkit-user-select: none; user-select: none; }
+input, textarea, select { -webkit-user-select: text; user-select: text; }
+canvas, img { -webkit-touch-callout: none; -webkit-user-drag: none; }
+button, select, label { touch-action: manipulation; }
 html, body { margin: 0; padding: 0; }
 body {
   background: var(--bg);
