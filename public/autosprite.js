@@ -111,6 +111,7 @@ const CONCURRENCY = 2; // §52.3: CLIバックエンド配慮（§15 と同じ�
 const state = {
   base: null,          // { width, height, pixels: Uint8Array, palette: [hex...] }
   results: new Map(),  // moveKey -> [{ status, pixels, error }]
+  prevResults: new Map(), // §67.3: 破壊的操作の直前スナップショット（ムーブ単位・1世代）
   running: false,
   abortController: null,
   done: 0,
@@ -264,7 +265,7 @@ function directPhaseLines(preset, count) {
   const pick = (arr, i) => arr[Math.min(arr.length - 1, Math.floor((i * arr.length) / count))];
   const phases = {
     walk: ["left foot forward, contact with ground, body slightly low", "passing pose, legs together under the body, body highest", "right foot forward, contact with ground, body slightly low", "passing pose, legs together, body highest"],
-    run: ["left foot contact, deep forward lean", "push-off, both feet airborne, stride fully extended", "right foot contact, deep forward lean", "push-off, both feet airborne"],
+    run: ["contact: left foot planted under the hips with the knee bent to absorb impact, right leg trailing behind with the knee folded and heel kicked up toward the hip, torso leaning forward, right arm swinging forward", "airborne: both feet off the ground, left leg extended back after push-off, right thigh driving forward and up with the knee sharply bent and shin folded under, left arm swinging forward", "contact: right foot planted under the hips with the knee bent to absorb impact, left leg trailing behind with the knee folded and heel kicked up toward the hip, left arm swinging forward", "airborne: both feet off the ground, right leg extended back after push-off, left thigh driving forward and up with the knee sharply bent, right arm swinging forward"], // §68
     attack: ["wind-up: weapon/arm pulled back, weight on back foot", "strike: maximum forward reach, widest silhouette", "follow-through: motion settling back toward stance"],
     idle: ["neutral stance, chest relaxed (exhale)", "chest slightly raised, head up ~1px (inhale)", "neutral stance (exhale)", "chest slightly lowered (deep exhale)"],
     jump: ["crouch: knees bent, body compressed low", "launch: body fully extended upward, feet leaving ground", "apex: airborne, legs tucked, highest point", "landing: knees bending to absorb impact"],
@@ -288,6 +289,8 @@ function buildDirectPrompt(payload) {
       lines.push(...directPhaseLines(preset, count));
     }
     lines.push("All frames share the same ground line (feet baseline) and the same scale.");
+    // §68: 走りは「毎コマ同じ大開脚」への退化が多いので明示的に禁止する
+    if (preset === "run") lines.push("Make each frame clearly different: the legs alternate left/right through the cycle, knees always stay bent, and the trailing heel kicks up toward the hip. Never draw the same wide-legged splits pose with both legs straight in every frame.");
     // §60: ムーブ単位の修正指示つき再生成（Image 2 = 前回のストリップ）
     if (payload.current) {
       // §64: コマ数変更後の🔁 — 前回ストリップのコマ数が要求と異なる場合は「参照として使い、新コマ数へ配分」
@@ -450,6 +453,7 @@ function reconvert() {
     setLocked("step2", false);
     setLocked("step3", false);
     setLocked("step4", true);
+    scheduleSessionSave(); // §67.1
   } catch (err) {
     state.base = null;
     $("basePreviewWrap").style.display = "flex";
@@ -732,6 +736,7 @@ async function importStripForMove(move, file) {
     const widths = boxes.map((b) => b.x1 - b.x0 + 1).sort((a, b) => a - b);
     const fused = widths[widths.length - 1] >= widths[widths.length >> 1] * 1.6;
     if (fused && move.frames > boxes.length) n = move.frames;
+    snapshotMove(move); // §67.3
     move.frames = n;
     move.on = true;
     const frames = stripToFrames(strip, n);
@@ -1182,6 +1187,7 @@ async function regenSingleImage(move, index) {
   // §57.3: 修正指示（任意）。キャンセルで中止。前回のコマがあれば画像も渡して「それ以外は維持」
   const instruction = window.prompt("このコマへの修正指示（任意。例: 左足を前に / 空欄=描き直しだけ）", "");
   if (instruction === null) return;
+  snapshotMove(move); // §67.3
   slot.status = "running";
   slot.error = null;
   renderThumb(move, index);
@@ -1219,6 +1225,7 @@ async function regenMove(move) {
   const slots = state.results.get(move.key);
   if (!slots || state.running || slots.some((s) => s.status === "running")) return;
   state.abortController = null;
+  snapshotMove(move); // §67.3
   const instruction = (move.fixText || "").trim();
   if (state.engine === "image") {
     await runMoveStrip(move, { instruction, withCurrent: true });
@@ -1232,7 +1239,13 @@ async function generateAll() {
   const moves = activeMoves();
   if (!moves.length) { alert("ムーブを1つ以上選択してください（カスタムはテキスト必須）"); return; }
   if (!state.base) return;
-  state.results.clear();
+  // §67.2: 生成済みムーブの上書き確認（OFFムーブの結果は消さず維持する）
+  const overwriting = moves.filter((m) => (state.results.get(m.key) || []).some((s) => s.status === "ok"));
+  if (overwriting.length) {
+    const names = overwriting.map((m) => m.label).join("・");
+    if (!confirm(`生成済みの${overwriting.length}ムーブ（${names}）を作り直します。よろしいですか？\n（1ムーブだけ直したいときは、各ブロックの「🔁 このムーブを再生成」が便利です）`)) return;
+    for (const m of overwriting) snapshotMove(m); // §67.3: ↩で戻せるように
+  }
   for (const m of moves) {
     state.results.set(m.key, Array.from({ length: m.frames }, () => ({ status: "pending", pixels: null, error: null })));
   }
@@ -1243,7 +1256,12 @@ async function generateAll() {
   } else {
     for (const m of moves) for (let i = 0; i < m.frames; i++) jobs.push({ run: () => runJob(m, i), move: m, index: i });
   }
-  renderResults(moves);
+  // §67.2: OFFムーブの既存結果も表示に残す（MOVES順）
+  const withResults = MOVES.filter((mm) => state.results.has(mm.key));
+  renderResults(withResults);
+  for (const mm of withResults) {
+    if (!moves.includes(mm)) state.results.get(mm.key).forEach((_, i) => renderThumb(mm, i));
+  }
   state.running = true;
   state.abortController = new AbortController();
   state.done = 0;
@@ -1321,6 +1339,7 @@ function setMoveFrameCount(move, n) {
   const slots = state.results.get(move.key);
   if (!slots || state.running || slots.some((s) => s.status === "running")) return;
   if (!Number.isInteger(n) || n < 2 || n > 8 || n === slots.length) return;
+  snapshotMove(move); // §67.3
   const grew = n > slots.length;
   if (grew) while (slots.length < n) slots.push({ status: "pending", pixels: null, error: null });
   else slots.length = n;
@@ -1449,7 +1468,26 @@ function renderResults(moves) {
     fixBtn.textContent = "🔁 このムーブを再生成";
     fixBtn.title = "現在のコマ（ストリップ）をAIに渡し、ポーズ構成は維持したまま指示の点だけ変えて描き直します（指示が空なら描き直しのみ）";
     fixBtn.addEventListener("click", () => regenMove(m));
-    fixRow.append(fixInput, fixBtn);
+    // §67.3: 直前スナップショットとの入れ替え（もう一度押せば戻る）
+    const undoBtn = document.createElement("button");
+    undoBtn.className = "undoBtn";
+    undoBtn.textContent = "↩ 直前と入れ替え";
+    undoBtn.title = "再生成・↻・📥・コマ数変更の直前の結果と入れ替えます。もう一度押すと戻せます";
+    undoBtn.style.display = state.prevResults.has(m.key) ? "" : "none";
+    undoBtn.addEventListener("click", () => {
+      const cur = state.results.get(m.key);
+      const prev = state.prevResults.get(m.key);
+      if (state.running || !cur || !prev || cur.some((s) => s.status === "running")) return;
+      state.prevResults.set(m.key, cur);
+      state.results.set(m.key, prev);
+      m.frames = prev.length;
+      const withResults = MOVES.filter((mm) => state.results.has(mm.key));
+      renderResults(withResults);
+      for (const mm of withResults) state.results.get(mm.key).forEach((_, i) => renderThumb(mm, i));
+      renderMoveCards();
+      updateExportState();
+    });
+    fixRow.append(fixInput, fixBtn, undoBtn);
     block.append(h3, player, thumbs, errLine, fixRow);
     wrap.append(block);
   }
@@ -1472,6 +1510,9 @@ function renderThumb(move, index) {
   // §55.4: ✕タップでエラー全文（モバイル）
   lbl.style.cursor = slot.status === "error" ? "pointer" : "";
   lbl.onclick = slot.status === "error" ? () => alert(slot.error || "エラー") : null;
+  // §67.3: スナップショットができていたら↩を出す（再生成の進行中に snapshot される）
+  const ub = block.querySelector(".undoBtn");
+  if (ub) ub.style.display = state.prevResults.has(move.key) ? "" : "none";
   // ムーブ内の最初のエラーを赤字で表示
   const errLine = block.querySelector(".errLine");
   if (errLine) {
@@ -1663,11 +1704,109 @@ function downloadMoveGif(move) {
   downloadBlob(new Blob([bytes], { type: "image/gif" }), `${safeName($("charName").value)}_${move.key}.gif`);
 }
 
+// §67.3: 破壊的操作（🔁・↻・📥・コマ数変更・一括生成の差し替え）前のスナップショット
+function snapshotMove(move) {
+  const slots = state.results.get(move.key);
+  if (!slots || !slots.some((s) => s.status === "ok")) return;
+  state.prevResults.set(move.key, slots.map((s) => ({ ...s })));
+}
+
+// §67.1: セッション自動保存（localStorage・debounce）。グリッド文字列で圧縮保存
+const SESSION_KEY = "autosprite.session";
+let sessionSaveTimer = null;
+function scheduleSessionSave() {
+  clearTimeout(sessionSaveTimer);
+  sessionSaveTimer = setTimeout(saveSession, 800);
+}
+function saveSession() {
+  if (!state.base) return;
+  try {
+    const b = state.base;
+    const enc = (px) => pixelsToGridString(px, b.width, b.height, b.palette.length);
+    localStorage.setItem(SESSION_KEY, JSON.stringify({
+      v: 1,
+      base: { width: b.width, height: b.height, palette: b.palette, grid: enc(b.pixels) },
+      referencePng: state.referencePng || null,
+      charName: $("charName").value,
+      charDesc: $("charDesc").value,
+      fps: $("fpsSel").value,
+      moves: MOVES.map((m) => ({ key: m.key, frames: m.frames, on: m.on, fixText: m.fixText || "", customText: m.key === "custom" ? m.customText : undefined })),
+      results: [...state.results.entries()].map(([key, slots]) => ({
+        key,
+        slots: slots.map((s) => ({ ok: s.status === "ok" && !!s.pixels, grid: s.status === "ok" && s.pixels ? enc(s.pixels) : null })),
+      })),
+    }));
+  } catch (e) {
+    console.warn("セッション保存に失敗:", e);
+  }
+}
+// §67.1: 起動時の復元（⚡受け渡しが無いときのみ呼ばれる）
+function restoreSession() {
+  let d;
+  try {
+    const raw = localStorage.getItem(SESSION_KEY);
+    if (!raw) return false;
+    d = JSON.parse(raw);
+    if (!d || d.v !== 1 || !d.base || !d.base.grid) return false;
+  } catch { return false; }
+  try {
+    const { width, height, palette } = d.base;
+    state.base = { width, height, palette, pixels: pixelsFromRows(d.base.grid.split("\n"), width, height, palette.length) };
+    state.referencePng = d.referencePng || pixelsToPngDataUrl(state.base.pixels, width, height, palette, width > 64 ? 4 : 8);
+    if (typeof d.charName === "string") $("charName").value = d.charName;
+    if (typeof d.charDesc === "string") $("charDesc").value = d.charDesc;
+    if (d.fps && [...$("fpsSel").options].some((o) => o.value === d.fps)) $("fpsSel").value = d.fps;
+    for (const sm of d.moves || []) {
+      const m = MOVES.find((x) => x.key === sm.key);
+      if (!m) continue;
+      if (Number.isInteger(sm.frames) && sm.frames >= 2 && sm.frames <= 8) m.frames = sm.frames;
+      m.on = !!sm.on;
+      m.fixText = sm.fixText || "";
+      if (sm.customText !== undefined) m.customText = sm.customText;
+    }
+    for (const rm of d.results || []) {
+      if (!MOVES.some((x) => x.key === rm.key) || !Array.isArray(rm.slots) || !rm.slots.length) continue;
+      state.results.set(rm.key, rm.slots.map((sl) => sl.ok && sl.grid
+        ? { status: "ok", pixels: pixelsFromRows(sl.grid.split("\n"), width, height, palette.length), error: null }
+        : { status: "error", pixels: null, error: "保存時に未完成でした（↻で生成できます）" }));
+    }
+    renderBasePreview();
+    $("baseInfo").textContent += "（前回の続きを復元）";
+    setLocked("step2", false);
+    setLocked("step3", false);
+    renderMoveCards();
+    const withResults = MOVES.filter((mm) => state.results.has(mm.key));
+    if (withResults.length) {
+      renderResults(withResults);
+      for (const mm of withResults) state.results.get(mm.key).forEach((_, i) => renderThumb(mm, i));
+    }
+    updateExportState();
+    return true;
+  } catch (e) {
+    console.warn("セッション復元に失敗:", e);
+    return false;
+  }
+}
+
 function updateExportState() {
   const rows = collectSheet();
   const has = rows.length > 0;
   setLocked("step4", !has);
   if (has) renderSheetPreview();
+  // §67.4: 一部コマが未生成/エラーのムーブを警告（書き出しには ok コマしか載らない）
+  const warnEl = $("exportWarn");
+  if (warnEl) {
+    const warns = [];
+    for (const m of MOVES) {
+      const slots = state.results.get(m.key);
+      if (!slots) continue;
+      const ok = slots.filter((s) => s.status === "ok").length;
+      if (ok > 0 && ok < slots.length) warns.push(`${m.label} ${ok}/${slots.length}コマ`);
+    }
+    warnEl.textContent = warns.length ? `⚠ 未完成のコマは書き出しに載りません: ${warns.join("・")}（各コマの↻で生成できます）` : "";
+    warnEl.style.display = warns.length ? "block" : "none";
+  }
+  scheduleSessionSave(); // §67.1
 }
 
 function renderSheetPreview() {
@@ -1795,6 +1934,11 @@ function init() {
 
   requestAnimationFrame(animLoop);
   receiveEditorHandoff(); // §58.2
+  if (!state.base) restoreSession(); // §67.1: ⚡受け渡しが無ければ前回の続きを復元
+  // §67.1: 入力欄の変更も保存対象（結果の更新は updateExportState 経由で保存される）
+  $("charName").addEventListener("input", scheduleSessionSave);
+  $("charDesc").addEventListener("input", scheduleSessionSave);
+  $("fpsSel").addEventListener("change", scheduleSessionSave);
 
   // §58.4: エディタからのライブ同期を受信（同一ブラウザの別タブ）。
   // ベースとキャンバス寸法が一致するときだけ反映（無関係なプロジェクトは無視）。

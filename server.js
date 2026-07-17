@@ -2703,7 +2703,7 @@ function spritePhaseLines(preset, count) {
   const pick = (arr, i) => arr[Math.min(arr.length - 1, Math.floor((i * arr.length) / count))];
   const phases = {
     walk: ["left foot forward, contact with ground, body slightly low", "passing pose, legs together under the body, body highest", "right foot forward, contact with ground, body slightly low", "passing pose, legs together, body highest"],
-    run: ["left foot contact, deep forward lean", "push-off, both feet airborne, stride fully extended", "right foot contact, deep forward lean", "push-off, both feet airborne"],
+    run: ["contact: left foot planted under the hips with the knee bent to absorb impact, right leg trailing behind with the knee folded and heel kicked up toward the hip, torso leaning forward, right arm swinging forward", "airborne: both feet off the ground, left leg extended back after push-off, right thigh driving forward and up with the knee sharply bent and shin folded under, left arm swinging forward", "contact: right foot planted under the hips with the knee bent to absorb impact, left leg trailing behind with the knee folded and heel kicked up toward the hip, left arm swinging forward", "airborne: both feet off the ground, right leg extended back after push-off, left thigh driving forward and up with the knee sharply bent, right arm swinging forward"], // §68
     attack: ["wind-up: weapon/arm pulled back, weight on back foot", "strike: maximum forward reach, widest silhouette", "follow-through: motion settling back toward stance"],
     idle: ["neutral stance, chest relaxed (exhale)", "chest slightly raised, head up ~1px (inhale)", "neutral stance (exhale)", "chest slightly lowered (deep exhale)"],
     jump: ["crouch: knees bent, body compressed low", "launch: body fully extended upward, feet leaving ground", "apex: airborne, legs tucked, highest point", "landing: knees bending to absorb impact"],
@@ -2728,6 +2728,8 @@ function buildSpritePrompt(body) {
       lines.push(...spritePhaseLines(preset, count)); // §57.2
     }
     lines.push("All frames share the same ground line (feet baseline) and the same scale.");
+    // §68: 走りは「毎コマ同じ大開脚」への退化が多いので明示的に禁止する
+    if (preset === "run") lines.push("Make each frame clearly different: the legs alternate left/right through the cycle, knees always stay bent, and the trailing heel kicks up toward the hip. Never draw the same wide-legged splits pose with both legs straight in every frame.");
     // §60: ムーブ単位の修正指示つき再生成（Image 2 = 前回のストリップ）
     if (body.current) {
       // §64: コマ数変更後の🔁 — 前回ストリップのコマ数が要求と異なる場合は「参照として使い、新コマ数へ配分」
