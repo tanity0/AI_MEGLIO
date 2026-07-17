@@ -113,7 +113,8 @@ button.primary:hover:not(:disabled) { filter: brightness(1.1); }
 .thumb canvas { image-rendering: pixelated; border: 1px solid var(--border); border-radius: 4px; }
 .thumb.ok canvas { border-color: var(--ok); }
 .thumb.error canvas { border-color: var(--err); }
-.thumb.running canvas { border-color: var(--accent); }
+.thumb.running canvas { border-color: var(--accent); animation: thumbPulse 1.2s ease-in-out infinite; }
+@keyframes thumbPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
 .thumb .st { font-size: 11px; color: var(--dim); display: flex; align-items: center; gap: 4px; }
 .thumb button { padding: 0 6px; font-size: 11px; line-height: 18px; }
 #exportBtns { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }

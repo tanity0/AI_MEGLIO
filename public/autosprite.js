@@ -1152,12 +1152,30 @@ function currentStripPng(move) {
   return canvas.toDataURL("image/png");
 }
 
+// §69: 生成中の経過表示（毎秒更新）。429待機カウントダウンは wait() で同枠に優先表示
+function startMoveTicker(move, label) {
+  const started = Date.now();
+  let waitMsg = "";
+  const render = () => {
+    const sec = Math.round((Date.now() - started) / 1000);
+    const slow = state.engine === "image" ? "。画像生成は1〜2分かかることがあります" : "";
+    setMoveNote(move, waitMsg || `🎨 ${label}を生成中…（経過 ${sec}秒${slow}）`);
+  };
+  render();
+  const t = setInterval(render, 1000);
+  return {
+    wait(msg) { waitMsg = msg; render(); },
+    stop() { clearInterval(t); },
+  };
+}
+
 async function runMoveStrip(move, opts = {}) {
   const slots = state.results.get(move.key);
   // §60: 前回ストリップは running へ変える前に取得する（ok コマから合成するため）
   const cur = opts.withCurrent ? currentStripPng(move) : null;
   const curCount = cur ? slots.filter((s) => s.status === "ok").length : 0; // §64
   slots.forEach((s, i) => { s.status = "running"; s.error = null; renderThumb(move, i); });
+  const ticker = startMoveTicker(move, `「${move.label}」`); // §69
   try {
     const payload = { ...spritePayloadBase(move), kind: "strip", count: slots.length };
     const packPhases = phasesForCount(move.phases, slots.length); // §62
@@ -1167,12 +1185,14 @@ async function runMoveStrip(move, opts = {}) {
     if (cur && curCount && curCount !== slots.length) payload.currentCount = curCount; // §64: コマ数変更後の🔁
     const image = await fetchSpriteFrameWithRetry(
       payload,
-      (sec, n) => setMoveNote(move, `⏳ 無料枠のレート制限のため待機中… ${sec}秒後に自動再試行（${n}回目）`)
+      (sec, n) => ticker.wait(`⏳ 無料枠のレート制限のため待機中… ${sec}秒後に自動再試行（${n}回目）`)
     );
+    ticker.stop();
     setMoveNote(move, "");
     const frames = stripToFrames(await dataUrlToImageData(image), slots.length);
     frames.forEach((pixels, i) => { slots[i].pixels = pixels; slots[i].status = "ok"; });
   } catch (err) {
+    ticker.stop();
     const msg = err.name === "AbortError" ? "中断しました" : err.message;
     slots.forEach((s) => { if (s.status === "running") { s.status = "error"; s.error = msg; } });
   }
@@ -1191,6 +1211,7 @@ async function regenSingleImage(move, index) {
   slot.status = "running";
   slot.error = null;
   renderThumb(move, index);
+  const ticker = startMoveTicker(move, `コマ${index + 1}`); // §69
   try {
     const b = state.base;
     const payload = { ...spritePayloadBase(move), kind: "single", count: slots.length, index };
@@ -1200,8 +1221,9 @@ async function regenSingleImage(move, index) {
     if (slot.pixels) payload.current = pixelsToPngDataUrl(slot.pixels, b.width, b.height, b.palette, b.width > 64 ? 4 : 8);
     const image = await fetchSpriteFrameWithRetry(
       payload,
-      (sec, n) => setMoveNote(move, `⏳ 無料枠のレート制限のため待機中… ${sec}秒後に自動再試行（${n}回目）`)
+      (sec, n) => ticker.wait(`⏳ 無料枠のレート制限のため待機中… ${sec}秒後に自動再試行（${n}回目）`)
     );
+    ticker.stop();
     setMoveNote(move, "");
     const strip = await dataUrlToImageData(image);
     const bg = removeBackground(strip.data, strip.w, strip.h, { multiBg: true }); // §65
@@ -1213,9 +1235,11 @@ async function regenSingleImage(move, index) {
     slot.pixels = composeGrid(conv.framesPixels[0], conv.width, conv.height, buildSnapMap(conv.palette), baseCharMetrics());
     slot.status = "ok";
   } catch (err) {
+    ticker.stop(); // §69
     slot.status = "error";
     slot.error = err.name === "AbortError" ? "中断しました" : err.message;
   }
+  ticker.stop(); // §69: 成功経路（stripToFrames後）の停止も兼ねる
   renderThumb(move, index);
   updateExportState();
 }
@@ -1230,7 +1254,14 @@ async function regenMove(move) {
   if (state.engine === "image") {
     await runMoveStrip(move, { instruction, withCurrent: true });
   } else {
-    for (let i = 0; i < slots.length; i++) await runJob(move, i, true, instruction);
+    const ticker = startMoveTicker(move, `「${move.label}」`); // §69
+    try {
+      for (let i = 0; i < slots.length; i++) await runJob(move, i, true, instruction);
+    } finally {
+      ticker.stop();
+      if (slots.some((s) => s.status === "error")) renderThumb(move, 0); // エラー行を復元
+      else setMoveNote(move, "");
+    }
     updateExportState();
   }
 }
@@ -1239,6 +1270,11 @@ async function generateAll() {
   const moves = activeMoves();
   if (!moves.length) { alert("ムーブを1つ以上選択してください（カスタムはテキスト必須）"); return; }
   if (!state.base) return;
+  // §69: 進行中の🔁/↻がある間は一括生成を始めない（結果の競合防止）
+  if ([...state.results.values()].flat().some((s) => s.status === "running")) {
+    alert("生成中のムーブがあります。完了を待ってから実行してください");
+    return;
+  }
   // §67.2: 生成済みムーブの上書き確認（OFFムーブの結果は消さず維持する）
   const overwriting = moves.filter((m) => (state.results.get(m.key) || []).some((s) => s.status === "ok"));
   if (overwriting.length) {
@@ -1465,6 +1501,7 @@ function renderResults(moves) {
     fixInput.value = m.fixText || "";
     fixInput.addEventListener("input", () => { m.fixText = fixInput.value; });
     const fixBtn = document.createElement("button");
+    fixBtn.className = "fixBtn";
     fixBtn.textContent = "🔁 このムーブを再生成";
     fixBtn.title = "現在のコマ（ストリップ）をAIに渡し、ポーズ構成は維持したまま指示の点だけ変えて描き直します（指示が空なら描き直しのみ）";
     fixBtn.addEventListener("click", () => regenMove(m));
@@ -1513,6 +1550,9 @@ function renderThumb(move, index) {
   // §67.3: スナップショットができていたら↩を出す（再生成の進行中に snapshot される）
   const ub = block.querySelector(".undoBtn");
   if (ub) ub.style.display = state.prevResults.has(move.key) ? "" : "none";
+  // §69: 生成中は🔁を無効化（見た目でも「実行中」がわかるように）
+  const fb = block.querySelector(".fixBtn");
+  if (fb) fb.disabled = state.results.get(move.key).some((s) => s.status === "running");
   // ムーブ内の最初のエラーを赤字で表示
   const errLine = block.querySelector(".errLine");
   if (errLine) {
