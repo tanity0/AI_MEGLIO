@@ -103,6 +103,9 @@ const MOVES = [
   { key: "custom", preset: "custom", label: "カスタム", icon: "✨", frames: 4, on: false, customText: "" },
 ];
 const FRAME_CHOICES = [2, 3, 4, 5, 6, 8];
+// §62: ムーブパック（MOTION_PACK_FORMAT.md）
+const PACK_STORAGE = "autosprite.motionPack";
+const RESERVED_MOVE_KEYS = new Set(["idle", "walk", "run", "jump", "attack", "custom"]);
 const CONCURRENCY = 2; // §52.3: CLIバックエンド配慮（§15 と同じ理由）
 
 const state = {
@@ -278,7 +281,11 @@ function buildDirectPrompt(payload) {
   if (kind === "strip") {
     lines.push(`Create a pixel art sprite animation strip of the character in the reference image: exactly ${count} frames of ${moveDesc}.`);
     lines.push(`Arrange all ${count} frames in a single horizontal row, evenly spaced, with clear gaps between frames so the characters never touch each other.`);
-    lines.push(...directPhaseLines(preset, count));
+    if (Array.isArray(payload.phases) && payload.phases.length) {
+      payload.phases.slice(0, count).forEach((ph, i) => lines.push(`Frame ${i + 1}: ${ph}.`)); // §62
+    } else {
+      lines.push(...directPhaseLines(preset, count));
+    }
     lines.push("All frames share the same ground line (feet baseline) and the same scale.");
     // §60: ムーブ単位の修正指示つき再生成（Image 2 = 前回のストリップ）
     if (payload.current) {
@@ -290,7 +297,8 @@ function buildDirectPrompt(payload) {
     }
   } else {
     lines.push(`Create a single pixel art animation frame of the character in the reference image: frame ${index + 1} of ${count} of ${moveDesc}.`);
-    const phase = directPhaseLines(preset, count)[index];
+    const packPhase = Array.isArray(payload.phases) ? payload.phases[index] : null; // §62
+    const phase = packPhase ? `Frame ${index + 1}: ${packPhase}.` : directPhaseLines(preset, count)[index];
     if (phase) lines.push(`This frame's pose — ${phase}`);
     lines.push("Draw exactly one character, full body.");
     if (payload.current) {
@@ -596,7 +604,8 @@ function renderMoveCards() {
     fr.className = "frames";
     fr.append("フレーム数 ");
     const sel = document.createElement("select");
-    for (const n of FRAME_CHOICES) {
+    const choices = FRAME_CHOICES.includes(m.frames) ? FRAME_CHOICES : [...FRAME_CHOICES, m.frames].sort((a, b) => a - b);
+    for (const n of choices) {
       const o = document.createElement("option");
       o.value = String(n);
       o.textContent = String(n);
@@ -616,8 +625,9 @@ function renderMoveCards() {
       $("stripImportInput").click();
     });
     fr.append(imp);
+    if (m.pack) card.title = m.customText; // §62: パックはプロンプトをツールチップ表示
     card.append(top, fr);
-    if (m.preset === "custom") {
+    if (m.key === "custom") {
       const txt = document.createElement("input");
       txt.type = "text";
       txt.maxLength = 300;
@@ -628,6 +638,69 @@ function renderMoveCards() {
     }
     wrap.append(card);
   }
+}
+
+// §62: ムーブパックの検証（MOTION_PACK_FORMAT.md v1）。不正は日本語メッセージで throw
+function validateMotionPack(raw) {
+  if (!raw || raw.format !== "aimeglio-motion-pack") throw new Error('format が "aimeglio-motion-pack" ではありません');
+  if (raw.version !== 1) throw new Error("version は 1 のみ対応です");
+  if (typeof raw.name !== "string" || !raw.name.trim()) throw new Error("name（パック名）が必要です");
+  if (!Array.isArray(raw.moves) || raw.moves.length < 1 || raw.moves.length > 24) throw new Error("moves は1〜24個です");
+  const seen = new Set();
+  const moves = raw.moves.map((mv, i) => {
+    const at = `moves[${i}]`;
+    if (!mv || typeof mv !== "object") throw new Error(`${at} が不正です`);
+    if (typeof mv.key !== "string" || !/^[a-zA-Z0-9_]{1,24}$/.test(mv.key)) throw new Error(`${at}.key は半角英数字と_のみ（1〜24字）です`);
+    if (RESERVED_MOVE_KEYS.has(mv.key)) throw new Error(`${at}.key "${mv.key}" は予約名のため使えません`);
+    if (seen.has(mv.key)) throw new Error(`${at}.key "${mv.key}" が重複しています`);
+    seen.add(mv.key);
+    if (typeof mv.label !== "string" || !mv.label.trim()) throw new Error(`${at}.label が必要です`);
+    if (!Number.isInteger(mv.frames) || mv.frames < 2 || mv.frames > 8) throw new Error(`${at}.frames は2〜8です`);
+    if (typeof mv.prompt !== "string" || !mv.prompt.trim() || mv.prompt.length > 300) throw new Error(`${at}.prompt が必要です（〜300字）`);
+    if (mv.fps !== undefined && (!Number.isInteger(mv.fps) || mv.fps < 1 || mv.fps > 24)) throw new Error(`${at}.fps は1〜24です`);
+    if (mv.phases !== undefined && (!Array.isArray(mv.phases) || mv.phases.length > 12 || !mv.phases.every((x) => typeof x === "string" && x.length <= 200))) {
+      throw new Error(`${at}.phases が不正です（各〜200字・最大12）`);
+    }
+    if (mv.notes !== undefined && (typeof mv.notes !== "string" || mv.notes.length > 200)) throw new Error(`${at}.notes が不正です（〜200字）`);
+    return mv;
+  });
+  return { name: raw.name.trim(), moves };
+}
+
+function clearMotionPack() {
+  for (let i = MOVES.length - 1; i >= 0; i--) if (MOVES[i].pack) MOVES.splice(i, 1);
+  try { localStorage.removeItem(PACK_STORAGE); } catch {}
+  $("packInfo").textContent = "";
+  $("packClearBtn").hidden = true;
+  renderMoveCards();
+}
+
+function applyMotionPack(pack) {
+  for (let i = MOVES.length - 1; i >= 0; i--) if (MOVES[i].pack) MOVES.splice(i, 1);
+  const customIdx = MOVES.findIndex((m) => m.key === "custom");
+  const moves = pack.moves.map((mv) => ({
+    key: mv.key,
+    preset: "custom",
+    label: mv.label.trim(),
+    icon: (typeof mv.icon === "string" && mv.icon.trim()) ? mv.icon.trim() : "🎞",
+    frames: mv.frames,
+    fps: mv.fps,
+    loop: mv.loop !== false,
+    on: true,
+    customText: `${mv.prompt.trim()}${mv.notes ? `。禁止・補足: ${mv.notes.trim()}` : ""}`,
+    phases: Array.isArray(mv.phases) && mv.phases.length ? mv.phases.slice() : null,
+    pack: true,
+  }));
+  MOVES.splice(customIdx, 0, ...moves);
+  renderMoveCards();
+  $("packInfo").textContent = `📚 ${pack.name}（${moves.length}ムーブ）`;
+  $("packClearBtn").hidden = false;
+}
+
+// phases をコマ数へ配分（server.js spritePhaseLines と同じ pick 方式）
+function phasesForCount(phases, count) {
+  if (!phases || !phases.length) return null;
+  return Array.from({ length: count }, (_, i) => phases[Math.min(phases.length - 1, Math.floor((i * phases.length) / count))]);
 }
 
 function activeMoves() {
@@ -958,6 +1031,8 @@ async function runMoveStrip(move, opts = {}) {
   slots.forEach((s, i) => { s.status = "running"; s.error = null; renderThumb(move, i); });
   try {
     const payload = { ...spritePayloadBase(move), kind: "strip", count: slots.length };
+    const packPhases = phasesForCount(move.phases, slots.length); // §62
+    if (packPhases) payload.phases = packPhases;
     if (opts.instruction) payload.instruction = opts.instruction.slice(0, 300);
     if (cur) payload.current = cur;
     const image = await fetchSpriteFrameWithRetry(
@@ -988,6 +1063,8 @@ async function regenSingleImage(move, index) {
   try {
     const b = state.base;
     const payload = { ...spritePayloadBase(move), kind: "single", count: slots.length, index };
+    const packPhases = phasesForCount(move.phases, slots.length); // §62
+    if (packPhases) payload.phases = packPhases;
     if (instruction.trim()) payload.instruction = instruction.trim().slice(0, 300);
     if (slot.pixels) payload.current = pixelsToPngDataUrl(slot.pixels, b.width, b.height, b.palette, b.width > 64 ? 4 : 8);
     const image = await fetchSpriteFrameWithRetry(
@@ -1306,7 +1383,8 @@ function buildGenericAtlas(entries, canvas, scale, fps, charName) {
   const b = state.base;
   const animations = {};
   for (const e of entries) {
-    (animations[e.move] ||= { frames: [], fps, loop: true }).frames.push(e.name);
+    const mv = MOVES.find((m) => m.key === e.move); // §62: ムーブ別 fps/loop
+    (animations[e.move] ||= { frames: [], fps: mv?.fps || fps, loop: mv ? mv.loop !== false : true }).frames.push(e.name);
   }
   return JSON.stringify({
     meta: {
@@ -1361,7 +1439,8 @@ function buildGodotTres(entries, fps, charName) {
   lines.push("animations = [{");
   const anims = [...byMove.entries()].map(([move, ids]) => {
     const fr = ids.map((id) => `{\n"duration": 1.0,\n"texture": SubResource("AtlasTexture_${id}")\n}`).join(", ");
-    return `"frames": [${fr}],\n"loop": true,\n"name": &"${move}",\n"speed": ${fps}.0`;
+    const mv = MOVES.find((m) => m.key === move); // §62
+    return `"frames": [${fr}],\n"loop": ${mv ? mv.loop !== false : true},\n"name": &"${move}",\n"speed": ${(mv?.fps || fps)}.0`;
   });
   lines.push(anims.join("\n}, {\n"));
   lines.push("}]");
@@ -1376,7 +1455,7 @@ function buildProjectJson(rows, fps) {
   for (const r of rows) {
     const start = frames.length;
     for (const pixels of r.frames) frames.push(Array.from(pixels));
-    tags.push({ name: r.move.key, start, end: frames.length - 1, fps, loop: true });
+    tags.push({ name: r.move.key, start, end: frames.length - 1, fps: r.move.fps || fps, loop: r.move.loop !== false }); // §62
   }
   return JSON.stringify({
     width: b.width,
@@ -1496,6 +1575,27 @@ function init() {
   });
 
   for (const id of ["sizeSel", "colorSel", "bgRemove"]) $(id).addEventListener("change", reconvert);
+  // §62: ムーブパック読込
+  $("packLoadBtn").addEventListener("click", () => $("packInput").click());
+  $("packInput").addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    try {
+      const raw = await file.text();
+      const pack = validateMotionPack(JSON.parse(raw));
+      applyMotionPack(pack);
+      try { localStorage.setItem(PACK_STORAGE, raw); } catch {}
+    } catch (err) {
+      alert(`ムーブパックの読込に失敗しました: ${err.message}\n（形式は MOTION_PACK_FORMAT.md を参照）`);
+    }
+  });
+  $("packClearBtn").addEventListener("click", clearMotionPack);
+  try {
+    const saved = localStorage.getItem(PACK_STORAGE);
+    if (saved) applyMotionPack(validateMotionPack(JSON.parse(saved)));
+  } catch {}
+
   // §56: 手動ストリップ取り込み
   $("stripImportInput").addEventListener("change", (e) => {
     const file = e.target.files[0];

@@ -2720,7 +2720,12 @@ function buildSpritePrompt(body) {
   if (kind === "strip") {
     lines.push(`Create a pixel art sprite animation strip of the character in the reference image: exactly ${count} frames of ${moveDesc}.`);
     lines.push(`Arrange all ${count} frames in a single horizontal row, evenly spaced, with clear gaps between frames so the characters never touch each other.`);
-    lines.push(...spritePhaseLines(preset, count)); // §57.2
+    // §62: ムーブパック由来のコマ別局面があればそれを優先（無ければ §57.2 の定石）
+    if (Array.isArray(body.phases) && body.phases.length) {
+      body.phases.slice(0, count).forEach((ph, i) => lines.push(`Frame ${i + 1}: ${ph}.`));
+    } else {
+      lines.push(...spritePhaseLines(preset, count)); // §57.2
+    }
     lines.push("All frames share the same ground line (feet baseline) and the same scale.");
     // §60: ムーブ単位の修正指示つき再生成（Image 2 = 前回のストリップ）
     if (body.current) {
@@ -2732,7 +2737,8 @@ function buildSpritePrompt(body) {
     }
   } else {
     lines.push(`Create a single pixel art animation frame of the character in the reference image: frame ${index + 1} of ${count} of ${moveDesc}.`);
-    const phase = spritePhaseLines(preset, count)[index];
+    const packPhase = Array.isArray(body.phases) ? body.phases[index] : null; // §62
+    const phase = packPhase ? `Frame ${index + 1}: ${packPhase}.` : spritePhaseLines(preset, count)[index];
     if (phase) lines.push(`This frame's pose — ${phase}`);
     lines.push("Draw exactly one character, full body.");
     // §57.3: 指示つき再生成（前回のコマ = Image 2 を維持しつつ1点だけ直す）
@@ -2765,6 +2771,12 @@ function validateSpriteFrameRequest(body) {
   }
   if (body.desc !== undefined && (typeof body.desc !== "string" || body.desc.length > 500)) throw new Error("desc が不正です");
   if (body.instruction !== undefined && (typeof body.instruction !== "string" || body.instruction.length > 300)) throw new Error("instruction が不正です");
+  // §62: ムーブパックのコマ別局面（任意）
+  if (body.phases !== undefined && body.phases !== null) {
+    if (!Array.isArray(body.phases) || body.phases.length > 12 || !body.phases.every((x) => typeof x === "string" && x.length <= 200)) {
+      throw new Error("phases が不正です");
+    }
+  }
   const m = /^data:image\/png;base64,([A-Za-z0-9+/=]+)$/.exec(body.reference || "");
   if (!m) throw new Error("reference（PNG dataURL）が必要です");
   // §57.3: 指示つき再生成用の「前回のコマ」（任意）

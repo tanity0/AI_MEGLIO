@@ -175,6 +175,12 @@ footer { text-align: center; color: var(--dim); font-size: 12px; padding: 20px; 
     <p class="hint">生成するアニメーションとフレーム数を選択。後から個別フレームの再生成もできます。</p>
     <div class="moves" id="moveCards"></div>
     <input type="file" id="stripImportInput" accept="image/*" hidden>
+    <div class="row" style="margin-top:10px;align-items:center">
+      <button id="packLoadBtn" title="ムーブパック（モーション定義JSON・MOTION_PACK_FORMAT.md 参照）を読み込んでカードに追加します">📚 ムーブパック読込</button>
+      <input type="file" id="packInput" accept="application/json,.json" hidden>
+      <span id="packInfo" class="hint" style="margin:0"></span>
+      <button id="packClearBtn" hidden>パックを外す</button>
+    </div>
     <div class="row" style="margin-top:10px">
       <label class="field"><span>再生FPS</span>
         <select id="fpsSel">
