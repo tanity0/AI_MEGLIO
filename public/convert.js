@@ -410,6 +410,13 @@ export function convertImage(data, w, h, params) {
 // 行クラスタ（y重なり）→ 行内x順で並べて返す
 // ---------------------------------------------------------------------------
 export function detectComponents(data, w, h) {
+  return detectComponentsDetailed(data, w, h).boxes;
+}
+
+// §63: detectComponents の詳細版。マージ後ボックスに加えて、マージ前の細分成分
+// （重心つき）とラベルマップを返す。ストリップ分割で「どの画素がどのポーズか」を
+// 矩形でなく連結成分で判定するために使う。
+export function detectComponentsDetailed(data, w, h) {
   const labels = new Int32Array(w * h).fill(-1);
   const boxes = [];
   const stack = new Int32Array(w * h);
@@ -419,11 +426,12 @@ export function detectComponents(data, w, h) {
     let sp = 0;
     stack[sp++] = start;
     labels[start] = label;
-    let x0 = w, y0 = h, x1 = -1, y1 = -1, area = 0;
+    let x0 = w, y0 = h, x1 = -1, y1 = -1, area = 0, sx = 0, sy = 0;
     while (sp > 0) {
       const idx = stack[--sp];
       const x = idx % w, y = (idx / w) | 0;
       area++;
+      sx += x; sy += y;
       if (x < x0) x0 = x; if (x > x1) x1 = x;
       if (y < y0) y0 = y; if (y > y1) y1 = y;
       for (let dy = -1; dy <= 1; dy++) {
@@ -439,12 +447,12 @@ export function detectComponents(data, w, h) {
         }
       }
     }
-    boxes.push({ x0, y0, x1, y1, area });
+    boxes.push({ x0, y0, x1, y1, area, cx: sx / area, cy: sy / area });
   }
-  if (!boxes.length) return [];
+  if (!boxes.length) return { boxes: [], fine: [], labelMap: labels };
   // 近接ボックスのマージ: 同一ポーズ内の分離パーツ（銃先・帽子など）を1体に統合。
   // マージン = 最大ボックス辺の5%（最低8px）。ポーズ間の大きな間隔は維持される。
-  let merged = boxes.map((b) => ({ ...b }));
+  let merged = boxes.map((b, i) => ({ ...b, labels: [i] }));
   const maxDim = Math.max(...merged.map((b) => Math.max(b.x1 - b.x0 + 1, b.y1 - b.y0 + 1)));
   const margin = Math.max(8, Math.round(maxDim * 0.05));
   let changed = true;
@@ -460,6 +468,7 @@ export function detectComponents(data, w, h) {
             x0: Math.min(a.x0, b.x0), y0: Math.min(a.y0, b.y0),
             x1: Math.max(a.x1, b.x1), y1: Math.max(a.y1, b.y1),
             area: a.area + b.area,
+            labels: a.labels.concat(b.labels),
           };
           merged.splice(j, 1);
           changed = true;
@@ -488,7 +497,7 @@ export function detectComponents(data, w, h) {
     row.boxes.sort((a, b) => a.x0 - b.x0);
     ordered.push(...row.boxes);
   }
-  return ordered;
+  return { boxes: ordered, fine: boxes, labelMap: labels };
 }
 
 // ---------------------------------------------------------------------------

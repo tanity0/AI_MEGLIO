@@ -2720,6 +2720,7 @@ function buildSpritePrompt(body) {
   if (kind === "strip") {
     lines.push(`Create a pixel art sprite animation strip of the character in the reference image: exactly ${count} frames of ${moveDesc}.`);
     lines.push(`Arrange all ${count} frames in a single horizontal row, evenly spaced, with clear gaps between frames so the characters never touch each other.`);
+    lines.push("Even wide poses (weapon swings, stretched arms or legs) must fit entirely inside their own frame area and must never cross into or overlap a neighboring frame."); // §63.2
     // §62: ムーブパック由来のコマ別局面があればそれを優先（無ければ §57.2 の定石）
     if (Array.isArray(body.phases) && body.phases.length) {
       body.phases.slice(0, count).forEach((ph, i) => lines.push(`Frame ${i + 1}: ${ph}.`));

@@ -4,7 +4,7 @@
 // app.js（本体エントリ）には依存しない自己完結モジュール。グリッド文字規則の小ヘルパは
 // server.js / app.js と同一の規則（透明= '.'、1-9、a-v。33色以上は2文字hex）を複製している。
 import { streamEdit } from "./api.js";
-import { removeBackground, convertImage, convertSheetImage, detectComponents } from "./convert.js";
+import { removeBackground, convertImage, convertSheetImage, detectComponents, detectComponentsDetailed } from "./convert.js";
 import { encodeGif } from "./gif.js";
 
 // ---------------------------------------------------------------------------
@@ -281,6 +281,7 @@ function buildDirectPrompt(payload) {
   if (kind === "strip") {
     lines.push(`Create a pixel art sprite animation strip of the character in the reference image: exactly ${count} frames of ${moveDesc}.`);
     lines.push(`Arrange all ${count} frames in a single horizontal row, evenly spaced, with clear gaps between frames so the characters never touch each other.`);
+    lines.push("Even wide poses (weapon swings, stretched arms or legs) must fit entirely inside their own frame area and must never cross into or overlap a neighboring frame."); // §63.2
     if (Array.isArray(payload.phases) && payload.phases.length) {
       payload.phases.slice(0, count).forEach((ph, i) => lines.push(`Frame ${i + 1}: ${ph}.`)); // §62
     } else {
@@ -720,7 +721,12 @@ async function importStripForMove(move, file) {
     const bg = removeBackground(strip.data, strip.w, strip.h);
     const boxes = detectComponents(bg, strip.w, strip.h);
     if (!boxes.length) throw new Error("キャラクターを検出できませんでした（背景が単色の画像を使ってください）");
-    const n = boxes.length >= 2 && boxes.length <= 8 ? boxes.length : move.frames;
+    let n = boxes.length >= 2 && boxes.length <= 8 ? boxes.length : move.frames;
+    // §63: 極端に幅の広いボックスはポーズ同士のbbox重なりで融合した疑い →
+    // 検出数よりムーブの既定コマ数を信頼する（stripToFrames が谷分割で復元する）
+    const widths = boxes.map((b) => b.x1 - b.x0 + 1).sort((a, b) => a - b);
+    const fused = widths[widths.length - 1] >= widths[widths.length >> 1] * 1.6;
+    if (fused && move.frames > boxes.length) n = move.frames;
     move.frames = n;
     move.on = true;
     const frames = stripToFrames(strip, n);
@@ -847,8 +853,11 @@ function buildSnapMap(palette) {
 function composeGrid(pixels, cw, ch, snap, metrics) {
   const b = state.base;
   const out = new Uint8Array(b.width * b.height);
-  const offX = Math.round(metrics.centerX - cw / 2);
-  const offY = metrics.baselineY + 1 - ch;
+  let offX = Math.round(metrics.centerX - cw / 2);
+  let offY = metrics.baselineY + 1 - ch;
+  // §63.2: キャンバスに収まるサイズなのに配置位置ではみ出す場合は枠内へシフト（切り捨て防止）
+  if (cw <= b.width) offX = Math.max(0, Math.min(offX, b.width - cw));
+  if (ch <= b.height) offY = Math.max(0, Math.min(offY, b.height - ch));
   for (let y = 0; y < ch; y++) {
     for (let x = 0; x < cw; x++) {
       const idx = pixels[y * cw + x];
@@ -907,26 +916,120 @@ function cropRegion(data, w, box) {
   return { data: out, w: bw, h: bh };
 }
 
-// 生成ストリップ → N個のベース互換フレーム（§53.3: N一致 / 1体複製 / N等分のフォールバック）
+// §63: コマ数の照合。検出数>Nは最近接ペアのマージ、検出数<Nは最大幅ボックスの谷分割。
+// 返り値は「セル」= { x0,x1,y0,y1（走査範囲）, labelSet（丸ごと帰属する成分）,
+// rectLabels+rectX0/X1（切断線をまたぐ成分の矩形切り範囲） }
+function planStripCells(det, n, bg, w) {
+  let cells = det.boxes.map((b) => ({
+    x0: b.x0, x1: b.x1, y0: b.y0, y1: b.y1,
+    labelSet: new Set(b.labels), rectLabels: new Set(), rectX0: 0, rectX1: -1,
+  }));
+  if (cells.length === 1 && n > 1) return Array.from({ length: n }, () => cells[0]); // 1体 → 全コマ複製（MOCK・縮退）
+  // 検出数 > N: 最も近い隣接ペアをマージ（別成分になった剣先などを正しいポーズへ戻す）
+  while (cells.length > n) {
+    let bi = 0, bd = Infinity;
+    for (let i = 0; i + 1 < cells.length; i++) {
+      const d = cells[i + 1].x0 - cells[i].x1;
+      if (d < bd) { bd = d; bi = i; }
+    }
+    const a = cells[bi], b = cells[bi + 1];
+    cells.splice(bi, 2, {
+      x0: Math.min(a.x0, b.x0), x1: Math.max(a.x1, b.x1),
+      y0: Math.min(a.y0, b.y0), y1: Math.max(a.y1, b.y1),
+      labelSet: new Set([...a.labelSet, ...b.labelSet]), rectLabels: new Set(), rectX0: 0, rectX1: -1,
+    });
+  }
+  // 検出数 < N: 最大幅ボックスを列密度の谷で分割。成分は重心xで左右へ丸ごと帰属し、
+  // 切断線をまたぐ成分だけ矩形で切る（伸ばした腕・剣先を可能な限り切断しない）
+  while (cells.length < n) {
+    let wi = 0;
+    for (let i = 1; i < cells.length; i++) {
+      if (cells[i].x1 - cells[i].x0 > cells[wi].x1 - cells[wi].x0) wi = i;
+    }
+    const c = cells[wi];
+    const cw = c.x1 - c.x0 + 1;
+    if (cw < 4) break; // これ以上割れない
+    let cutX = c.x0 + (cw >> 1), best = Infinity;
+    for (let x = c.x0 + Math.round(cw * 0.25); x <= c.x0 + Math.round(cw * 0.75); x++) {
+      let dens = 0;
+      for (let y = c.y0; y <= c.y1; y++) if (bg[(y * w + x) * 4 + 3] >= 128) dens++;
+      if (dens < best) { best = dens; cutX = x; }
+    }
+    const mk = () => ({ x0: c.x0, x1: c.x1, y0: c.y0, y1: c.y1, labelSet: new Set(), rectLabels: new Set(), rectX0: 0, rectX1: -1 });
+    const left = mk(), right = mk();
+    left.rectX0 = c.x0; left.rectX1 = cutX;
+    right.rectX0 = cutX + 1; right.rectX1 = c.x1;
+    for (const lbl of c.labelSet) {
+      const f = det.fine[lbl];
+      if (f.x1 <= cutX) { left.labelSet.add(lbl); continue; }
+      if (f.x0 > cutX) { right.labelSet.add(lbl); continue; }
+      // 切断線をまたぐ成分: 片側に偏っていれば（剣先・伸ばした腕）重心側へ丸ごと帰属。
+      // 両側にほぼ半々（ポーズ同士が物理的に融合）のときだけ矩形で切る
+      const fw = f.x1 - f.x0 + 1;
+      if (Math.min(cutX - f.x0 + 1, f.x1 - cutX) <= fw * 0.4) (f.cx <= cutX ? left : right).labelSet.add(lbl);
+      else { left.rectLabels.add(lbl); right.rectLabels.add(lbl); }
+    }
+    for (const lbl of c.rectLabels) { left.rectLabels.add(lbl); right.rectLabels.add(lbl); }
+    cells.splice(wi, 1, left, right);
+  }
+  while (cells.length < n) cells.push(cells[cells.length - 1]); // 分割不能時の安全弁（最終セル複製）
+  return cells;
+}
+
+// §63: 各セルに帰属する画素だけをラベルマスクで抜き出し、透明ギャップを挟んで
+// 並べ直したクリーンなストリップを作る（矩形が重なっていても隣ポーズは混入しない）
+function buildCleanStrip(bg, w, h, cells, det) {
+  const GAP = 4;
+  const crops = cells.map((c) => {
+    const cw = c.x1 - c.x0 + 1, ch = c.y1 - c.y0 + 1;
+    const buf = new Uint8ClampedArray(cw * ch * 4);
+    let mx0 = cw, my0 = ch, mx1 = -1, my1 = -1;
+    for (let y = c.y0; y <= c.y1; y++) {
+      for (let x = c.x0; x <= c.x1; x++) {
+        const lbl = det.labelMap[y * w + x];
+        if (lbl < 0) continue;
+        const own = c.labelSet.has(lbl) || (c.rectLabels.has(lbl) && x >= c.rectX0 && x <= c.rectX1);
+        if (!own) continue;
+        const src = (y * w + x) * 4, dst = ((y - c.y0) * cw + (x - c.x0)) * 4;
+        buf[dst] = bg[src]; buf[dst + 1] = bg[src + 1]; buf[dst + 2] = bg[src + 2]; buf[dst + 3] = bg[src + 3];
+        const lx = x - c.x0, ly = y - c.y0;
+        if (lx < mx0) mx0 = lx; if (lx > mx1) mx1 = lx;
+        if (ly < my0) my0 = ly; if (ly > my1) my1 = ly;
+      }
+    }
+    if (mx1 < 0) { mx0 = 0; my0 = 0; mx1 = cw - 1; my1 = ch - 1; } // 空セル安全弁
+    return { buf, cw, x0: mx0, y0: my0, x1: mx1, y1: my1, srcY0: c.y0 };
+  });
+  const outW = crops.reduce((s, cr) => s + (cr.x1 - cr.x0 + 1), 0) + GAP * (crops.length + 1);
+  const out = new Uint8ClampedArray(outW * h * 4);
+  const boxes = [];
+  let cursor = GAP;
+  for (const cr of crops) {
+    const bw = cr.x1 - cr.x0 + 1, bh = cr.y1 - cr.y0 + 1;
+    const py0 = Math.max(0, Math.min(h - bh, cr.srcY0 + cr.y0)); // 元の縦位置を維持
+    for (let y = 0; y < bh; y++) {
+      for (let x = 0; x < bw; x++) {
+        const src = ((cr.y0 + y) * cr.cw + (cr.x0 + x)) * 4;
+        if (cr.buf[src + 3] === 0) continue;
+        const dst = ((py0 + y) * outW + (cursor + x)) * 4;
+        out[dst] = cr.buf[src]; out[dst + 1] = cr.buf[src + 1]; out[dst + 2] = cr.buf[src + 2]; out[dst + 3] = cr.buf[src + 3];
+      }
+    }
+    boxes.push({ x0: cursor, y0: py0, x1: cursor + bw - 1, y1: py0 + bh - 1 });
+    cursor += bw + GAP;
+  }
+  return { data: out, w: outW, h, boxes };
+}
+
+// 生成ストリップ → N個のベース互換フレーム（§53.3/§63: N一致 / 1体複製 / マージ・谷分割）
 function stripToFrames(strip, n) {
   const bg = removeBackground(strip.data, strip.w, strip.h);
-  let boxes = detectComponents(bg, strip.w, strip.h);
-  if (!boxes.length) throw new Error("生成画像からキャラクターを検出できませんでした");
-  if (boxes.length !== n) {
-    if (boxes.length === 1) {
-      boxes = Array.from({ length: n }, () => boxes[0]); // 1体 → 全コマ複製（MOCK・縮退）
-    } else {
-      // 全体bboxのN等分割にフォールバック
-      const x0 = Math.min(...boxes.map((b) => b.x0)), x1 = Math.max(...boxes.map((b) => b.x1));
-      const y0 = Math.min(...boxes.map((b) => b.y0)), y1 = Math.max(...boxes.map((b) => b.y1));
-      const cw = (x1 - x0 + 1) / n;
-      boxes = Array.from({ length: n }, (_, i) => ({
-        x0: Math.round(x0 + i * cw), x1: Math.round(x0 + (i + 1) * cw) - 1, y0, y1,
-      }));
-    }
-  }
+  const det = detectComponentsDetailed(bg, strip.w, strip.h);
+  if (!det.boxes.length) throw new Error("生成画像からキャラクターを検出できませんでした");
+  const cells = planStripCells(det, n, bg, strip.w);
+  const clean = buildCleanStrip(bg, strip.w, strip.h, cells, det);
   // §57.1: 全コマ共通のセルサイズ・共通パレットで一括変換（しゃがみ/ジャンプの高さ差を保持し、コマ間の色ブレを防ぐ）
-  const conv = convertSheetImage(bg, strip.w, strip.h, { targetH: baseCharMetrics().charH, colors: state.base.palette.length - 1 }, boxes, "bottom");
+  const conv = convertSheetImage(clean.data, clean.w, clean.h, { targetH: baseCharMetrics().charH, colors: state.base.palette.length - 1 }, clean.boxes, "bottom");
   if (conv.width > state.base.width || conv.height > state.base.height) expandBaseCanvas(conv.width, conv.height); // §57.4
   const metrics = baseCharMetrics();
   const snap = buildSnapMap(conv.palette);
