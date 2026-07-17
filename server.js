@@ -2730,9 +2730,14 @@ function buildSpritePrompt(body) {
     lines.push("All frames share the same ground line (feet baseline) and the same scale.");
     // §60: ムーブ単位の修正指示つき再生成（Image 2 = 前回のストリップ）
     if (body.current) {
-      lines.push("Image 2 is the previous attempt of this exact animation strip. Keep the same frame count, layout, poses and style.");
+      // §64: コマ数変更後の🔁 — 前回ストリップのコマ数が要求と異なる場合は「参照として使い、新コマ数へ配分」
+      if (Number.isInteger(body.currentCount) && body.currentCount !== count) {
+        lines.push(`Image 2 is a previous attempt of this animation with ${body.currentCount} frames. Use it as the reference for the character, style and overall motion, but now draw exactly ${count} frames, re-spacing the motion evenly across them.`);
+      } else {
+        lines.push("Image 2 is the previous attempt of this exact animation strip. Keep the same frame count, layout, poses and style.");
+      }
       if (body.instruction) lines.push(`Change ONLY this across all frames: ${body.instruction}. Keep everything else identical to Image 2.`);
-      else lines.push("Redraw it more cleanly while keeping the same poses.");
+      else if (!Number.isInteger(body.currentCount) || body.currentCount === count) lines.push("Redraw it more cleanly while keeping the same poses.");
     } else if (body.instruction) {
       lines.push(`Additional request: ${body.instruction}`);
     }
@@ -2772,6 +2777,8 @@ function validateSpriteFrameRequest(body) {
   }
   if (body.desc !== undefined && (typeof body.desc !== "string" || body.desc.length > 500)) throw new Error("desc が不正です");
   if (body.instruction !== undefined && (typeof body.instruction !== "string" || body.instruction.length > 300)) throw new Error("instruction が不正です");
+  // §64: コマ数変更後の🔁で「前回ストリップのコマ数」を渡す（任意）
+  if (body.currentCount !== undefined && (!Number.isInteger(body.currentCount) || body.currentCount < 1 || body.currentCount > 8)) throw new Error("currentCount が不正です");
   // §62: ムーブパックのコマ別局面（任意）
   if (body.phases !== undefined && body.phases !== null) {
     if (!Array.isArray(body.phases) || body.phases.length > 12 || !body.phases.every((x) => typeof x === "string" && x.length <= 200)) {

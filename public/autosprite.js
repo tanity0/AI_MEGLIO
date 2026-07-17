@@ -290,9 +290,14 @@ function buildDirectPrompt(payload) {
     lines.push("All frames share the same ground line (feet baseline) and the same scale.");
     // §60: ムーブ単位の修正指示つき再生成（Image 2 = 前回のストリップ）
     if (payload.current) {
-      lines.push("Image 2 is the previous attempt of this exact animation strip. Keep the same frame count, layout, poses and style.");
+      // §64: コマ数変更後の🔁 — 前回ストリップのコマ数が要求と異なる場合は「参照として使い、新コマ数へ配分」
+      if (Number.isInteger(payload.currentCount) && payload.currentCount !== count) {
+        lines.push(`Image 2 is a previous attempt of this animation with ${payload.currentCount} frames. Use it as the reference for the character, style and overall motion, but now draw exactly ${count} frames, re-spacing the motion evenly across them.`);
+      } else {
+        lines.push("Image 2 is the previous attempt of this exact animation strip. Keep the same frame count, layout, poses and style.");
+      }
       if (payload.instruction) lines.push(`Change ONLY this across all frames: ${payload.instruction}. Keep everything else identical to Image 2.`);
-      else lines.push("Redraw it more cleanly while keeping the same poses.");
+      else if (!Number.isInteger(payload.currentCount) || payload.currentCount === count) lines.push("Redraw it more cleanly while keeping the same poses.");
     } else if (payload.instruction) {
       lines.push(`Additional request: ${payload.instruction}`);
     }
@@ -1129,6 +1134,7 @@ async function runMoveStrip(move, opts = {}) {
   const slots = state.results.get(move.key);
   // §60: 前回ストリップは running へ変える前に取得する（ok コマから合成するため）
   const cur = opts.withCurrent ? currentStripPng(move) : null;
+  const curCount = cur ? slots.filter((s) => s.status === "ok").length : 0; // §64
   slots.forEach((s, i) => { s.status = "running"; s.error = null; renderThumb(move, i); });
   try {
     const payload = { ...spritePayloadBase(move), kind: "strip", count: slots.length };
@@ -1136,6 +1142,7 @@ async function runMoveStrip(move, opts = {}) {
     if (packPhases) payload.phases = packPhases;
     if (opts.instruction) payload.instruction = opts.instruction.slice(0, 300);
     if (cur) payload.current = cur;
+    if (cur && curCount && curCount !== slots.length) payload.currentCount = curCount; // §64: コマ数変更後の🔁
     const image = await fetchSpriteFrameWithRetry(
       payload,
       (sec, n) => setMoveNote(move, `⏳ 無料枠のレート制限のため待機中… ${sec}秒後に自動再試行（${n}回目）`)
@@ -1292,6 +1299,23 @@ function playerScale() {
   return Math.max(1, Math.floor(160 / Math.max(b.width, b.height)));
 }
 
+// §64: 生成後のコマ数変更。減=末尾削除、増=pendingを追加（↻か🔁で埋める）
+function setMoveFrameCount(move, n) {
+  const slots = state.results.get(move.key);
+  if (!slots || state.running || slots.some((s) => s.status === "running")) return;
+  if (!Number.isInteger(n) || n < 2 || n > 8 || n === slots.length) return;
+  const grew = n > slots.length;
+  if (grew) while (slots.length < n) slots.push({ status: "pending", pixels: null, error: null });
+  else slots.length = n;
+  move.frames = n;
+  const withResults = MOVES.filter((m) => state.results.has(m.key));
+  renderResults(withResults);
+  for (const m of withResults) state.results.get(m.key).forEach((_, i) => renderThumb(m, i));
+  renderMoveCards(); // ステップ2のカードのコマ数と同期
+  updateExportState();
+  if (grew) setMoveNote(move, "追加したコマは各コマの↻で個別生成、または「🔁 このムーブを再生成」で全コマまとめて埋められます");
+}
+
 function renderResults(moves) {
   const wrap = $("results");
   wrap.innerHTML = "";
@@ -1303,11 +1327,26 @@ function renderResults(moves) {
     block.dataset.move = m.key;
     const h3 = document.createElement("h3");
     h3.textContent = `${m.icon} ${m.label}`;
+    // §64: コマ数セレクト（生成後の変更）
+    const cntSel = document.createElement("select");
+    cntSel.className = "frameCountSel";
+    cntSel.title = "コマ数を変更（減らす=末尾を削除・増やす=追加コマを↻か🔁で生成）";
+    for (let v = 2; v <= 8; v++) {
+      const o = document.createElement("option");
+      o.value = String(v);
+      o.textContent = `${v}コマ`;
+      cntSel.append(o);
+    }
+    cntSel.value = String(state.results.get(m.key).length);
+    cntSel.addEventListener("change", () => {
+      setMoveFrameCount(m, parseInt(cntSel.value, 10));
+      cntSel.value = String(state.results.get(m.key).length); // 変更が弾かれた場合は表示を戻す
+    });
     const gifBtn = document.createElement("button");
     gifBtn.className = "gifBtn";
     gifBtn.textContent = "GIF保存";
     gifBtn.addEventListener("click", () => downloadMoveGif(m));
-    h3.append(gifBtn);
+    h3.append(cntSel, gifBtn);
 
     const player = document.createElement("div");
     player.className = "player";
