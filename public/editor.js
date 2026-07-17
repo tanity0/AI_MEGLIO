@@ -87,7 +87,9 @@ export function initEditor(store, toast) {
       if (!magicFloatWrap) {
         magicFloatWrap = document.createElement("div");
         magicFloatWrap.id = "magicFloatWrap";
-        document.body.appendChild(magicFloatWrap);
+        // §61.2: キャンバスセクション内に置く（タイムライン等を覆わず、ズームUIとも住み分け）
+        const host = document.getElementById("mobileToolbar")?.parentElement || document.body;
+        host.appendChild(magicFloatWrap);
       }
       if (magicOptionsEl.parentElement !== magicFloatWrap) magicFloatWrap.appendChild(magicOptionsEl);
       magicFloatWrap.hidden = false;
@@ -2008,6 +2010,50 @@ export function initEditor(store, toast) {
   document.querySelectorAll('[data-action="deselect"]').forEach((btn) => {
     btn.addEventListener("click", () => clearSelectionBtn.click());
   });
+  // §61.2: モバイルの選択ツールは1ボタンに統合。タップ=現在の選択ツール、長押し(450ms)=矩形⇄マジック切替
+  const mobileSelBtn = document.getElementById("mobileSelToolBtn");
+  if (mobileSelBtn) {
+    const SEL_ICONS = { select: "▭", magic: "🪄" };
+    const SEL_KEY = "aiMeglio.mobileSelTool";
+    let selTool = "select";
+    try { if (localStorage.getItem(SEL_KEY) === "magic") selTool = "magic"; } catch {}
+    const applySelIcon = () => {
+      mobileSelBtn.textContent = SEL_ICONS[selTool];
+      mobileSelBtn.dataset.tool = selTool;
+    };
+    applySelIcon();
+    let selLpTimer = null;
+    let selLpFired = false;
+    mobileSelBtn.addEventListener("pointerdown", () => {
+      selLpFired = false;
+      clearTimeout(selLpTimer);
+      selLpTimer = setTimeout(() => {
+        selLpFired = true;
+        selTool = selTool === "select" ? "magic" : "select";
+        try { localStorage.setItem(SEL_KEY, selTool); } catch {}
+        applySelIcon();
+        switchTool(selTool);
+        if (navigator.vibrate) navigator.vibrate(15);
+      }, 450);
+    });
+    for (const ev of ["pointerup", "pointerleave", "pointercancel"]) {
+      mobileSelBtn.addEventListener(ev, () => clearTimeout(selLpTimer));
+    }
+    // 長押し発火後のclickは既定のツール切替を実行させない（capture段で遮断）
+    mobileSelBtn.addEventListener("click", (e) => {
+      if (selLpFired) { e.stopImmediatePropagation(); e.preventDefault(); }
+    }, true);
+    mobileSelBtn.addEventListener("contextmenu", (e) => e.preventDefault());
+    // ツールがキーボード等で select/magic に切り替わったらアイコンも追従
+    store.subscribe(() => {
+      const t = store.state.tool;
+      if ((t === "select" || t === "magic") && t !== selTool) {
+        selTool = t;
+        try { localStorage.setItem(SEL_KEY, selTool); } catch {}
+        applySelIcon();
+      }
+    });
+  }
   window.addEventListener("keydown", (ev) => {
     const tag = document.activeElement?.tagName;
     if (tag === "TEXTAREA" || tag === "INPUT") return;

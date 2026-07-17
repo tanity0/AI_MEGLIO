@@ -1739,13 +1739,16 @@ canvas, img {
 }
 /* §61: スマホ時のマジック選択オプション（しきい値バー等）のフローティング表示。
    モバイルツールバー（下部）に被らない位置に固定。 */
+/* §61.2: キャンバスセクション内の absolute 配置に変更。モバイルツールバー
+   （下端中央・34px+8px）の直上、右下のズームUI（44px列+余白）を避けた幅。
+   z-index はズームUI/ツールバーと同じ60（ドロワーのバックドロップ440より下）。 */
 #magicFloatWrap {
-  position: fixed;
+  position: absolute;
   left: 8px;
-  right: 8px;
-  bottom: calc(env(safe-area-inset-bottom, 0px) + 92px);
-  z-index: 650;
-  background: var(--bg-1, #1d2029);
+  right: 64px;
+  bottom: 50px;
+  z-index: 60;
+  background: rgba(29, 32, 41, 0.92);
   border: 1px solid var(--border, #333849);
   border-radius: 10px;
   padding: 8px 10px;
