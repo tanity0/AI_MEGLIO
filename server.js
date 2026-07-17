@@ -2759,7 +2759,7 @@ function buildSpritePrompt(body) {
   lines.push("Keep the character's design, colors, proportions, outline style and pixel-art rendering exactly consistent with the reference image in every frame.");
   lines.push("Keep the same facing direction as the reference image.");
   lines.push("Crisp pixel-art rendering: hard pixel edges, no blur, no anti-aliasing halos, no gradients beyond the reference's shading style.");
-  lines.push("Plain solid white background. No grid lines, no frame borders, no text, no labels, no shadows on the ground.");
+  lines.push("Plain solid white background across the whole image. No grid lines, no frame borders, no text, no labels, no shadows on the ground, no checkerboard or transparency pattern, no gradient background.");
   if (desc) lines.push(`Character description: ${desc}`);
   return lines.join("\n");
 }

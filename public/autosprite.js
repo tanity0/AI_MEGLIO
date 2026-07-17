@@ -318,7 +318,7 @@ function buildDirectPrompt(payload) {
   lines.push("Keep the character's design, colors, proportions, outline style and pixel-art rendering exactly consistent with the reference image in every frame.");
   lines.push("Keep the same facing direction as the reference image.");
   lines.push("Crisp pixel-art rendering: hard pixel edges, no blur, no anti-aliasing halos, no gradients beyond the reference's shading style.");
-  lines.push("Plain solid white background. No grid lines, no frame borders, no text, no labels, no shadows on the ground.");
+  lines.push("Plain solid white background across the whole image. No grid lines, no frame borders, no text, no labels, no shadows on the ground, no checkerboard or transparency pattern, no gradient background.");
   if (desc) lines.push(`Character description: ${desc}`);
   return lines.join("\n");
 }
@@ -723,7 +723,7 @@ async function importStripForMove(move, file) {
   try {
     const strip = await fileToImageData(file);
     // コマ数の自動判定（検出できたらムーブのフレーム数を合わせる）
-    const bg = removeBackground(strip.data, strip.w, strip.h);
+    const bg = removeBackground(strip.data, strip.w, strip.h, { multiBg: true }); // §65
     const boxes = detectComponents(bg, strip.w, strip.h);
     if (!boxes.length) throw new Error("キャラクターを検出できませんでした（背景が単色の画像を使ってください）");
     let n = boxes.length >= 2 && boxes.length <= 8 ? boxes.length : move.frames;
@@ -1045,7 +1045,7 @@ function buildCleanStrip(bg, w, h, cells, det) {
 
 // 生成ストリップ → N個のベース互換フレーム（§53.3/§63: N一致 / 1体複製 / マージ・谷分割）
 function stripToFrames(strip, n) {
-  const bg = removeBackground(strip.data, strip.w, strip.h);
+  const bg = removeBackground(strip.data, strip.w, strip.h, { multiBg: true }); // §65
   const det = detectComponentsDetailed(bg, strip.w, strip.h);
   if (!det.boxes.length) throw new Error("生成画像からキャラクターを検出できませんでした");
   const cells = planStripCells(det, n, bg, strip.w);
@@ -1198,7 +1198,7 @@ async function regenSingleImage(move, index) {
     );
     setMoveNote(move, "");
     const strip = await dataUrlToImageData(image);
-    const bg = removeBackground(strip.data, strip.w, strip.h);
+    const bg = removeBackground(strip.data, strip.w, strip.h, { multiBg: true }); // §65
     const boxes = detectComponents(bg, strip.w, strip.h);
     if (!boxes.length) throw new Error("生成画像からキャラクターを検出できませんでした");
     const box = boxes.reduce((a, c) => ((c.area || 0) > (a.area || 0) ? c : a)); // 最大成分

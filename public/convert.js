@@ -30,7 +30,7 @@ function hueDist(a, b) {
 // data は破壊せず、alpha を書き換えた新しい Uint8ClampedArray を返す
 // ---------------------------------------------------------------------------
 export function removeBackground(data, w, h, opts = {}) {
-  const { bgColor = null, threshold = 48, glowWidth = 0 } = opts;
+  const { bgColor = null, threshold = 48, glowWidth = 0, multiBg = false } = opts;
   const out = new Uint8ClampedArray(data);
 
   // 自動背景色: 外周ピクセルの最頻色（16段量子化）
@@ -58,35 +58,58 @@ export function removeBackground(data, w, h, opts = {}) {
     };
     for (let x = 0; x < w; x++) { consider(x, 0); consider(x, h - 1); }
     for (let y = 0; y < h; y++) { consider(0, y); consider(w - 1, y); }
-    let best = null;
-    for (const e of counts.values()) if (!best || e.n > best.n) best = e;
-    if (best) bg = [best.r / best.n, best.g / best.n, best.b / best.n];
+    const entries = [...counts.values()].sort((a, b) => b.n - a.n);
+    if (entries.length) {
+      const best = entries[0];
+      bg = [best.r / best.n, best.g / best.n, best.b / best.n];
+      // §65: 多色背景（市松・枠など）— 外周の8%以上を占める色クラスタを最大4件まで背景色に
+      if (multiBg) {
+        const total = entries.reduce((s, e) => s + e.n, 0);
+        bg = entries.slice(0, 4).filter((e) => e.n >= Math.max(4, total * 0.08))
+          .map((e) => [e.r / e.n, e.g / e.n, e.b / e.n]);
+      }
+    }
   }
+  const bgColors = !bg ? [] : Array.isArray(bg[0]) ? bg : [bg];
 
   const isBgLike = (o) => {
     if (out[o + 3] < 32) return true; // 元から透明
-    if (!bg) return false;
-    const dr = out[o] - bg[0], dg = out[o + 1] - bg[1], db = out[o + 2] - bg[2];
-    return dr * dr + dg * dg + db * db <= threshold * threshold;
+    for (const c of bgColors) {
+      const dr = out[o] - c[0], dg = out[o + 1] - c[1], db = out[o + 2] - c[2];
+      if (dr * dr + dg * dg + db * db <= threshold * threshold) return true;
+    }
+    return false;
   };
 
   // 外周からのフラッドフィル
+  // §65: multiBg 時は「除去済みの隣接画素と近い色」も連鎖して除去
+  // （グラデーション背景を外側から食べ進む。キャラ輪郭=急な色差で止まる）
+  const chainThr = multiBg && bgColors.length ? Math.min(28, threshold) : 0;
   const visited = new Uint8Array(w * h);
-  const stack = [];
-  for (let x = 0; x < w; x++) { stack.push(x, 0, x, h - 1); }
-  for (let y = 0; y < h; y++) { stack.push(0, y, w - 1, y); }
   const flat = [];
-  for (let i = 0; i < stack.length; i += 2) flat.push([stack[i], stack[i + 1]]);
+  for (let x = 0; x < w; x++) { flat.push([x, 0], [x, h - 1]); }
+  for (let y = 0; y < h; y++) { flat.push([0, y], [w - 1, y]); }
   while (flat.length) {
-    const [x, y] = flat.pop();
+    const [x, y, pr, pg, pb] = flat.pop();
     if (x < 0 || y < 0 || x >= w || y >= h) continue;
     const idx = y * w + x;
     if (visited[idx]) continue;
     visited[idx] = 1;
     const o = idx * 4;
-    if (!isBgLike(o)) continue;
+    let remove = isBgLike(o);
+    if (!remove && chainThr > 0 && pr !== undefined) {
+      const dr = out[o] - pr, dg = out[o + 1] - pg, db = out[o + 2] - pb;
+      remove = dr * dr + dg * dg + db * db <= chainThr * chainThr;
+    }
+    if (!remove) continue;
+    const wasOpaque = out[o + 3] >= 32;
     out[o + 3] = 0;
-    flat.push([x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]);
+    if (chainThr > 0 && wasOpaque) {
+      flat.push([x + 1, y, out[o], out[o + 1], out[o + 2]], [x - 1, y, out[o], out[o + 1], out[o + 2]],
+        [x, y + 1, out[o], out[o + 1], out[o + 2]], [x, y - 1, out[o], out[o + 1], out[o + 2]]);
+    } else {
+      flat.push([x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]);
+    }
   }
 
   // フチ光彩除去（§18.2-1）: 透明に隣接する帯（1〜glowWidth px）のうち、
