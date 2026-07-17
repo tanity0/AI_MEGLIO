@@ -834,8 +834,8 @@ function baseCharMetrics() {
       }
     }
   }
-  if (x1 < 0) return { charH: b.height, baselineY: b.height - 1, centerX: b.width / 2 };
-  return { charH: y1 - y0 + 1, baselineY: y1, centerX: (x0 + x1 + 1) / 2 };
+  if (x1 < 0) return { charH: b.height, charW: b.width, baselineY: b.height - 1, centerX: b.width / 2 };
+  return { charH: y1 - y0 + 1, charW: x1 - x0 + 1, baselineY: y1, centerX: (x0 + x1 + 1) / 2 };
 }
 
 // §57.1: 変換パレット→ベースパレットの最近色スナップ表
@@ -929,7 +929,16 @@ function planStripCells(det, n, bg, w) {
     x0: b.x0, x1: b.x1, y0: b.y0, y1: b.y1,
     labelSet: new Set(b.labels), rectLabels: new Set(), rectX0: 0, rectX1: -1,
   }));
-  if (cells.length === 1 && n > 1) return Array.from({ length: n }, () => cells[0]); // 1体 → 全コマ複製（MOCK・縮退）
+  if (cells.length === 1 && n > 1) {
+    // §63.4: 1成分でも、ベースキャラよりずっと横長なら「全ポーズが融合したストリップ」と
+    // みなして谷分割へ回す（複製すると1コマに全ポーズが入ってしまう）。
+    // 本当に1体だけ（MOCK・縮退）のときだけ全コマへ複製する。
+    const c0 = cells[0];
+    const m = baseCharMetrics();
+    const baseAspect = Math.max(0.2, m.charW / Math.max(1, m.charH));
+    const boxAspect = (c0.x1 - c0.x0 + 1) / Math.max(1, c0.y1 - c0.y0 + 1);
+    if (boxAspect < baseAspect * 1.8) return Array.from({ length: n }, () => c0);
+  }
   // 検出数 > N: 最も近い隣接ペアをマージ（別成分になった剣先などを正しいポーズへ戻す）
   while (cells.length > n) {
     let bi = 0, bd = Infinity;
@@ -960,18 +969,26 @@ function planStripCells(det, n, bg, w) {
       for (let y = c.y0; y <= c.y1; y++) if (bg[(y * w + x) * 4 + 3] >= 128) dens++;
       if (dens < best) { best = dens; cutX = x; }
     }
-    const mk = () => ({ x0: c.x0, x1: c.x1, y0: c.y0, y1: c.y1, labelSet: new Set(), rectLabels: new Set(), rectX0: 0, rectX1: -1 });
-    const left = mk(), right = mk();
-    left.rectX0 = c.x0; left.rectX1 = cutX;
-    right.rectX0 = cutX + 1; right.rectX1 = c.x1;
+    const mk = (rx0, rx1) => ({ x0: rx0, x1: rx1, y0: c.y0, y1: c.y1, labelSet: new Set(), rectLabels: new Set(), rectX0: rx0, rectX1: rx1 });
+    // §63.4: 子セルの有効範囲は切断線で二分する（再分割時の幅測定・谷探索の基準）。
+    // 丸ごと帰属した成分が範囲外へ伸びる場合だけ走査範囲を広げる
+    const left = mk(c.x0, cutX), right = mk(cutX + 1, c.x1);
+    const adopt = (cell, lbl) => {
+      const f = det.fine[lbl];
+      cell.labelSet.add(lbl);
+      if (f.x0 < cell.x0) cell.x0 = f.x0;
+      if (f.x1 > cell.x1) cell.x1 = f.x1;
+    };
     for (const lbl of c.labelSet) {
       const f = det.fine[lbl];
       if (f.x1 <= cutX) { left.labelSet.add(lbl); continue; }
       if (f.x0 > cutX) { right.labelSet.add(lbl); continue; }
-      // 切断線をまたぐ成分: 片側に偏っていれば（剣先・伸ばした腕）重心側へ丸ごと帰属。
-      // 両側にほぼ半々（ポーズ同士が物理的に融合）のときだけ矩形で切る
+      // 切断線をまたぐ成分: セル幅いっぱいの成分（複数ポーズが融合した塊）は常に矩形切り。
+      // それ以外は、片側に偏っていれば（剣先・伸ばした腕）重心側へ丸ごと帰属し、
+      // 両側にほぼ半々のときだけ矩形で切る
       const fw = f.x1 - f.x0 + 1;
-      if (Math.min(cutX - f.x0 + 1, f.x1 - cutX) <= fw * 0.4) (f.cx <= cutX ? left : right).labelSet.add(lbl);
+      if (fw >= cw * 0.85) { left.rectLabels.add(lbl); right.rectLabels.add(lbl); continue; }
+      if (Math.min(cutX - f.x0 + 1, f.x1 - cutX) <= fw * 0.4) adopt(f.cx <= cutX ? left : right, lbl);
       else { left.rectLabels.add(lbl); right.rectLabels.add(lbl); }
     }
     for (const lbl of c.rectLabels) { left.rectLabels.add(lbl); right.rectLabels.add(lbl); }
