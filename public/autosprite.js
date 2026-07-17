@@ -1947,10 +1947,13 @@ function init() {
     liveBc.onmessage = (ev) => {
       const m = ev.data;
       if (!m || m.type !== "quickgen-frames" || state.running) return;
+      // §58.7: ベースは編集中の現在フレーム（無ければ先頭）を使う
+      const curIdx = Number.isInteger(m.current) ? m.current : 0;
+      const curRaw = m.frames && (m.frames[curIdx] || m.frames[0]);
       if (!state.base) {
         // §58.5: ウィザードが空なら、エディタのプロジェクトをそのまま土台として受け入れる
         // （JSON読み込み直後などでも⚡を押し直さずに同期が始まる）
-        const first = m.frames && m.frames[0] ? Uint8Array.from(m.frames[0]) : null;
+        const first = curRaw ? Uint8Array.from(curRaw) : null;
         if (!first || first.length !== m.width * m.height) return;
         state.base = { width: m.width, height: m.height, pixels: first, palette: m.palette };
         state.referencePng = pixelsToPngDataUrl(state.base.pixels, m.width, m.height, m.palette, m.width > 64 ? 4 : 8);
@@ -1966,6 +1969,18 @@ function init() {
         return;
       }
       state.base.palette = m.palette; // パレット編集も追従
+      // §58.7: ベースと生成用参照（referencePng）も編集後の絵へ追従させる。
+      // これを怠るとムーブのコマだけ更新され、生成のたびに編集前の参照がAIへ渡り続ける
+      if (curRaw && curRaw.length === state.base.width * state.base.height) {
+        const arr = Uint8Array.from(curRaw);
+        if (arr.some((v) => v !== 0)) {
+          state.base.pixels = arr;
+          state.referencePng = pixelsToPngDataUrl(arr, state.base.width, state.base.height, state.base.palette, state.base.width > 64 ? 4 : 8);
+          renderBasePreview();
+          $("baseInfo").textContent += "（エディタからライブ同期）";
+          scheduleSessionSave();
+        }
+      }
       if (applyTaggedFrames(m)) {
         $("progressWrap").style.display = "flex";
         $("progressText").textContent = "🔄 エディタの編集を反映しました（ライブ同期）";

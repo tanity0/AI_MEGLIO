@@ -1252,6 +1252,7 @@ async function main() {
             palette: p.palette.slice(),
             frames: p.frames.map((f) => Uint8Array.from(f.pixels)),
             tags: (p.tags || []).map((t) => ({ name: t.name, start: t.start, end: t.end })),
+            current: store.state.currentFrame, // §58.7: ウィザードのベース更新に使う
           });
         } catch {}
       }, 800);
