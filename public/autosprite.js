@@ -1456,8 +1456,25 @@ function init() {
     const liveBc = new BroadcastChannel("aimeglio-live");
     liveBc.onmessage = (ev) => {
       const m = ev.data;
-      if (!m || m.type !== "quickgen-frames" || !state.base || state.running) return;
-      if (m.width !== state.base.width || m.height !== state.base.height) return;
+      if (!m || m.type !== "quickgen-frames" || state.running) return;
+      if (!state.base) {
+        // §58.5: ウィザードが空なら、エディタのプロジェクトをそのまま土台として受け入れる
+        // （JSON読み込み直後などでも⚡を押し直さずに同期が始まる）
+        const first = m.frames && m.frames[0] ? Uint8Array.from(m.frames[0]) : null;
+        if (!first || first.length !== m.width * m.height) return;
+        state.base = { width: m.width, height: m.height, pixels: first, palette: m.palette };
+        state.referencePng = pixelsToPngDataUrl(state.base.pixels, m.width, m.height, m.palette, m.width > 64 ? 4 : 8);
+        renderBasePreview();
+        $("baseInfo").textContent += "（エディタからライブ同期）";
+        setLocked("step2", false);
+        setLocked("step3", false);
+        setLocked("step4", true);
+      } else if (m.width !== state.base.width || m.height !== state.base.height) {
+        // §58.5: 黙って無視せず理由を表示
+        $("progressWrap").style.display = "flex";
+        $("progressText").textContent = `⚠ エディタ側（${m.width}×${m.height}）とキャンバスサイズが違うため同期していません。エディタの「⚡ クイック生成」で渡し直してください`;
+        return;
+      }
       state.base.palette = m.palette; // パレット編集も追従
       if (applyTaggedFrames(m)) {
         $("progressWrap").style.display = "flex";

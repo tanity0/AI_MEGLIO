@@ -34,8 +34,19 @@ export function removeBackground(data, w, h, opts = {}) {
   const out = new Uint8ClampedArray(data);
 
   // 自動背景色: 外周ピクセルの最頻色（16段量子化）
+  // §59.6: 外周がほぼ透明（60%以上）なら背景色の自動検出をしない。端に接した
+  // スプライトの輪郭色を「背景」と誤検出し、閾値ぶんの暗色（黒い輪郭・足元）を
+  // 外側から食い尽くす事故を防ぐ（透明背景の画像に色ベースの除去は不要）。
   let bg = bgColor;
+  let skipAutoBg = false;
   if (!bg) {
+    let border = 0, clearBorder = 0;
+    const look = (x, y) => { border++; if (out[(y * w + x) * 4 + 3] < 32) clearBorder++; };
+    for (let x = 0; x < w; x++) { look(x, 0); look(x, h - 1); }
+    for (let y = 0; y < h; y++) { look(0, y); look(w - 1, y); }
+    skipAutoBg = border > 0 && clearBorder / border >= 0.6;
+  }
+  if (!bg && !skipAutoBg) {
     const counts = new Map();
     const consider = (x, y) => {
       const o = (y * w + x) * 4;
@@ -953,12 +964,15 @@ export function convertFramesExact(data, w, h, boxes, align = "bottom", info) {
     return a < 255 ? rgb + a.toString(16).padStart(2, "0") : rgb;
   })];
 
-  // pass2: 共通キャンバスへ配置（下端中央 / 中央）
+  // pass2: 共通キャンバスへ配置（下端中央 / 中央）。§59.7: 各フレームの出力(0,0)が
+  // 元画像のどこに当たるか（frameOrigins）も返す（比較ビューの位置合わせ用）
   const counts = new Uint32Array(palette.length);
+  const frameOrigins = [];
   const framesPixels = snapped.map((s) => {
     const pixels = new Uint8Array(outW * outH);
     const offX = Math.floor((outW - s.cols) / 2);
     const offY = align === "center" ? Math.floor((outH - s.rows) / 2) : outH - PAD_BOTTOM - s.rows;
+    frameOrigins.push({ x: ox + (s.cx0 - offX) * block, y: oy + (s.cy0 - offY) * block });
     for (let cy = 0; cy < s.rows; cy++) {
       for (let cx = 0; cx < s.cols; cx++) {
         const c = sample(s.cx0 + cx, s.cy0 + cy);
@@ -977,8 +991,9 @@ export function convertFramesExact(data, w, h, boxes, align = "bottom", info) {
     framesPixels,
     palette,
     counts,
-    originX: boxes[0].x0,
-    originY: boxes[0].y0,
+    originX: frameOrigins[0].x,
+    originY: frameOrigins[0].y,
+    frameOrigins, // §59.7
     srcCellSize: block,
     exact: true,
   };

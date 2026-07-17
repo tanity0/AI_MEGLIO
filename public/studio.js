@@ -228,7 +228,12 @@ async function runConvert() {
         exactBoxes = [{ x0, y0, x1, y1 }];
       }
       res = convertFramesExact(bgCache, srcData.w, srcData.h, exactBoxes, split.align, exactInfo);
-      if (res.framesPixels && res.framesPixels[activeFrame]) res.pixels = res.framesPixels[activeFrame];
+      if (res.framesPixels && res.framesPixels[activeFrame]) {
+        res.pixels = res.framesPixels[activeFrame];
+        // §59.7: アクティブフレームの元画像座標に重ねて表示（1コマ目の位置に固定されるズレを修正）
+        const org = res.frameOrigins && res.frameOrigins[activeFrame];
+        if (org) { res.originX = org.x; res.originY = org.y; }
+      }
       result = res;
       const nfx = res.framesPixels.length;
       $("studioStatus").textContent =
