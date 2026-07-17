@@ -514,26 +514,51 @@ function receiveEditorHandoff() {
   setLocked("step2", false);
   setLocked("step3", false);
   setLocked("step4", true);
-  // §58.3: エディタで修正済みのフレームをムーブ結果として復元（タグ名 = ムーブ名）
-  if (Array.isArray(p.frames) && Array.isArray(p.tags)) {
-    const size = p.width * p.height;
-    for (const tag of p.tags) {
-      const move = MOVES.find((m) => m.key === tag.name);
-      if (!move || !Number.isInteger(tag.start) || !Number.isInteger(tag.end) || tag.end < tag.start) continue;
-      const frames = p.frames.slice(tag.start, tag.end + 1).filter((f) => Array.isArray(f) && f.length === size);
-      if (!frames.length) continue;
+  // §58.3/§58.4: エディタのフレームをムーブ結果として復元
+  applyTaggedFrames(p);
+}
+
+// §58.4: タグ付きフレーム（{width,height,frames,tags}）をムーブ結果へ反映する共通処理。
+// タグ名 = ムーブ名が原則。**ムーブ名に一致するタグが1つも無い場合**（シート取り込み等の
+// 「all」タグなど）は、最初のタグ範囲を「カスタム」ムーブとして受け入れる。
+function applyTaggedFrames(p) {
+  if (!state.base || !Array.isArray(p.frames) || !Array.isArray(p.tags)) return false;
+  const size = p.width * p.height;
+  const framesOf = (tag) => {
+    if (!Number.isInteger(tag.start) || !Number.isInteger(tag.end) || tag.end < tag.start) return [];
+    return p.frames.slice(tag.start, tag.end + 1).filter((f) => f && f.length === size);
+  };
+  let applied = false;
+  for (const tag of p.tags) {
+    const move = MOVES.find((m) => m.key === tag.name);
+    if (!move) continue;
+    const frames = framesOf(tag);
+    if (!frames.length) continue;
+    move.on = true;
+    move.frames = frames.length;
+    state.results.set(move.key, frames.map((f) => ({ status: "ok", pixels: Uint8Array.from(f), error: null })));
+    applied = true;
+  }
+  if (!applied) {
+    // フォールバック: 先頭タグ（例: "all"）→ カスタムムーブとして復元
+    const tag = p.tags[0];
+    const frames = tag ? framesOf(tag) : [];
+    if (frames.length) {
+      const move = MOVES.find((m) => m.key === "custom");
       move.on = true;
       move.frames = frames.length;
+      if (!move.customText) move.customText = tag.name || "imported";
       state.results.set(move.key, frames.map((f) => ({ status: "ok", pixels: Uint8Array.from(f), error: null })));
-    }
-    const withResults = MOVES.filter((m) => state.results.has(m.key));
-    if (withResults.length) {
-      renderMoveCards();
-      renderResults(withResults);
-      for (const m of withResults) state.results.get(m.key).forEach((_, i) => renderThumb(m, i));
-      updateExportState();
+      applied = true;
     }
   }
+  if (!applied) return false;
+  const withResults = MOVES.filter((m) => state.results.has(m.key));
+  renderMoveCards();
+  renderResults(withResults);
+  for (const m of withResults) state.results.get(m.key).forEach((_, i) => renderThumb(m, i));
+  updateExportState();
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1424,6 +1449,22 @@ function init() {
 
   requestAnimationFrame(animLoop);
   receiveEditorHandoff(); // §58.2
+
+  // §58.4: エディタからのライブ同期を受信（同一ブラウザの別タブ）。
+  // ベースとキャンバス寸法が一致するときだけ反映（無関係なプロジェクトは無視）。
+  if ("BroadcastChannel" in window) {
+    const liveBc = new BroadcastChannel("aimeglio-live");
+    liveBc.onmessage = (ev) => {
+      const m = ev.data;
+      if (!m || m.type !== "quickgen-frames" || !state.base || state.running) return;
+      if (m.width !== state.base.width || m.height !== state.base.height) return;
+      state.base.palette = m.palette; // パレット編集も追従
+      if (applyTaggedFrames(m)) {
+        $("progressWrap").style.display = "flex";
+        $("progressText").textContent = "🔄 エディタの編集を反映しました（ライブ同期）";
+      }
+    };
+  }
 
   // §59.3: 旧SW（cache-first時代・§55.7以前）を掴んだままのブラウザを自己回復させる。
   // このページからも SW 本体の更新チェックと version.json の再確認を明示的に起こす

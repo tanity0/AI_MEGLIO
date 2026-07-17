@@ -1231,6 +1231,29 @@ async function main() {
   applyStaticModeUI(); // §48.2: サーバー前提UIの非表示・ギャラリーを開くの復活
   renderBackendLabel();
   store.notify();
+  // §58.4: クイック生成タブへのライブ同期。編集（notify）のたびに debounce して
+  // 全フレーム＋タグを BroadcastChannel で配信（ウィザード側はタグ名=ムーブ名の範囲を反映）。
+  if ("BroadcastChannel" in window) {
+    const liveBc = new BroadcastChannel("aimeglio-live");
+    let liveTimer = null;
+    store.subscribe(() => {
+      clearTimeout(liveTimer);
+      liveTimer = setTimeout(() => {
+        const p = store.state.project;
+        try {
+          liveBc.postMessage({
+            type: "quickgen-frames",
+            width: p.width,
+            height: p.height,
+            palette: p.palette.slice(),
+            frames: p.frames.map((f) => Uint8Array.from(f.pixels)),
+            tags: (p.tags || []).map((t) => ({ name: t.name, start: t.start, end: t.end })),
+          });
+        } catch {}
+      }, 800);
+    });
+  }
+
   // デバッグ/E2Eテスト用フック（UIには影響しない）
   window.aiMeglio = { store, openStudio, studioView: getStudioView };
 }
