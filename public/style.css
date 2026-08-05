@@ -399,6 +399,8 @@ aside, #canvasPanel {
   background: var(--bd-wrap); /* §45.2: キャンバス外周は背景色と同系で僅かに差を付ける */
 }
 #canvasWrap.panning { cursor: grabbing; }
+#canvasWrap.pan-tool, #canvasWrap.pan-tool canvas { cursor: grab; } /* §71 */
+#canvasWrap.pan-tool.panning, #canvasWrap.pan-tool.panning canvas { cursor: grabbing; }
 #canvasWrap > #canvasStack { margin: auto; position: relative; }
 #canvasStack > canvas { display: block; }
 #mainCanvas {

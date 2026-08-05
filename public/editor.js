@@ -964,6 +964,13 @@ export function initEditor(store, toast) {
     if (ev.button !== 0) return; // 描画は左ボタン/主ボタンのみ（中ボタンはパン）
     if (ev.pointerType === "touch" && touchPoints.size >= 2) return; // 2本指ジェスチャー中は描画しない
     if (store.state.rigAdjustMode) return; // リグ調整モード中はrig.jsがドラッグを処理する
+    // §71: ✋移動ツール中はキャンバス上のドラッグをパンにする（描画しない）
+    if (store.state.tool === "pan") {
+      panning = { x: ev.clientX, y: ev.clientY, left: wrap.scrollLeft, top: wrap.scrollTop };
+      wrap.classList.add("panning");
+      ev.preventDefault();
+      return;
+    }
     const { x, y } = cellFromEvent(ev);
     // §50.3: 拡大鏡/指先オフセットマーカー用のホバー状態を、タッチはpointermoveが来る前に
     // ここで先行更新しておく（静止した長押しではpointermoveが発生しないため）。
@@ -1996,7 +2003,7 @@ export function initEditor(store, toast) {
   // ---------------------------------------------------------------------
   // ツール切替
   // ---------------------------------------------------------------------
-  const TOOL_KEYS = { b: "pen", e: "eraser", f: "fill", s: "select", i: "eyedropper", w: "magic" };
+  const TOOL_KEYS = { b: "pen", e: "eraser", f: "fill", s: "select", i: "eyedropper", w: "magic", h: "pan" }; // §71: h=✋移動
   function switchTool(tool) {
     if (floating && tool !== store.state.tool) commitFloating(); // §32: ツール切替で焼き込み
     store.state.tool = tool;
@@ -2452,6 +2459,7 @@ export function initEditor(store, toast) {
     zoomRange.value = String(store.state.zoom);
     zoomLabel.textContent = `${store.state.zoom}x`;
     toolButtons.forEach((btn) => btn.classList.toggle("is-active", btn.dataset.tool === store.state.tool));
+    wrap.classList.toggle("pan-tool", store.state.tool === "pan"); // §71: grabカーソル
     brushSizeButtons.forEach((btn) => btn.classList.toggle("is-active", Number(btn.dataset.size) === store.state.brushSize));
     document.getElementById("selMoveBtn")?.classList.toggle("is-active", !!floating); // §32
     placeMagicOptions(); // §51/§61: マジック選択ツール選択時のみオプション表示（スマホはフローティング）
