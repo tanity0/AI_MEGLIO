@@ -549,8 +549,8 @@ function rigFromPlain(raw, width, height) {
 export function projectFromPlain(o) {
   if (!o || typeof o !== "object") throw new Error("不正なプロジェクトファイルです");
   const { width, height, fps, palette, frames, baseFrame, lockedRects } = o;
-  if (!Number.isInteger(width) || width < 8 || width > 128) throw new Error("width が不正です");
-  if (!Number.isInteger(height) || height < 8 || height > 128) throw new Error("height が不正です");
+  if (!Number.isInteger(width) || width < 8 || width > 256) throw new Error("width が不正です"); // §70
+  if (!Number.isInteger(height) || height < 8 || height > 256) throw new Error("height が不正です"); // §70
   if (!Number.isInteger(fps) || fps < 1 || fps > 24) throw new Error("fps が不正です");
   if (!Array.isArray(palette) || palette.length < 1 || palette.length > 256) throw new Error("palette が不正です");
   if (!Array.isArray(frames) || frames.length < 1) throw new Error("frames が不正です");

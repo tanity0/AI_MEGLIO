@@ -497,7 +497,7 @@ async function generateCandidates() {
   } else {
     const oneToOneRows = Math.round((srcData.h / grid.s) * 0.9);
     const resolutions = [];
-    if (oneToOneRows <= 128) resolutions.push({ label: "1:1", oneToOne: true, targetH: 0 });
+    if (oneToOneRows <= 256) resolutions.push({ label: "1:1", oneToOne: true, targetH: 0 }); // §70
     else resolutions.push({ label: "H96", oneToOne: false, targetH: 96 });
     resolutions.push({ label: "H64", oneToOne: false, targetH: 64 });
     resolutions.push({ label: "H48", oneToOne: false, targetH: 48 });

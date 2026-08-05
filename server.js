@@ -424,8 +424,8 @@ function validateEditRequest(body) {
   const { project, scope, frameIndex, selection, instruction, images, mode, baseFrameGrid, lockedRects, motion, allowedMask } = body;
   if (!project || typeof project !== "object") throw new Error("project が必要です");
   const { width, height, fps, palette, framesGrid } = project;
-  if (!Number.isInteger(width) || width < 8 || width > 128) throw new Error("width が不正です");
-  if (!Number.isInteger(height) || height < 8 || height > 128) throw new Error("height が不正です");
+  if (!Number.isInteger(width) || width < 8 || width > 256) throw new Error("width が不正です"); // §70
+  if (!Number.isInteger(height) || height < 8 || height > 256) throw new Error("height が不正です"); // §70
   if (!Number.isInteger(fps) || fps < 1 || fps > 24) throw new Error("fps が不正です");
   if (!Array.isArray(palette) || palette.length < 1 || palette.length > 256) throw new Error("palette が不正です");
   if (!Array.isArray(framesGrid) || framesGrid.length < 1) throw new Error("framesGrid が不正です");

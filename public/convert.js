@@ -4,6 +4,9 @@
 // ---------------------------------------------------------------------------
 // 色ユーティリティ
 // ---------------------------------------------------------------------------
+// §70: 出力キャンバスの上限（§18.1の128から拡張）
+export const MAX_OUT = 256;
+
 function rgbToHex(r, g, b) {
   return "#" + [r, g, b].map((v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0")).join("");
 }
@@ -401,15 +404,15 @@ export function convertImage(data, w, h, params) {
     gx0 = x0 - (((x0 - ox) % s) + s) % s;
     gy0 = y0 - (((y0 - oy) % s) + s) % s;
   }
-  // 横長素材対策: 高さ指定モードでは幅も128に収まるようセルサイズを自動クランプ
+  // 横長素材対策: 高さ指定モードでは幅も上限に収まるようセルサイズを自動クランプ（§70: 256）
   if (targetH > 0) {
-    const minCsForWidth = (x1 + 1 - gx0) / 127.5;
+    const minCsForWidth = (x1 + 1 - gx0) / (MAX_OUT - 0.5);
     if (cs < minCsForWidth) cs = minCsForWidth;
   }
   const cols = Math.ceil((x1 + 1 - gx0) / cs);
   const rows = Math.ceil((y1 + 1 - gy0) / cs);
-  if (cols > 128 || rows > 128) {
-    throw new Error(`出力が128pxを超えます（${cols}×${rows}）。解像度を下げてください`);
+  if (cols > MAX_OUT || rows > MAX_OUT) {
+    throw new Error(`出力が${MAX_OUT}pxを超えます（${cols}×${rows}）。解像度を下げてください`);
   }
 
   const cellColors = sampleCellsRegion(data, w, h, { cs, gx0, gy0, cols, rows, domBlend, centerWeight, edgeProtect });
@@ -540,12 +543,12 @@ export function convertSheetImage(data, w, h, params, boxes, align = "bottom") {
   if (targetH > 0 && cs < 0.5) cs = 0.5;
   // モーション用パディング: 左右2セル・上2セル・下0（接地）
   const PAD_X = 2, PAD_TOP = 2, PAD_BOTTOM = 0;
-  // 128クランプ（§18.1）
-  cs = Math.max(cs, maxBoxW / (128 - PAD_X * 2), maxBoxH / (128 - PAD_TOP - PAD_BOTTOM));
+  // 上限クランプ（§18.1→§70: 256）
+  cs = Math.max(cs, maxBoxW / (MAX_OUT - PAD_X * 2), maxBoxH / (MAX_OUT - PAD_TOP - PAD_BOTTOM));
   const poseColsMax = Math.ceil(maxBoxW / cs);
   const poseRowsMax = Math.ceil(maxBoxH / cs);
-  const outW = Math.min(128, poseColsMax + PAD_X * 2);
-  const outH = Math.min(128, poseRowsMax + PAD_TOP + PAD_BOTTOM);
+  const outW = Math.min(MAX_OUT, poseColsMax + PAD_X * 2);
+  const outH = Math.min(MAX_OUT, poseRowsMax + PAD_TOP + PAD_BOTTOM);
 
   // 各ポーズのセル色をサンプリング（グリッドはポーズboxの下端に揃える）
   const poseCells = [];
@@ -670,11 +673,11 @@ export function convertFramesShared(rawData, w, h, global, boxes, perFrameParams
   const maxBoxH = Math.max(...valid.map((b) => b.y1 - b.y0 + 1));
   let cs = oneToOne ? s : maxBoxH / targetH;
   const PAD_X = 2, PAD_TOP = 2, PAD_BOTTOM = 0;
-  cs = Math.max(cs, maxBoxW / (128 - PAD_X * 2), maxBoxH / (128 - PAD_TOP - PAD_BOTTOM));
+  cs = Math.max(cs, maxBoxW / (MAX_OUT - PAD_X * 2), maxBoxH / (MAX_OUT - PAD_TOP - PAD_BOTTOM));
   const poseColsMax = Math.ceil(maxBoxW / cs);
   const poseRowsMax = Math.ceil(maxBoxH / cs);
-  const outW = Math.min(128, poseColsMax + PAD_X * 2);
-  const outH = Math.min(128, poseRowsMax + PAD_TOP + PAD_BOTTOM);
+  const outW = Math.min(MAX_OUT, poseColsMax + PAD_X * 2);
+  const outH = Math.min(MAX_OUT, poseRowsMax + PAD_TOP + PAD_BOTTOM);
 
   // pass1: 各フレームをフレーム別つまみでサンプリング（下端揃え・中央x）
   const poseCells = [];
@@ -952,7 +955,7 @@ export function convertFramesExact(data, w, h, boxes, align = "bottom", info) {
   const PAD_X = 2, PAD_TOP = 2, PAD_BOTTOM = 0;
   const outW = Math.max(...snapped.map((s) => s.cols)) + PAD_X * 2;
   const outH = Math.max(...snapped.map((s) => s.rows)) + PAD_TOP + PAD_BOTTOM;
-  if (outW > 128 || outH > 128) throw new Error(`無劣化1:1では出力が128pxを超えます（${outW}×${outH}）。無劣化を外して解像度指定で変換してください`);
+  if (outW > MAX_OUT || outH > MAX_OUT) throw new Error(`無劣化1:1では出力が${MAX_OUT}pxを超えます（${outW}×${outH}）。無劣化を外して解像度指定で変換してください`);
 
   // §59.4: セル内の全ピクセル多数決（中心1点だと原点の推定誤差で1マス幅の輪郭が消える）
   const sample = (cx, cy) => {

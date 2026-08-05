@@ -2,7 +2,7 @@
 // PNG/GIF(1枚目)/WebP を読み込み、拡大率の自動検出・パレット抽出を行い、
 // frame 0 = ベースフレームのプロジェクトを返す。
 
-const MAX_SIZE = 128;
+const MAX_SIZE = 256; // §70: 128→256
 // §59: プロジェクトのパレット上限（256・§18.1のワイドパレット）に合わせる。
 // 旧上限32のままだと、変換スタジオ（既定64色）で作った自作ドット絵の書き出しを
 // 読み込み直したとき上位31色へ丸められ「少し崩れる」劣化が起きていた。
@@ -160,8 +160,8 @@ export async function probeImage(file) {
     const block = detectBlockSize(data, bitmap.width, bitmap.height);
     const realW = Math.max(1, Math.round(bitmap.width / block));
     const realH = Math.max(1, Math.round(bitmap.height / block));
-    if (block < 2 && (bitmap.width > 128 || bitmap.height > 128)) return { shortcut: false };
-    if (realW > 128 || realH > 128) return { shortcut: false };
+    if (block < 2 && (bitmap.width > 256 || bitmap.height > 256)) return { shortcut: false }; // §70
+    if (realW > 256 || realH > 256) return { shortcut: false }; // §70
     // 生の色数（量子化なし・§59.1: アルファ込み）
     const colors = new Set();
     for (let i = 0; i < data.length; i += 4) {
