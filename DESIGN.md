@@ -2238,3 +2238,25 @@ state.base.pixels と state.referencePng（生成のたびAIへ渡す参照画�
 
 - 静的E2E: 応答を遅延させたルートで🔁 → 注記に「生成中」と経過秒が表示され、完了後に消える。
   既存スイート退行なし。バージョン繰り上げ。
+
+## 70. 出力上限を128px→256pxへ拡張
+
+実機報告: 128pxまでしか変換できず、超える指定をすると変換結果が消える（実体は
+convertImage 等の「出力が128pxを超えます」例外）。
+
+### 70.1 変更
+
+- convert.js に `MAX_OUT = 256` を導入し、§18.1 以来の128クランプ/例外を一括で256へ:
+  convertImage（幅自動クランプ・超過例外）、convertSheetImage、convertFramesShared、
+  convertFramesExact（無劣化1:1の超過例外）。
+- import.js `MAX_SIZE` 128→256（取り込み実寸上限・1:1ショートカット判定）。
+- studio.js 1:1候補の判定 128→256。index.html の解像度/キャンバス入力 max 128→256。
+- プロジェクト検証（app.js projectFromPlain / server.js）width/height 上限 128→256。
+- クイック生成: expandBaseCanvas の上限 128→256、ステップ1の解像度に 96px/128px を追加。
+
+### 70.2 注意と検証
+
+- 256×256 はエディタ・書き出しとも動作するが、テキストエンジン（motionframe）へは
+  グリッドが巨大になるため実用外（画像エンジン推奨のまま）。
+- 静的E2E: 300px素材を targetH=200 で変換 → 例外なく 200px 出力。既存スイート退行なし。
+  バージョン繰り上げ。
