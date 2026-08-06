@@ -135,6 +135,7 @@ export function initAutosave(store, toast) {
   function scheduleSave() {
     if (disabled) return;
     if (store.state.liveSyncEnabled) return; // §29: ライブ同期中は自動保存を停止（二重管理防止）
+    if (store.state.paletteAdjPreview) return; // §72.1: 色調整プレビュー中は未確定の色を保存しない
     if (timer) clearTimeout(timer);
     timer = setTimeout(doSave, DEBOUNCE_MS);
   }
@@ -142,6 +143,7 @@ export function initAutosave(store, toast) {
   async function doSave() {
     timer = null;
     if (disabled || store.state.liveSyncEnabled) return;
+    if (store.state.paletteAdjPreview) return; // §72.1
     if (saving) { scheduleSave(); return; }
     saving = true;
     try {

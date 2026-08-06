@@ -2175,6 +2175,7 @@ export function initEditor(store, toast) {
   const adjSat = document.getElementById("adjSat");
   const adjVals = { adjBright: document.getElementById("adjBrightVal"), adjContrast: document.getElementById("adjContrastVal"), adjSat: document.getElementById("adjSatVal") };
   let adjBase = null; // パネルを開いた時点のパレット（プレビューの基準・キャンセルで復元）
+  let adjProjRef = null; // §72.1: adjBase を取ったときのプロジェクト参照（差し替え検知用）
 
   function adjustHex(hex, bAmt, cAmt, sAmt) {
     const [r0, g0, b0, a] = hexToRgba(hex);
@@ -2193,7 +2194,11 @@ export function initEditor(store, toast) {
   }
   function adjPreview() {
     const p = project();
-    if (!adjBase) adjBase = { palette: p.palette.slice(), main: p.mainPalette ? p.mainPalette.colors.slice() : null };
+    if (!adjBase) {
+      adjBase = { palette: p.palette.slice(), main: p.mainPalette ? p.mainPalette.colors.slice() : null };
+      adjProjRef = p; // §72.1
+      store.state.paletteAdjPreview = true; // §72.1: プレビュー中は自動保存を止める
+    }
     const { b, c, s } = adjParams();
     adjVals.adjBright.textContent = String(b);
     adjVals.adjContrast.textContent = String(c);
@@ -2204,15 +2209,27 @@ export function initEditor(store, toast) {
   }
   function adjRestore() {
     const p = project();
-    if (!adjBase) return;
+    // §72.1: プロジェクトが差し替わっていたら（アンドゥ/読込）古いパレットを書き戻さない
+    if (!adjBase || p !== adjProjRef) return;
     p.palette = adjBase.palette.slice();
     if (adjBase.main && p.mainPalette) p.mainPalette.colors = adjBase.main.slice();
   }
-  function adjClose() {
+  function adjDiscard() { // §72.1: プレビュー状態の破棄（書き戻しなし）
     adjBase = null;
-    colorAdjPanel.hidden = true;
+    adjProjRef = null;
+    store.state.paletteAdjPreview = false;
     adjBright.value = adjContrast.value = adjSat.value = "0";
+    adjVals.adjBright.textContent = adjVals.adjContrast.textContent = adjVals.adjSat.textContent = "0";
   }
+  function adjClose() {
+    adjDiscard();
+    colorAdjPanel.hidden = true;
+  }
+  // §72.1: プレビュー中にプロジェクトが差し替わった（アンドゥ/リドゥ/読込）ら黙って破棄。
+  // 差し替え後のパレットが正となり、スライダーは0から仕切り直しになる
+  store.subscribe(() => {
+    if (adjBase && project() !== adjProjRef) adjDiscard();
+  });
   colorAdjBtn.addEventListener("click", () => {
     if (!colorAdjPanel.hidden) return;
     colorAdjPanel.hidden = false;
@@ -2221,17 +2238,17 @@ export function initEditor(store, toast) {
   });
   [adjBright, adjContrast, adjSat].forEach((r) => r.addEventListener("input", adjPreview));
   document.getElementById("adjResetBtn").addEventListener("click", () => {
-    adjBright.value = adjContrast.value = adjSat.value = "0";
-    if (adjBase) { adjRestore(); adjBase = null; store.notify(); }
-    adjVals.adjBright.textContent = adjVals.adjContrast.textContent = adjVals.adjSat.textContent = "0";
+    if (adjBase) { adjRestore(); adjDiscard(); store.notify(); }
+    else adjDiscard();
   });
   document.getElementById("adjCancelBtn").addEventListener("click", () => {
-    if (adjBase) { adjRestore(); store.notify(); }
-    adjClose();
+    if (adjBase) { adjRestore(); adjClose(); store.notify(); }
+    else adjClose();
   });
   document.getElementById("adjApplyBtn").addEventListener("click", () => {
     const { b, c, s } = adjParams();
-    if (!adjBase || (b === 0 && c === 0 && s === 0)) { adjClose(); store.notify(); return; }
+    // §72.1: プレビュー無し・変化なし・プロジェクト差し替え後は何も確定しない
+    if (!adjBase || project() !== adjProjRef || (b === 0 && c === 0 && s === 0)) { adjClose(); store.notify(); return; }
     const base = adjBase;
     adjRestore(); // いったん元へ戻してから undo を積む（アンドゥ1回で元の色に戻せる）
     store.pushUndo();
