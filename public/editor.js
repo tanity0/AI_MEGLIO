@@ -2165,6 +2165,84 @@ export function initEditor(store, toast) {
       paletteGrid.appendChild(sw);
     });
   }
+  // ---------------------------------------------------------------------
+  // §72: パレット色調整（明るさ・コントラスト・彩度）— ドットはそのまま色だけ変換
+  // ---------------------------------------------------------------------
+  const colorAdjPanel = document.getElementById("colorAdjPanel");
+  const colorAdjBtn = document.getElementById("colorAdjBtn");
+  const adjBright = document.getElementById("adjBright");
+  const adjContrast = document.getElementById("adjContrast");
+  const adjSat = document.getElementById("adjSat");
+  const adjVals = { adjBright: document.getElementById("adjBrightVal"), adjContrast: document.getElementById("adjContrastVal"), adjSat: document.getElementById("adjSatVal") };
+  let adjBase = null; // パネルを開いた時点のパレット（プレビューの基準・キャンセルで復元）
+
+  function adjustHex(hex, bAmt, cAmt, sAmt) {
+    const [r0, g0, b0, a] = hexToRgba(hex);
+    let rgb = [r0, g0, b0].map((v) => v + bAmt * 1.275); // 明るさ ±127
+    const c = cAmt * 1.275;
+    const f = (259 * (c + 255)) / (255 * (259 - c)); // コントラスト（128中心）
+    rgb = rgb.map((v) => (v - 128) * f + 128);
+    const luma = 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]; // 彩度（輝度ミックス）
+    const sf = 1 + sAmt / 100;
+    rgb = rgb.map((v) => Math.max(0, Math.min(255, Math.round(luma + (v - luma) * sf))));
+    const out = "#" + rgb.map((v) => v.toString(16).padStart(2, "0")).join("");
+    return hex.length > 7 ? out + a.toString(16).padStart(2, "0") : out; // #rrggbbaa のアルファ保持
+  }
+  function adjParams() {
+    return { b: Number(adjBright.value), c: Number(adjContrast.value), s: Number(adjSat.value) };
+  }
+  function adjPreview() {
+    const p = project();
+    if (!adjBase) adjBase = { palette: p.palette.slice(), main: p.mainPalette ? p.mainPalette.colors.slice() : null };
+    const { b, c, s } = adjParams();
+    adjVals.adjBright.textContent = String(b);
+    adjVals.adjContrast.textContent = String(c);
+    adjVals.adjSat.textContent = String(s);
+    for (let i = 1; i < p.palette.length; i++) p.palette[i] = adjustHex(adjBase.palette[i], b, c, s);
+    if (adjBase.main && p.mainPalette) p.mainPalette.colors = adjBase.main.map((hex) => adjustHex(hex, b, c, s));
+    store.notify();
+  }
+  function adjRestore() {
+    const p = project();
+    if (!adjBase) return;
+    p.palette = adjBase.palette.slice();
+    if (adjBase.main && p.mainPalette) p.mainPalette.colors = adjBase.main.slice();
+  }
+  function adjClose() {
+    adjBase = null;
+    colorAdjPanel.hidden = true;
+    adjBright.value = adjContrast.value = adjSat.value = "0";
+  }
+  colorAdjBtn.addEventListener("click", () => {
+    if (!colorAdjPanel.hidden) return;
+    colorAdjPanel.hidden = false;
+    adjBright.value = adjContrast.value = adjSat.value = "0";
+    adjVals.adjBright.textContent = adjVals.adjContrast.textContent = adjVals.adjSat.textContent = "0";
+  });
+  [adjBright, adjContrast, adjSat].forEach((r) => r.addEventListener("input", adjPreview));
+  document.getElementById("adjResetBtn").addEventListener("click", () => {
+    adjBright.value = adjContrast.value = adjSat.value = "0";
+    if (adjBase) { adjRestore(); adjBase = null; store.notify(); }
+    adjVals.adjBright.textContent = adjVals.adjContrast.textContent = adjVals.adjSat.textContent = "0";
+  });
+  document.getElementById("adjCancelBtn").addEventListener("click", () => {
+    if (adjBase) { adjRestore(); store.notify(); }
+    adjClose();
+  });
+  document.getElementById("adjApplyBtn").addEventListener("click", () => {
+    const { b, c, s } = adjParams();
+    if (!adjBase || (b === 0 && c === 0 && s === 0)) { adjClose(); store.notify(); return; }
+    const base = adjBase;
+    adjRestore(); // いったん元へ戻してから undo を積む（アンドゥ1回で元の色に戻せる）
+    store.pushUndo();
+    const p = project();
+    for (let i = 1; i < p.palette.length; i++) p.palette[i] = adjustHex(base.palette[i], b, c, s);
+    if (base.main && p.mainPalette) p.mainPalette.colors = base.main.map((hex) => adjustHex(hex, b, c, s));
+    adjClose();
+    store.notify();
+    toast("パレットの色調整を適用しました（ドットは変わっていません）");
+  });
+
   mainPaletteReextractBtn.addEventListener("click", () => {
     const p = project();
     const count = Math.max(8, Math.min(64, Number(mainPaletteCount.value) || 32));

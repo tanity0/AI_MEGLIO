@@ -207,6 +207,18 @@
     <div class="palette-actions">
       <button id="paletteAddBtn" class="btn btn-small">+ 色を追加</button>
       <button id="colorReplaceBtn" class="btn btn-small" title="パレットindexの一括置換（スウォッチ右クリックでも開始）">色置換</button>
+      <button id="colorAdjBtn" class="btn btn-small" title="ドットはそのまま、パレット全体の明るさ・コントラスト・彩度を調整（§72）">🎚 色調整</button>
+    </div>
+    <!-- §72: パレット色調整（ドット不変・ライブプレビュー） -->
+    <div id="colorAdjPanel" class="color-adj" hidden>
+      <label>明るさ <input id="adjBright" type="range" min="-100" max="100" value="0"><span id="adjBrightVal">0</span></label>
+      <label>コントラスト <input id="adjContrast" type="range" min="-100" max="100" value="0"><span id="adjContrastVal">0</span></label>
+      <label>彩度 <input id="adjSat" type="range" min="-100" max="100" value="0"><span id="adjSatVal">0</span></label>
+      <div class="color-adj-actions">
+        <button id="adjApplyBtn" class="btn btn-small">適用</button>
+        <button id="adjResetBtn" class="btn btn-small">リセット</button>
+        <button id="adjCancelBtn" class="btn btn-small">キャンセル</button>
+      </div>
     </div>
 
     <!-- §35: レイヤーパネル（フレームごと独立・上=最前面。opacityは表示専用） -->

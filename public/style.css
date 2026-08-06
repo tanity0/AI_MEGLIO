@@ -399,6 +399,12 @@ aside, #canvasPanel {
   background: var(--bd-wrap); /* §45.2: キャンバス外周は背景色と同系で僅かに差を付ける */
 }
 #canvasWrap.panning { cursor: grabbing; }
+/* §72: パレット色調整パネル */
+.color-adj { display: flex; flex-direction: column; gap: 6px; background: var(--panel2, #242836); border: 1px solid var(--border, #333849); border-radius: 8px; padding: 8px 10px; margin-top: 8px; font-size: 12px; }
+.color-adj label { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.color-adj label input[type="range"] { flex: 1; min-width: 80px; }
+.color-adj label span { min-width: 3em; text-align: right; }
+.color-adj-actions { display: flex; gap: 8px; }
 #canvasWrap.pan-tool, #canvasWrap.pan-tool canvas { cursor: grab; } /* §71 */
 #canvasWrap.pan-tool.panning, #canvasWrap.pan-tool.panning canvas { cursor: grabbing; }
 #canvasWrap > #canvasStack { margin: auto; position: relative; }
