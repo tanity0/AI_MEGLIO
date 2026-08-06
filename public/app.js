@@ -1100,13 +1100,16 @@ async function staticFooterVersionText() {
 // （設定取得は detectStaticMode に一本化済み）。静的モードでは "vX.Y.Z (web)" にフォールバック。
 async function renderBackendLabel() {
   const label = document.getElementById("backendLabel");
+  const panelVer = document.getElementById("panelVersion"); // §73: 左メニュー最上部のバージョン表示
   if (store.state.staticMode) {
     label.textContent = await staticFooterVersionText();
     label.title = "静的モード（GitHub Pages 等）: サーバー機能（AI編集・サーバー保存等）は無効です";
+    if (panelVer) panelVer.textContent = label.textContent;
     return;
   }
   const cfg = store.state.serverConfig;
   if (!cfg) { label.textContent = "バックエンド: 不明"; return; }
+  if (panelVer && cfg.version) panelVer.textContent = `v${cfg.version}`;
   const name = cfg.mock ? "MOCK" : cfg.backend === "cli" ? "Claude Code CLI" : cfg.backend === "codex" ? "Codex CLI" : "API";
   const ver = cfg.version ? ` · v${cfg.version}${cfg.commit ? ` (${cfg.commit})` : ""}` : "";
   label.textContent = `バックエンド: ${name}${ver}`;
