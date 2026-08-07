@@ -401,8 +401,11 @@ function attachViewControls() {
 
     c.addEventListener("pointerdown", (ev) => {
       if (ev.pointerType === "touch") {
+        // §74: up/cancel を取りこぼした幽霊ポイントの自己回復。新しいタッチ列の1本目
+        // （isPrimary）が来た時点で残留エントリは全て陳腐化しているためクリアする
+        if (ev.isPrimary && touchPoints.size) { touchPoints.clear(); pinch = null; pan = null; }
         touchPoints.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
-        c.setPointerCapture?.(ev.pointerId); // 2本目もキャプチャ（画面外に指が出てもピンチを継続）
+        try { c.setPointerCapture(ev.pointerId); } catch {} // §74: 無効IDの例外で状態を壊さない
         if (touchPoints.size === 2) {
           beginPinch(c.getBoundingClientRect());
           return;
@@ -412,7 +415,7 @@ function attachViewControls() {
       } else if (ev.button !== 0) {
         return; // マウスは主ボタンのみ
       } else {
-        c.setPointerCapture?.(ev.pointerId);
+        try { c.setPointerCapture(ev.pointerId); } catch {} // §74
       }
       pan = { x: ev.clientX, y: ev.clientY, panX: view.panX, panY: view.panY };
     });
@@ -453,6 +456,14 @@ function attachViewControls() {
     c.addEventListener("pointerup", endPointer);
     c.addEventListener("pointercancel", endPointer);
   }
+  // §74: キャンバスに届かなかった up/cancel のバックストップ（捕捉フェーズ）。
+  // キャプチャ喪失・システムジェスチャー割り込みでもエントリを必ず削除する
+  const releasePointer = (ev) => {
+    if (ev.pointerType !== "touch") return;
+    if (touchPoints.delete(ev.pointerId) && touchPoints.size < 2) pinch = null;
+  };
+  window.addEventListener("pointerup", releasePointer, true);
+  window.addEventListener("pointercancel", releasePointer, true);
 }
 
 function fitView() {
