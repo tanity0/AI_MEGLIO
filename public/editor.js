@@ -600,11 +600,11 @@ export function initEditor(store, toast) {
 
   function floodFill(frameIndex, startX, startY, colorIndex) {
     const p = project();
-    if (!inBounds(startX, startY)) return;
+    if (!inBounds(startX, startY)) return false;
     const frame = p.frames[frameIndex];
     const pixels = frameActiveLayerPixels(frame); // §35: 塗りつぶしはアクティブレイヤー対象
     const target = pixels[startY * p.width + startX];
-    if (target === colorIndex) return;
+    if (target === colorIndex) return false; // §76: 変化なし
     const stack = [[startX, startY]];
     const seen = new Uint8Array(p.width * p.height);
     while (stack.length) {
@@ -618,6 +618,7 @@ export function initEditor(store, toast) {
       stack.push([x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]);
     }
     recompositeFrame(frame); // §35: 合成キャッシュ更新
+    return true; // §76: 塗りが発生した
   }
 
   // ------------------------------------------------------------------ §51
@@ -793,6 +794,7 @@ export function initEditor(store, toast) {
   // ペンの長押しスポイト（0.7秒静止で発動、離すと色を拾ってペンに戻る）。
   // 3方向ジェスチャー: 即離す=ドット / すぐ動かす=線 / 0.7秒静止=スポイト。
   const HOLD_EYEDROP_MS = 700;
+  let strokeSnap = null; // §76: 遅延pushUndo用の事前スナップショット
   let holdTimer = null;
   let holdEyedrop = false;
   let holdStartCell = null;
@@ -1005,6 +1007,7 @@ export function initEditor(store, toast) {
     dragTool = tool;
     lastPaintedCell = null;
     lastCell = { x, y };
+    strokeSnap = null; // §76
 
     if (tool === "pen") {
       // ペンは押下時点では打たない。すぐ離す=ドット / 動かす=線 / 0.7秒静止=スポイト（3方向ジェスチャー）
@@ -1020,13 +1023,20 @@ export function initEditor(store, toast) {
         scheduleHoverUpdate(); // §50.3: 拡大鏡を即座に表示（次のpointermoveを待たない）
       }, HOLD_EYEDROP_MS);
     } else if (tool === "eraser") {
-      store.pushUndo();
-      if (paintBrushAt(frameIndex, x, y, 0, store.state.brushSize)) scheduleRender();
+      // §76: 実際に消えた時だけ履歴へ（空エリアなぞりで空アンドゥを積まない）
+      strokeSnap = store.snapshot();
+      if (paintBrushAt(frameIndex, x, y, 0, store.state.brushSize)) {
+        store.pushUndo(strokeSnap);
+        strokeSnap = null;
+        scheduleRender();
+      }
       lastPaintedCell = `${x},${y}`;
     } else if (tool === "fill") {
-      store.pushUndo();
-      floodFill(frameIndex, x, y, store.state.colorIndex);
-      render();
+      const snap = store.snapshot(); // §76: 同色塗りで空アンドゥを積まない
+      if (floodFill(frameIndex, x, y, store.state.colorIndex)) {
+        store.pushUndo(snap);
+        render();
+      }
     } else if (tool === "select") {
       // §32: 既存選択の内側を押下＝ピクセルを持ち上げて移動（Alt/⌥ でコピー移動）。
       // 外側を押下＝新規選択。
@@ -1061,8 +1071,11 @@ export function initEditor(store, toast) {
     if (dragTool === "pen" && pendingPen && `${x},${y}` !== `${pendingPen.x},${pendingPen.y}`) {
       // 保留中のドットを起点に、動いた瞬間から即座に線を引き始める（移動しきい値=1セルでラグなし）。
       // 起点→現在点をブレゼンハムで補間するため、高速ドラッグでも隙間が出ない。
-      store.pushUndo();
-      paintStroke(frameIndex, pendingPen, { x, y }, store.state.colorIndex, store.state.brushSize);
+      strokeSnap = store.snapshot(); // §76
+      if (paintStroke(frameIndex, pendingPen, { x, y }, store.state.colorIndex, store.state.brushSize)) {
+        store.pushUndo(strokeSnap);
+        strokeSnap = null;
+      }
       pendingPen = null;
       lastCell = { x, y };
       lastPaintedCell = `${x},${y}`;
@@ -1075,7 +1088,10 @@ export function initEditor(store, toast) {
         const color = dragTool === "eraser" ? 0 : store.state.colorIndex;
         // 直前セル→現在セルをブレゼンハムで結んで塗る（高速ドラッグでも途切れない）
         const from = lastCell || { x, y };
-        if (paintStroke(frameIndex, from, { x, y }, color, store.state.brushSize)) scheduleRender();
+        if (paintStroke(frameIndex, from, { x, y }, color, store.state.brushSize)) {
+          if (strokeSnap) { store.pushUndo(strokeSnap); strokeSnap = null; } // §76
+          scheduleRender();
+        }
         lastPaintedCell = key;
         lastCell = { x, y };
       }
@@ -1099,9 +1115,11 @@ export function initEditor(store, toast) {
       holdEyedrop = false;
       canvas.style.cursor = "";
     } else if (pendingPen && dragTool === "pen") {
-      // すぐ離した → ドット確定
-      store.pushUndo();
-      paintBrushAt(store.state.currentFrame, pendingPen.x, pendingPen.y, store.state.colorIndex, store.state.brushSize);
+      // すぐ離した → ドット確定（§76: 同色ドットは履歴に積まない）
+      const snap = store.snapshot();
+      if (paintBrushAt(store.state.currentFrame, pendingPen.x, pendingPen.y, store.state.colorIndex, store.state.brushSize)) {
+        store.pushUndo(snap);
+      }
       render();
     } else if (dragging && (dragTool === "pen" || dragTool === "eraser")) {
       // ストローク終了：バッチ中の最終状態を確実に描画
@@ -1112,6 +1130,7 @@ export function initEditor(store, toast) {
     }
     pendingPen = null;
     dragging = false;
+    strokeSnap = null; // §76
     dragTool = null;
     dragStart = null;
     lastPaintedCell = null;

@@ -699,8 +699,9 @@ class Store {
   notify() {
     for (const fn of this.listeners) fn();
   }
-  pushUndo() {
-    this.undoStack.push(projectToPlain(this.state.project));
+  // §76: plain を渡すと「事前に取ったスナップショット」を履歴へ積む（遅延pushUndo用）
+  pushUndo(plain = null) {
+    this.undoStack.push(plain || projectToPlain(this.state.project));
     if (this.undoStack.length > UNDO_LIMIT) this.undoStack.shift();
     this.redoStack.length = 0;
     // §49.7-2: アンドゥ不発の根因。pushUndo() は undoStack/redoStack を変更する唯一の経路の
@@ -712,6 +713,9 @@ class Store {
     // その後たまたま別の操作で notify() が走った時だけ同期されて「たまに効く」ように見えていた。
     // pushUndo() 自体で通知することで、undoStack が増えた瞬間に必ずボタンが活性化する。
     this.notify();
+  }
+  snapshot() { // §76: 変化があった時だけ積む遅延pushUndo用の事前スナップショット
+    return projectToPlain(this.state.project);
   }
   undo() {
     if (this.undoStack.length === 0) return false;
