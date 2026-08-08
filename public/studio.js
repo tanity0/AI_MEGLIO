@@ -1,6 +1,6 @@
 // studio.js — §18.2 変換スタジオ（インポートウィザードv2）UI
 // 候補ギャラリー → つまみでリアルタイム再変換 → 元画像との同期ズーム比較 → 確定
-import { removeBackground, estimateGrid, convertImage, convertSheetImage, convertFramesShared, detectComponents, extractMainPalette, detectExactPixelArt, convertFramesExact } from "./convert.js";
+import { removeBackground, estimateGrid, convertImage, convertSheetImage, convertFramesShared, detectComponents, detectComponentsDetailed, extractMainPalette, detectExactPixelArt, convertFramesExact } from "./convert.js";
 import { hexToRgba, defaultTags } from "./app.js";
 
 // §30: フレーム別に持つつまみ（サイズ・共有パレット以外＝サンプリング/背景除去系）
@@ -745,6 +745,39 @@ function padPixels(srcPx, sw, sh, dw, dh) {
   return out;
 }
 
+// §77: 変換結果（索引グリッド）を連結成分ごとのレイヤーへ分割。
+// 面積フィルタで箱に入らなかった微小成分は最も近いパーツへ帰属（画素を捨てない）。
+function buildPartLayers(pixels, W, H) {
+  const rgba = new Uint8ClampedArray(W * H * 4);
+  for (let i = 0; i < W * H; i++) if (pixels[i]) rgba[i * 4 + 3] = 255;
+  const det = detectComponentsDetailed(rgba, W, H, { mergeMargin: 2 }); // §77: セル単位なので近接マージは2px
+  if (det.boxes.length < 2) return null;
+  const MAXP = 16;
+  const groups = det.boxes.length > MAXP
+    ? [...det.boxes.slice(0, MAXP - 1).map((b) => ({ labels: b.labels, cx: (b.x0 + b.x1) / 2, cy: (b.y0 + b.y1) / 2 })),
+       { labels: det.boxes.slice(MAXP - 1).flatMap((b) => b.labels), cx: det.boxes[MAXP - 1].x0, cy: det.boxes[MAXP - 1].y0 }]
+    : det.boxes.map((b) => ({ labels: b.labels, cx: (b.x0 + b.x1) / 2, cy: (b.y0 + b.y1) / 2 }));
+  const labelToGroup = new Map();
+  groups.forEach((g, gi) => g.labels.forEach((l) => labelToGroup.set(l, gi)));
+  // 未帰属の細分成分（面積5%未満で箱から落ちたもの）は重心が最も近いグループへ
+  det.fine.forEach((f, lbl) => {
+    if (labelToGroup.has(lbl)) return;
+    let best = 0, bd = Infinity;
+    groups.forEach((g, gi) => {
+      const d = (f.cx - g.cx) ** 2 + (f.cy - g.cy) ** 2;
+      if (d < bd) { bd = d; best = gi; }
+    });
+    labelToGroup.set(lbl, best);
+  });
+  const layerPx = groups.map(() => new Uint8Array(W * H));
+  for (let i = 0; i < W * H; i++) {
+    if (!pixels[i]) continue;
+    const gi = labelToGroup.get(det.labelMap[i]);
+    if (gi !== undefined) layerPx[gi][i] = pixels[i];
+  }
+  return layerPx.map((px, i) => ({ id: `part${i + 1}`, name: `パーツ${i + 1}`, pixels: px, visible: true, opacity: 1 }));
+}
+
 function confirmStudio() {
   if (!result) {
     toast("変換結果がありません", "error");
@@ -799,6 +832,19 @@ function confirmStudio() {
   const allFrames = res.framesPixels && res.framesPixels.length > 1
     ? res.framesPixels.map((px) => ({ pixels: padPixels(px, res.width, res.height, W, H) }))
     : [{ pixels }];
+  // §77: パーツごとにレイヤー分け（単一フレーム変換のみ）
+  if ($("studioPartsChk")?.checked && allFrames.length > 1) {
+    toast("フレーム分割（無劣化の自動分割・シート分割）とパーツ分けは併用できません。無劣化1:1や分割をOFFにするとパーツ分けできます", "error");
+  }
+  if ($("studioPartsChk")?.checked && allFrames.length === 1) {
+    const partLayers = buildPartLayers(pixels, W, H);
+    if (partLayers) {
+      allFrames[0] = { pixels: Uint8Array.from(pixels), layers: partLayers, activeLayer: 0 };
+      toast(`パーツを${partLayers.length}枚のレイヤーへ分割しました`);
+    } else {
+      toast("離れたパーツを2つ以上検出できなかったため、通常の1レイヤーで確定します");
+    }
+  }
   // §30: 多フレームならアクティブフレームのつまみを退避してからフレーム別配列を保存
   const multi = isMulti() && allFrames.length > 1;
   if (multi) saveActiveFrameParams();
@@ -961,6 +1007,15 @@ export function initStudio(storeRef, toastRef) {
     candidateAutoNote = "";
   });
   $("studioFitBtn").addEventListener("click", () => { fitView(); renderCompare(); });
+  // §77: パーツ分けONは「フレーム分割」ではなく「レイヤー分割」→ 単一フレーム変換へ切替
+  $("studioPartsChk").addEventListener("change", () => {
+    if ($("studioPartsChk").checked && split.mode !== "single") {
+      split.mode = "single";
+      split.userChose = true;
+      syncSplitUi();
+      scheduleConvert();
+    }
+  });
 
   // §43/§44: 自動調整（候補モードのみ表示）— 探索の最良値をスタジオつまみへセット
   $("studioAutoTuneBtn").addEventListener("click", async () => {

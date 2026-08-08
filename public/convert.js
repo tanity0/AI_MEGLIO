@@ -442,7 +442,7 @@ export function detectComponents(data, w, h) {
 // §63: detectComponents の詳細版。マージ後ボックスに加えて、マージ前の細分成分
 // （重心つき）とラベルマップを返す。ストリップ分割で「どの画素がどのポーズか」を
 // 矩形でなく連結成分で判定するために使う。
-export function detectComponentsDetailed(data, w, h) {
+export function detectComponentsDetailed(data, w, h, opts = {}) {
   const labels = new Int32Array(w * h).fill(-1);
   const boxes = [];
   const stack = new Int32Array(w * h);
@@ -480,7 +480,9 @@ export function detectComponentsDetailed(data, w, h) {
   // マージン = 最大ボックス辺の5%（最低8px）。ポーズ間の大きな間隔は維持される。
   let merged = boxes.map((b, i) => ({ ...b, labels: [i] }));
   const maxDim = Math.max(...merged.map((b) => Math.max(b.x1 - b.x0 + 1, b.y1 - b.y0 + 1)));
-  const margin = Math.max(8, Math.round(maxDim * 0.05));
+  // §77: mergeMargin 指定で近接マージ距離を上書き可能（小さな変換後グリッドでは既定の
+  // 最低8pxが広すぎてパーツ同士が融合するため）
+  const margin = Number.isFinite(opts.mergeMargin) ? opts.mergeMargin : Math.max(8, Math.round(maxDim * 0.05));
   let changed = true;
   while (changed) {
     changed = false;
