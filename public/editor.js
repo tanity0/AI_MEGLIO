@@ -1971,6 +1971,36 @@ export function initEditor(store, toast) {
   magicGrowBtn.addEventListener("click", () => morphMagicSelection("grow"));
   magicShrinkBtn.addEventListener("click", () => morphMagicSelection("shrink"));
 
+  // §75: 選択範囲の反転（矩形/マスクどちらでも。全選択の反転=空は選択解除）
+  function invertSelection() {
+    if (!store.state.selection) {
+      toast("先に範囲を選択してください（反転は選択の補集合を選び直します）", "error");
+      return;
+    }
+    if (floating) commitFloating(); // 移動中の選択は焼き込んでから反転
+    const cur = store.state.selection;
+    if (!cur) return;
+    const p = project();
+    const mask = new Uint8Array(p.width * p.height).fill(1);
+    if (cur.mask) {
+      for (let i = 0; i < mask.length; i++) mask[i] = cur.mask[i] ? 0 : 1;
+    } else {
+      for (let y = cur.y; y < cur.y + cur.h; y++) {
+        for (let x = cur.x; x < cur.x + cur.w; x++) mask[y * p.width + x] = 0;
+      }
+    }
+    const bbox = computeMaskBBox(mask, p.width, p.height);
+    if (!bbox) {
+      store.state.selection = null;
+      toast("全体が選択されていたため、反転で選択を解除しました");
+    } else {
+      store.state.selection = { frameIndex: cur.frameIndex, x: bbox.x, y: bbox.y, w: bbox.w, h: bbox.h, mask };
+    }
+    store.notify();
+  }
+  document.getElementById("magicInvertBtn")?.addEventListener("click", invertSelection);
+  document.querySelectorAll('[data-action="invertsel"]').forEach((btn) => btn.addEventListener("click", invertSelection));
+
   // --- ロック領域（§13.2-3）---
   lockSelectionBtn.addEventListener("click", () => {
     const sel = store.state.selection;
@@ -2096,6 +2126,14 @@ export function initEditor(store, toast) {
       fpSetVisible(!fpState.visible);
       return;
     }
+    // §75: Ctrl+I = 選択反転（ツール切替の i より先に判定）
+    if (ev.key.toLowerCase() === "i" && (ev.ctrlKey || ev.metaKey) && !ev.altKey) {
+      invertSelection();
+      ev.preventDefault();
+      return;
+    }
+    // §75: 修飾キー付きはツール切替に使わない（Ctrl+B 等のブラウザ操作を奪わない）
+    if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
     const tool = TOOL_KEYS[ev.key.toLowerCase()];
     if (tool) switchTool(tool);
   });
@@ -2566,6 +2604,8 @@ export function initEditor(store, toast) {
     const hasMagicMask = !!(sel && sel.mask);
     magicGrowBtn.disabled = !hasMagicMask;
     magicShrinkBtn.disabled = !hasMagicMask;
+    const magicInvertBtn = document.getElementById("magicInvertBtn");
+    if (magicInvertBtn) magicInvertBtn.disabled = !store.state.selection; // §75
     renderLayerPanel(); // §35
     updateFloatPalette(); // §37: 編集のたび使用色を再集計（シグネチャ一致ならDOM再構築なし）
     updateMobileColorChip(); // §50.4: 現在色チップの追従
