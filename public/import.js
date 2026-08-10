@@ -2,6 +2,8 @@
 // PNG/GIF(1枚目)/WebP を読み込み、拡大率の自動検出・パレット抽出を行い、
 // frame 0 = ベースフレームのプロジェクトを返す。
 
+import { detectComponents } from "./convert.js"; // §78: シート判定
+
 const MAX_SIZE = 256; // §70: 128→256
 // §59: プロジェクトのパレット上限（256・§18.1のワイドパレット）に合わせる。
 // 旧上限32のままだと、変換スタジオ（既定64色）で作った自作ドット絵の書き出しを
@@ -169,7 +171,13 @@ export async function probeImage(file) {
       colors.add((((data[i + 3] << 24) | (data[i] << 16) | (data[i + 1] << 8) | data[i + 2]) >>> 0));
       if (colors.size > MAX_COLORS - 1) return { shortcut: false }; // §59: 256色パレットまで無劣化経路
     }
-    return { shortcut: true };
+    // §78: コマが並んだシート（透明背景で離れた塊が2つ以上）はスタジオへ回して
+    // 自動フレーム分割の機会を残す。白背景の1枚絵は塊1つ＝従来どおり直接取り込み。
+    let sheet = false;
+    try {
+      sheet = detectComponents(data, bitmap.width, bitmap.height).length >= 2;
+    } catch {}
+    return { shortcut: true, sheet };
   } catch {
     return { shortcut: false };
   }

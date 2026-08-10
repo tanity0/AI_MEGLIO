@@ -905,14 +905,16 @@ function initHeader() {
       // §18.2: 32色以下の真ドット絵で自動判定成功時のみ従来ショートカット、
       // それ以外は変換スタジオを開く
       const probe = await probeImage(file);
-      if (probe.shortcut) {
+      if (probe.shortcut && !probe.sheet) { // §78: シートはスタジオへ（自動フレーム分割のため）
         const project = await importImageFile(file);
         if (!project) return; // ユーザーキャンセル
         store.resetProject(project);
         toast(`画像を ${project.width}×${project.height}・${project.palette.length}色 として読み込みました（frame 0 = ベースフレーム）`);
       } else {
         const dataUrl = await fileToDataUrl(file);
-        toast("変換スタジオを開きます（真ドット絵と判定できなかったため）");
+        toast(probe.sheet
+          ? "コマが並んだシートを検出したため変換スタジオを開きます（自動でフレーム分割できます・無劣化1:1も選べます）"
+          : "変換スタジオを開きます（真ドット絵と判定できなかったため）");
         await openStudio(dataUrl);
       }
     } catch (err) {
