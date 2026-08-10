@@ -1,9 +1,9 @@
 // canvasresize.js — §28 キャンバスのリサイズ
-// 足元アンカー基準でキャンバスを拡大/縮小する。フロント主体（サーバーは width/height 8〜256 のみ関与）。
+// 足元アンカー基準でキャンバスを拡大/縮小する。フロント主体（サーバーは width/height 8〜512 のみ関与）。
 import { hexToRgba, recompositeFrame } from "./app.js";
 
 const MIN_SIZE = 16;
-const MAX_SIZE = 256; // §70.1: §70の上限拡張に追従（漏れていた）
+const MAX_SIZE = 512; // §79: 256→512（§70.1の漏れ再発防止でここを最初に確認）
 
 // アンカー id -> [横, 縦]（l/m/r, t/m/b）
 const ANCHOR_AXES = {

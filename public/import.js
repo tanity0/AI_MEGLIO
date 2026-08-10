@@ -4,7 +4,7 @@
 
 import { detectComponents } from "./convert.js"; // §78: シート判定
 
-const MAX_SIZE = 256; // §70: 128→256
+const MAX_SIZE = 512; // §79: 256→512
 // §59: プロジェクトのパレット上限（256・§18.1のワイドパレット）に合わせる。
 // 旧上限32のままだと、変換スタジオ（既定64色）で作った自作ドット絵の書き出しを
 // 読み込み直したとき上位31色へ丸められ「少し崩れる」劣化が起きていた。
@@ -162,8 +162,8 @@ export async function probeImage(file) {
     const block = detectBlockSize(data, bitmap.width, bitmap.height);
     const realW = Math.max(1, Math.round(bitmap.width / block));
     const realH = Math.max(1, Math.round(bitmap.height / block));
-    if (block < 2 && (bitmap.width > 256 || bitmap.height > 256)) return { shortcut: false }; // §70
-    if (realW > 256 || realH > 256) return { shortcut: false }; // §70
+    if (block < 2 && (bitmap.width > 512 || bitmap.height > 512)) return { shortcut: false }; // §79
+    if (realW > 512 || realH > 512) return { shortcut: false }; // §79
     // 生の色数（量子化なし・§59.1: アルファ込み）
     const colors = new Set();
     for (let i = 0; i < data.length; i += 4) {

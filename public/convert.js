@@ -4,8 +4,8 @@
 // ---------------------------------------------------------------------------
 // 色ユーティリティ
 // ---------------------------------------------------------------------------
-// §70: 出力キャンバスの上限（§18.1の128から拡張）
-export const MAX_OUT = 256;
+// §70/§79: 出力キャンバスの上限（§18.1の128 → 256 → 512）
+export const MAX_OUT = 512; // §79: 256→512
 
 function rgbToHex(r, g, b) {
   return "#" + [r, g, b].map((v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0")).join("");
@@ -404,7 +404,7 @@ export function convertImage(data, w, h, params) {
     gx0 = x0 - (((x0 - ox) % s) + s) % s;
     gy0 = y0 - (((y0 - oy) % s) + s) % s;
   }
-  // 横長素材対策: 高さ指定モードでは幅も上限に収まるようセルサイズを自動クランプ（§70: 256）
+  // 横長素材対策: 高さ指定モードでは幅も上限に収まるようセルサイズを自動クランプ（§79: 512）
   if (targetH > 0) {
     const minCsForWidth = (x1 + 1 - gx0) / (MAX_OUT - 0.5);
     if (cs < minCsForWidth) cs = minCsForWidth;
@@ -545,7 +545,7 @@ export function convertSheetImage(data, w, h, params, boxes, align = "bottom") {
   if (targetH > 0 && cs < 0.5) cs = 0.5;
   // モーション用パディング: 左右2セル・上2セル・下0（接地）
   const PAD_X = 2, PAD_TOP = 2, PAD_BOTTOM = 0;
-  // 上限クランプ（§18.1→§70: 256）
+  // 上限クランプ（§18.1→§70→§79: 512）
   cs = Math.max(cs, maxBoxW / (MAX_OUT - PAD_X * 2), maxBoxH / (MAX_OUT - PAD_TOP - PAD_BOTTOM));
   const poseColsMax = Math.ceil(maxBoxW / cs);
   const poseRowsMax = Math.ceil(maxBoxH / cs);

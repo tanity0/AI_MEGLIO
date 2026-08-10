@@ -424,8 +424,8 @@ function validateEditRequest(body) {
   const { project, scope, frameIndex, selection, instruction, images, mode, baseFrameGrid, lockedRects, motion, allowedMask } = body;
   if (!project || typeof project !== "object") throw new Error("project が必要です");
   const { width, height, fps, palette, framesGrid } = project;
-  if (!Number.isInteger(width) || width < 8 || width > 256) throw new Error("width が不正です"); // §70
-  if (!Number.isInteger(height) || height < 8 || height > 256) throw new Error("height が不正です"); // §70
+  if (!Number.isInteger(width) || width < 8 || width > 512) throw new Error("width が不正です"); // §79
+  if (!Number.isInteger(height) || height < 8 || height > 512) throw new Error("height が不正です"); // §79
   if (!Number.isInteger(fps) || fps < 1 || fps > 24) throw new Error("fps が不正です");
   if (!Array.isArray(palette) || palette.length < 1 || palette.length > 256) throw new Error("palette が不正です");
   if (!Array.isArray(framesGrid) || framesGrid.length < 1) throw new Error("framesGrid が不正です");
@@ -825,8 +825,8 @@ ${instruction}`;
       && typeof ri.partName === "string" && ri.partName.length > 0 && ri.partName.length <= 32
       && Number.isFinite(ri.angle)
       && ri.pivot && Number.isInteger(ri.pivot.x) && Number.isInteger(ri.pivot.y)
-      && Array.isArray(ri.basePartRows) && ri.basePartRows.length >= 1 && ri.basePartRows.length <= 128
-      && ri.basePartRows.every((r) => typeof r === "string" && r.length > 0 && r.length <= 256);
+      && Array.isArray(ri.basePartRows) && ri.basePartRows.length >= 1 && ri.basePartRows.length <= 512 // §79
+      && ri.basePartRows.every((r) => typeof r === "string" && r.length > 0 && r.length <= 1024); // §79: ワイドパレットは2文字/px
     let mandate;
     if (riValid) {
       // §22.12-2: v5「パーツ回転清書」— 無から描くのではなく、お手本（素材パーツ）を

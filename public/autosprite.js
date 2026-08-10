@@ -880,12 +880,12 @@ function composeGrid(pixels, cw, ch, snap, metrics) {
   return out;
 }
 
-// §57.4: はみ出すポーズが来たらキャンバスを自動拡張（上限256〔§70〕・足元は下端基準を維持）
+// §57.4: はみ出すポーズが来たらキャンバスを自動拡張（上限512〔§79〕・足元は下端基準を維持）
 // ベース・生成済みの全フレームを新キャンバスへ埋め直す
 function expandBaseCanvas(needW, needH) {
   const b = state.base;
-  const newW = Math.min(256, Math.max(b.width, needW));
-  const newH = Math.min(256, Math.max(b.height, needH));
+  const newW = Math.min(512, Math.max(b.width, needW));
+  const newH = Math.min(512, Math.max(b.height, needH));
   if (newW === b.width && newH === b.height) return;
   const dx = Math.floor((newW - b.width) / 2);
   const dy = newH - b.height;

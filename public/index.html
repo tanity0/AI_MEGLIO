@@ -20,7 +20,7 @@
   <div class="header-actions">
     <a href="./autosprite.html" target="_blank" class="btn" title="1枚のキャラ画像からムーブセット一式のスプライトシートを生成（AutoSprite風・§52）">⚡ クイック生成</a>
     <button id="newProjectBtn" class="btn" title="新規プロジェクト">新規</button>
-    <button id="canvasResizeBtn" class="btn" title="キャンバスサイズを変更（アンカー基準で拡大/縮小、16〜256）">キャンバス</button>
+    <button id="canvasResizeBtn" class="btn" title="キャンバスサイズを変更（アンカー基準で拡大/縮小、16〜512）">キャンバス</button>
     <label class="btn" for="importImageInput" title="ドット絵画像（PNG/GIF/WebP）を読み込み、frame 0 = ベースフレームにする">
       画像を開く
       <input id="importImageInput" type="file" accept="image/png,image/gif,image/webp" hidden>
@@ -737,7 +737,7 @@
     </div>
     <div id="studioGridInfo" class="hint"></div>
     <div class="studio-knobs">
-      <label class="form-row">解像度(高さ) <input id="studioTargetH" type="number" min="16" max="256" step="1" value="64"></label>
+      <label class="form-row">解像度(高さ) <input id="studioTargetH" type="number" min="16" max="512" step="1" value="64"></label>
       <label class="check-row inline"><input type="checkbox" id="studioOneToOne"> 1:1（グリッド推定サイズ）</label>
       <label class="check-row inline" id="studioExactRow" hidden title="整数倍スケールのドット絵を検出しました。ONで推定・減色を使わず色とドットをそのまま取り込みます（§59.2）"><input type="checkbox" id="studioExactChk" checked> 無劣化1:1（検出済み）</label>
       <label class="check-row inline" id="studioPartsRow" title="複数パーツが並んだアセット画像用。確定時に離れた塊ごとにレイヤーへ分割します（§77・単一フレーム変換のみ）"><input type="checkbox" id="studioPartsChk"> 🧩 パーツごとにレイヤー分け</label>
@@ -775,8 +775,8 @@
     </div>
     <div class="hint">現在のサイズ: <span id="crCurrentSize">32 x 32</span></div>
     <div class="cr-size-row">
-      <label class="form-row">幅 <input id="crWidthInput" type="number" min="16" max="256" step="1" value="32"></label>
-      <label class="form-row">高さ <input id="crHeightInput" type="number" min="16" max="256" step="1" value="32"></label>
+      <label class="form-row">幅 <input id="crWidthInput" type="number" min="16" max="512" step="1" value="32"></label>
+      <label class="form-row">高さ <input id="crHeightInput" type="number" min="16" max="512" step="1" value="32"></label>
     </div>
     <div class="cr-anchor-wrap">
       <div class="hint">アンカー（既存内容が新キャンバスのどこに載るか。既定=下中央＝足元）</div>
