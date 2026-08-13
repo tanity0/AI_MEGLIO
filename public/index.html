@@ -242,7 +242,9 @@
 
     <!-- §35: レイヤーパネル（フレームごと独立・上=最前面。opacityは表示専用） -->
     <details id="layerSection" data-collapse-key="layers" open>
-      <summary class="panel-title">レイヤー <span id="layerCountLabel" class="hint"></span></summary>
+      <summary class="panel-title">レイヤー <span id="layerCountLabel" class="hint"></span>
+        <button id="layerFloatToggleBtn" type="button" class="btn btn-small" title="レイヤーをフローティング窓で開く/戻す (L)">🗔 窓</button>
+      </summary>
       <div class="layer-actions">
         <button id="layerAddBtn" class="btn btn-small" title="アクティブの上に空レイヤーを追加">＋追加</button>
         <button id="layerDupBtn" class="btn btn-small" title="アクティブレイヤーを複製">複製</button>
@@ -845,6 +847,15 @@
 </div>
 
 <!-- §37: フローティングパレット窓（タイトルバードラッグで移動・localStorage保持） -->
+<!-- §89: レイヤーのフローティング窓。中身（#layerSection）は editor.js が実行時に移設する -->
+<div id="floatLayers" class="float-palette float-layers" hidden>
+  <div class="float-palette-titlebar" id="floatLayersTitlebar">
+    <span class="fp-title">レイヤー</span>
+    <button id="floatLayersCloseBtn" class="fp-close" title="閉じる">×</button>
+  </div>
+  <div class="fp-body" id="floatLayersBody"></div>
+</div>
+
 <div id="floatPalette" class="float-palette" hidden>
   <div class="float-palette-titlebar" id="floatPaletteTitlebar">
     <span class="fp-title">パレット</span>

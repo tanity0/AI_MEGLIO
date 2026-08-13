@@ -1919,6 +1919,106 @@ export function initEditor(store, toast) {
     }
     fpSave();
   }
+  // ---------------------------------------------------------------------
+  // §89: レイヤーのフローティング窓（パレット窓と同じ作り）。
+  // 窓を開くと #layerSection をDOMごと窓へ移設するため、既存の結線はそのまま生きる。
+  // ---------------------------------------------------------------------
+  const floatLayers = document.getElementById("floatLayers");
+  const floatLayersBody = document.getElementById("floatLayersBody");
+  const floatLayersTitlebar = document.getElementById("floatLayersTitlebar");
+  const floatLayersCloseBtn = document.getElementById("floatLayersCloseBtn");
+  const layerFloatToggleBtn = document.getElementById("layerFloatToggleBtn");
+  const layerSectionEl = document.getElementById("layerSection");
+  const layerSectionHome = layerSectionEl ? layerSectionEl.parentElement : null;
+  const FL_KEY = "aiMeglio.floatLayers";
+  let flState = { x: null, y: null, visible: false };
+  try {
+    const saved = JSON.parse(localStorage.getItem(FL_KEY) || "null");
+    if (saved && typeof saved === "object") {
+      if (Number.isFinite(saved.x)) flState.x = saved.x;
+      if (Number.isFinite(saved.y)) flState.y = saved.y;
+      if (typeof saved.visible === "boolean") flState.visible = saved.visible;
+    }
+  } catch {}
+  function flSave() {
+    try { localStorage.setItem(FL_KEY, JSON.stringify(flState)); } catch {}
+  }
+  function flDefaultPos() {
+    const w = floatLayers.offsetWidth || 240;
+    const h = floatLayers.offsetHeight || 260;
+    return {
+      x: Math.max(0, window.innerWidth - w - 24),
+      y: Math.max(0, Math.min(200, window.innerHeight - h)), // パレット窓(120)と重ならない位置
+    };
+  }
+  function flApplyPosition() {
+    if (!Number.isFinite(flState.x) || !Number.isFinite(flState.y)) {
+      const d = flDefaultPos();
+      if (!Number.isFinite(flState.x)) flState.x = d.x;
+      if (!Number.isFinite(flState.y)) flState.y = d.y;
+    }
+    floatLayers.style.left = flState.x + "px";
+    floatLayers.style.top = flState.y + "px";
+  }
+  function flEnsureReachable() { // §88と同じ: 掴めない位置なら既定へ
+    const w = floatLayers.offsetWidth || 240;
+    const h = floatLayers.offsetHeight || 260;
+    const MIN = 48;
+    const outX = !Number.isFinite(flState.x) || flState.x > window.innerWidth - MIN || flState.x + w < MIN;
+    const outY = !Number.isFinite(flState.y) || flState.y > window.innerHeight - MIN || flState.y + h < MIN;
+    if (outX || outY) { const d = flDefaultPos(); flState.x = d.x; flState.y = d.y; }
+  }
+  function flSetVisible(visible) {
+    if (!floatLayers || !layerSectionEl) return;
+    flState.visible = !!visible;
+    floatLayers.hidden = !flState.visible;
+    layerFloatToggleBtn?.classList.toggle("is-active", flState.visible);
+    if (layerFloatToggleBtn) layerFloatToggleBtn.textContent = flState.visible ? "🗔 戻す" : "🗔 窓";
+    if (flState.visible) {
+      if (layerSectionEl.parentElement !== floatLayersBody) floatLayersBody.appendChild(layerSectionEl);
+      layerSectionEl.open = true; // 窓では常に開いた状態で使う
+      flEnsureReachable();
+      flApplyPosition();
+    } else if (layerSectionHome && layerSectionEl.parentElement !== layerSectionHome) {
+      layerSectionHome.appendChild(layerSectionEl); // ツールパネルの元の位置へ戻す
+    }
+    flSave();
+  }
+  if (layerFloatToggleBtn) {
+    layerFloatToggleBtn.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation(); // <summary> の開閉と競合させない
+      flSetVisible(!flState.visible);
+    });
+  }
+  floatLayersCloseBtn?.addEventListener("click", () => flSetVisible(false));
+  // タイトルバーのドラッグ（§88: 画面外へも出せる）
+  let flDrag = null;
+  floatLayersTitlebar?.addEventListener("pointerdown", (ev) => {
+    if (ev.target === floatLayersCloseBtn) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    flDrag = { dx: ev.clientX - flState.x, dy: ev.clientY - flState.y };
+    try { floatLayersTitlebar.setPointerCapture(ev.pointerId); } catch {}
+  });
+  floatLayersTitlebar?.addEventListener("pointermove", (ev) => {
+    if (!flDrag) return;
+    ev.stopPropagation();
+    flState.x = ev.clientX - flDrag.dx;
+    flState.y = ev.clientY - flDrag.dy;
+    flApplyPosition();
+  });
+  function flEndDrag(ev) {
+    if (!flDrag) return;
+    ev.stopPropagation();
+    flDrag = null;
+    flSave();
+  }
+  floatLayersTitlebar?.addEventListener("pointerup", flEndDrag);
+  floatLayersTitlebar?.addEventListener("pointercancel", flEndDrag);
+  floatLayers?.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+  if (flState.visible) flSetVisible(true); // 前回開いていたら復元
+
   // 選択/スポイトで「拾った」色を履歴へ（新しい順・重複除去・最大16）
   function fpPushRecent(index) {
     if (!Number.isInteger(index) || index < 0) return;
@@ -2248,6 +2348,11 @@ export function initEditor(store, toast) {
     // §37: P = フローティングパレット窓のトグル
     if (ev.key.toLowerCase() === "p" && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
       fpSetVisible(!fpState.visible);
+      return;
+    }
+    // §89: L = レイヤー窓のトグル
+    if (ev.key.toLowerCase() === "l" && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+      flSetVisible(!flState.visible);
       return;
     }
     // §75: Ctrl+I = 選択反転（ツール切替の i より先に判定）
