@@ -1476,6 +1476,8 @@ export function initEditor(store, toast) {
     store.notify();
   });
   selClearBtn.addEventListener("click", doClear); // §51.5
+  // §82: 「クリア」の外出しボタン（ツールグリッド／モバイルツールバー）も同じ処理へ
+  document.querySelectorAll('[data-action="clearsel"]').forEach((btn) => btn.addEventListener("click", doClear));
 
   // --- §32: 選択範囲の変形ボタン ---
   document.getElementById("selMoveBtn").addEventListener("click", () => {

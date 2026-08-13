@@ -1889,9 +1889,11 @@ canvas, img {
     font-size: 19px;
   }
   #mobileColorChipBtn { flex: 0 0 auto; width: 44px; height: 44px; border-radius: 10px; }
-  /* 選択解除は選択があるときだけ出す（幅の確保） */
-  #mobileToolbar [data-action="deselect"] { display: none; }
-  body.has-selection #mobileToolbar [data-action="deselect"] { display: flex; }
+  /* 選択解除・クリアは選択があるときだけ出す（幅の確保・§82） */
+  #mobileToolbar [data-action="deselect"],
+  #mobileToolbar [data-action="clearsel"] { display: none; }
+  body.has-selection #mobileToolbar [data-action="deselect"],
+  body.has-selection #mobileToolbar [data-action="clearsel"] { display: flex; }
 
   /* ツールバー（と表示中のブラシ列）にステータスが重ならないよう下端に余白 */
   #canvasStatus { margin-bottom: calc(56px + env(safe-area-inset-bottom, 0px)); }
