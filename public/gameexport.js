@@ -169,12 +169,26 @@ export function buildExportFiles(project, opts) {
   return { files, warnings };
 }
 
-function downloadDataUrl(dataUrl, filename) {
+// §83: iPhone（特にPWA）で download 属性が無視されHTMLが保存される問題への対策。
+// ファイル共有が使えるならWeb Share API（「"ファイル"に保存」）を優先する。
+async function downloadDataUrl(dataUrl, filename) {
+  try {
+    const res = await fetch(dataUrl);
+    const blob = await res.blob();
+    const file = new File([blob], filename, { type: blob.type || "application/octet-stream" });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file], title: filename });
+      return;
+    }
+  } catch (err) {
+    if (err && err.name === "AbortError") return;
+  }
   const a = document.createElement("a");
   a.href = dataUrl;
   a.download = filename;
   document.body.appendChild(a);
-  a.click();
+  if ("download" in a) a.click();
+  else window.open(dataUrl, "_blank");
   a.remove();
 }
 

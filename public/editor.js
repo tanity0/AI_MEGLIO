@@ -80,6 +80,20 @@ export function initEditor(store, toast) {
   const MAGIC_MOBILE_MQ = window.matchMedia("(max-width: 820px)"); // mobile.js と同一クエリ
   const magicHome = magicOptionsEl.parentElement;
   let magicFloatWrap = null;
+  // §84: フローティング枠は畳める（邪魔なときは🪄つまみだけにする）。状態は端末に記憶
+  const MAGIC_OPEN_KEY = "aiMeglio.magicPanelOpen";
+  let magicPanelOpen = true;
+  try { magicPanelOpen = localStorage.getItem(MAGIC_OPEN_KEY) !== "0"; } catch {}
+  let magicToggleBtn = null;
+  function syncMagicCollapsed() {
+    if (!magicFloatWrap) return;
+    magicFloatWrap.classList.toggle("is-collapsed", !magicPanelOpen);
+    if (magicToggleBtn) {
+      magicToggleBtn.textContent = magicPanelOpen ? "▾" : "🪄";
+      magicToggleBtn.title = magicPanelOpen ? "しきい値パネルをしまう" : "しきい値パネルを開く";
+    }
+    if (magicOptionsEl.parentElement === magicFloatWrap) magicOptionsEl.hidden = !magicPanelOpen;
+  }
   function placeMagicOptions() {
     const active = store.state.tool === "magic";
     magicOptionsEl.hidden = !active;
@@ -87,12 +101,24 @@ export function initEditor(store, toast) {
       if (!magicFloatWrap) {
         magicFloatWrap = document.createElement("div");
         magicFloatWrap.id = "magicFloatWrap";
+        // §84: 折りたたみハンドル（枠の先頭に置く）
+        magicToggleBtn = document.createElement("button");
+        magicToggleBtn.type = "button";
+        magicToggleBtn.id = "magicCollapseBtn";
+        magicToggleBtn.className = "btn btn-small";
+        magicToggleBtn.addEventListener("click", () => {
+          magicPanelOpen = !magicPanelOpen;
+          try { localStorage.setItem(MAGIC_OPEN_KEY, magicPanelOpen ? "1" : "0"); } catch {}
+          syncMagicCollapsed();
+        });
+        magicFloatWrap.appendChild(magicToggleBtn);
         // §61.2: キャンバスセクション内に置く（タイムライン等を覆わず、ズームUIとも住み分け）
         const host = document.getElementById("mobileToolbar")?.parentElement || document.body;
         host.appendChild(magicFloatWrap);
       }
       if (magicOptionsEl.parentElement !== magicFloatWrap) magicFloatWrap.appendChild(magicOptionsEl);
       magicFloatWrap.hidden = false;
+      syncMagicCollapsed();
     } else {
       if (magicFloatWrap) magicFloatWrap.hidden = true;
       if (magicOptionsEl.parentElement !== magicHome) magicHome.appendChild(magicOptionsEl);
@@ -466,28 +492,34 @@ export function initEditor(store, toast) {
   // 常に可視領域内に残る＝完全に画面外へ消えない下限を兼ねる。
   let lastPanPadX = -1, lastPanPadY = -1;
   function updateMobilePanExtent() {
-    if (!mobileMQ.matches) {
-      if (lastPanPadX !== 0 || lastPanPadY !== 0) {
-        wrap.style.paddingLeft = wrap.style.paddingRight = wrap.style.paddingTop = wrap.style.paddingBottom = "";
-        lastPanPadX = 0; lastPanPadY = 0;
-      }
-      return;
-    }
-    const p = project();
-    const canvasW = store.state.zoom * p.width;
-    const canvasH = store.state.zoom * p.height;
+    // §85: 倍率やキャンバスサイズに関係なく常に可動域（可視領域の半分）を確保する。
+    // 従来は「キャンバスが画面より大きいときだけ」余白を足していたため、引きの倍率では
+    // スクロール余地がゼロ＝まったくパンできなかった（実機報告）。デスクトップでも同様に効かせる。
+    // §85: 余白は「スクロールする中身（#canvasStack）のmargin」として付ける。
+    // wrap 自身の padding だと border-box の最小高さになってしまい（padding×2 が
+    // 要素高さの下限）、可視領域の半分までしか広げられず、引きの倍率でパンできなかった。
+    const stack = wrap.querySelector("#canvasStack");
+    if (!stack) return;
     const cw = wrap.clientWidth, ch = wrap.clientHeight;
-    const padX = canvasW > cw ? Math.round(cw / 2) : 0;
-    const padY = canvasH > ch ? Math.round(ch / 2) : 0;
+    if (cw <= 0 || ch <= 0) return; // レイアウト未確定（非表示など）
+    // 可視領域の80%を上下左右に確保 → どの倍率でもキャンバスを画面端まで自由に動かせる
+    // （完全には消えないよう2割ぶんは必ず残る）
+    const padX = Math.round(cw * 0.8);
+    const padY = Math.round(ch * 0.8);
     if (padX === lastPanPadX && padY === lastPanPadY) return; // 無変化ならDOM書き込みを省く
-    wrap.style.paddingLeft = wrap.style.paddingRight = padX + "px";
-    wrap.style.paddingTop = wrap.style.paddingBottom = padY + "px";
+    // 余白が変わるぶんスクロール位置も同量ずらし、見えている位置を動かさない
+    const dx = padX - Math.max(0, lastPanPadX);
+    const dy = padY - Math.max(0, lastPanPadY);
+    stack.style.margin = `${padY}px ${padX}px`;
+    wrap.scrollLeft += dx;
+    wrap.scrollTop += dy;
     lastPanPadX = padX; lastPanPadY = padY;
   }
   // フィット/初期表示時にパン位置も可動域の中央（=キャンバス中央が見える位置）へ戻す。
   // 手動ズーム(+/-・ピンチ)や描画中の毎render()では呼ばない（ユーザーの現在位置を保つ）。
   function centerCanvasScroll() {
-    if (!mobileMQ.matches) return;
+    // §85: パン可動域を全幅で持つようになったため、デスクトップでも中央へ寄せる
+    // （従来はモバイル限定。可動域ゼロだったので実質no-opだった）
     wrap.scrollLeft = Math.max(0, (wrap.scrollWidth - wrap.clientWidth) / 2);
     wrap.scrollTop = Math.max(0, (wrap.scrollHeight - wrap.clientHeight) / 2);
   }

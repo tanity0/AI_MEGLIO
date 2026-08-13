@@ -407,7 +407,9 @@ aside, #canvasPanel {
 .color-adj-actions { display: flex; gap: 8px; }
 #canvasWrap.pan-tool, #canvasWrap.pan-tool canvas { cursor: grab; } /* §71 */
 #canvasWrap.pan-tool.panning, #canvasWrap.pan-tool.panning canvas { cursor: grabbing; }
-#canvasWrap > #canvasStack { margin: auto; position: relative; }
+/* §85: パン余白は JS が inline margin で付ける。flexの伸長で高さが変わらないよう
+   align-self: flex-start（中央寄せはスクロール位置で行う） */
+#canvasWrap > #canvasStack { margin: auto; position: relative; flex: 0 0 auto; align-self: flex-start; }
 #canvasStack > canvas { display: block; }
 #mainCanvas {
   image-rendering: pixelated;
@@ -1904,6 +1906,14 @@ canvas, img {
 
   /* ズームボタンはツールバーの上へ（重なり回避） */
   #mobileZoomControls { bottom: calc(60px + env(safe-area-inset-bottom, 0px)); }
+
+  /* §84: マジックオプションの折りたたみ（畳むと🪄つまみだけ） */
+  #magicFloatWrap { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+  #magicCollapseBtn {
+    min-width: 44px; min-height: 44px; border-radius: 10px;
+    background: rgba(36, 38, 49, 0.92); border: 1px solid var(--border); font-size: 16px;
+  }
+  #magicFloatWrap.is-collapsed { right: auto; }
 
   /* --- ブラシサイズ: 右端縦積み → ツールバー直上の横並び（ペン/消しゴム時のみ） --- */
   #mobileBrushControls {

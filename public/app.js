@@ -802,15 +802,29 @@ export function toast(message, kind = "info") {
 // ---------------------------------------------------------------------------
 // ヘッダー: 新規 / 保存 / 読込 / PNG書き出し / GIF書き出し
 // ---------------------------------------------------------------------------
-function downloadBlob(blob, filename) {
+// §83: iPhone（特にPWA）は blob: の download 属性を無視してページ遷移になり、
+// 共有シートから保存すると"ページ"＝HTMLが保存されてしまう。ファイル共有が使える環境では
+// Web Share API（「"ファイル"に保存」）を優先し、それ以外は従来のダウンロードへ落とす。
+async function downloadBlob(blob, filename) {
+  try {
+    const file = new File([blob], filename, { type: blob.type || "application/octet-stream" });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file], title: filename });
+      return;
+    }
+  } catch (err) {
+    if (err && err.name === "AbortError") return; // 利用者がキャンセル
+    // 共有が使えない/失敗 → 通常のダウンロードへフォールバック
+  }
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
   a.download = filename;
-  document.body.appendChild(a);
-  a.click();
+  document.body.appendChild(a); // DOM外の <a> だと download 属性のファイル名が無視されることがある
+  if ("download" in a) a.click();
+  else window.open(url, "_blank"); // 最終手段（長押しで保存）
   a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
 }
 
 function fileToDataUrl(file) {
