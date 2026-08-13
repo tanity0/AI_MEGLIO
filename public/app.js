@@ -717,6 +717,11 @@ class Store {
   snapshot() { // §76: 変化があった時だけ積む遅延pushUndo用の事前スナップショット
     return projectToPlain(this.state.project);
   }
+  // §80: 次の undo が「画像読み込み前」へ戻る境界かどうか
+  peekUndoBoundary() {
+    const top = this.undoStack[this.undoStack.length - 1];
+    return !!(top && top.__loadBoundary);
+  }
   undo() {
     if (this.undoStack.length === 0) return false;
     this.redoStack.push(projectToPlain(this.state.project));
@@ -767,7 +772,10 @@ class Store {
     }
   }
   resetProject(project) {
-    this.pushUndo();
+    // §80: 「画像読み込み前」へ戻る境界に印を付ける（1回の↩で作業ごと消えないように）
+    const plain = projectToPlain(this.state.project);
+    plain.__loadBoundary = true;
+    this.pushUndo(plain);
     this.state.project = project;
     this.state.currentFrame = 0;
     this.state.selection = null;
@@ -1023,7 +1031,15 @@ function initHeader() {
 // ---------------------------------------------------------------------------
 // グローバル Undo/Redo ショートカット（§49.5: モバイルのフローティング↩/↪も同じ処理を共有）
 // ---------------------------------------------------------------------------
+// §80: 読み込み境界を越える undo は2度押しで確認（ネイティブ confirm はPWAで出ないため）
+let undoBoundaryArmedAt = 0;
 function doUndo() {
+  if (store.peekUndoBoundary() && Date.now() - undoBoundaryArmedAt > 5000) {
+    undoBoundaryArmedAt = Date.now();
+    toast("次に戻すと「画像を読み込む前」に戻ります。実行するにはもう一度 ↩ を押してください");
+    return;
+  }
+  undoBoundaryArmedAt = 0;
   if (!store.undo()) toast("これ以上元に戻せません");
 }
 function doRedo() {

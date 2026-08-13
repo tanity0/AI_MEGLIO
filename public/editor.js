@@ -795,6 +795,7 @@ export function initEditor(store, toast) {
   // 3方向ジェスチャー: 即離す=ドット / すぐ動かす=線 / 0.7秒静止=スポイト。
   const HOLD_EYEDROP_MS = 700;
   let strokeSnap = null; // §76: 遅延pushUndo用の事前スナップショット
+  let strokePainted = false; // §80: このタッチ列で実際に画素を塗ったか（2本指タップ誤爆の抑止）
   let holdTimer = null;
   let holdEyedrop = false;
   let holdStartCell = null;
@@ -832,8 +833,14 @@ export function initEditor(store, toast) {
   const TAP_MOVE_PX = 10;
   let tapGesture = null; // {startTime, maxCount, moved, starts:Map<pointerId,{x,y}>}
 
+  const TAP_LANDING_GAP_MS = 150; // §80: 2本目がこの時間以内に触れたときだけ「同時タップ」とみなす
   function tapGestureBeginOrExtend() {
     if (!tapGesture) tapGesture = { startTime: performance.now(), maxCount: 0, moved: false, starts: new Map() };
+    // §80: 描画中に後から触れた指（手のひら・端末を持つ指）でUndoが誤爆するのを防ぐ。
+    // 1本目の着地からの経過が長い／既に画素を塗っていたらタップ扱いにしない。
+    const times = Array.from(touchPoints.values(), (p) => p.t || 0);
+    const first = Math.min(...times), last = Math.max(...times);
+    if (strokePainted || last - first > TAP_LANDING_GAP_MS) tapGesture.moved = true;
     tapGesture.maxCount = Math.max(tapGesture.maxCount, touchPoints.size);
     for (const [id, pos] of touchPoints) {
       if (!tapGesture.starts.has(id)) tapGesture.starts.set(id, { x: pos.x, y: pos.y });
@@ -872,7 +879,9 @@ export function initEditor(store, toast) {
 
   window.addEventListener("pointerdown", (ev) => {
     if (ev.pointerType !== "touch") return;
-    touchPoints.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+    // §80: 押下時刻も保持（意図的な2本指タップかを「指の着地間隔」で判定するため）
+    if (touchPoints.size === 0) strokePainted = false;
+    touchPoints.set(ev.pointerId, { x: ev.clientX, y: ev.clientY, t: performance.now() });
     if (touchPoints.size === 2 || touchPoints.size === 3) {
       tapGestureBeginOrExtend(); // §50.3: 2本指/3本指タップの起点候補として記録
     } else if (touchPoints.size > 3 && tapGesture) {
@@ -1028,6 +1037,7 @@ export function initEditor(store, toast) {
       if (paintBrushAt(frameIndex, x, y, 0, store.state.brushSize)) {
         store.pushUndo(strokeSnap);
         strokeSnap = null;
+        strokePainted = true; // §80
         scheduleRender();
       }
       lastPaintedCell = `${x},${y}`;
@@ -1075,6 +1085,7 @@ export function initEditor(store, toast) {
       if (paintStroke(frameIndex, pendingPen, { x, y }, store.state.colorIndex, store.state.brushSize)) {
         store.pushUndo(strokeSnap);
         strokeSnap = null;
+        strokePainted = true; // §80
       }
       pendingPen = null;
       lastCell = { x, y };
@@ -1090,6 +1101,7 @@ export function initEditor(store, toast) {
         const from = lastCell || { x, y };
         if (paintStroke(frameIndex, from, { x, y }, color, store.state.brushSize)) {
           if (strokeSnap) { store.pushUndo(strokeSnap); strokeSnap = null; } // §76
+          strokePainted = true; // §80
           scheduleRender();
         }
         lastPaintedCell = key;
@@ -1119,6 +1131,7 @@ export function initEditor(store, toast) {
       const snap = store.snapshot();
       if (paintBrushAt(store.state.currentFrame, pendingPen.x, pendingPen.y, store.state.colorIndex, store.state.brushSize)) {
         store.pushUndo(snap);
+        strokePainted = true; // §80
       }
       render();
     } else if (dragging && (dragTool === "pen" || dragTool === "eraser")) {
