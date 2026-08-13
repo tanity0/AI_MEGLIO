@@ -24,6 +24,9 @@ let split = { mode: "single", boxes: [], align: "bottom", gridCols: 3, gridRows:
 // §30: フレーム別つまみの配列（多フレーム時のみ使用）+ アクティブフレーム
 let frameParams = []; // [{ ...PER_FRAME_KEYS }]
 let activeFrame = 0;
+// §86: 確定時に含めないフレーム（0始まりindex）。変換自体は全コマで行い、共通パレット・
+// 共通セルサイズを保つ（除外の有無で残すコマの見た目が変わらないように）。
+let excludedFrames = new Set();
 // §44.1: 候補モード — ギャラリー候補の「調整」でスタジオを流用する。
 // { onApply(convResult, paramsSnapshot), autoTune()?: Promise<{params,score,defaultScore,evals}> } | null
 let candidateMode = null;
@@ -579,13 +582,15 @@ function renderFrameBar() {
   const nf = result.framesPixels.length;
   if (activeFrame >= nf) activeFrame = 0;
   bar.innerHTML = "";
+  for (const i of [...excludedFrames]) if (i >= nf) excludedFrames.delete(i); // コマ数変化に追従
   const label = document.createElement("span");
   label.className = "hint";
-  label.textContent = "フレーム:";
+  label.textContent = `フレーム（${nf - excludedFrames.size}/${nf}コマ）:`; // §86: 残数
   bar.appendChild(label);
   for (let i = 0; i < nf; i++) {
     const cell = document.createElement("button");
-    cell.className = "studio-frame-thumb" + (i === activeFrame ? " is-active" : "");
+    const excluded = excludedFrames.has(i); // §86
+    cell.className = "studio-frame-thumb" + (i === activeFrame ? " is-active" : "") + (excluded ? " is-excluded" : "");
     cell.title = `フレーム${i + 1}`;
     const cv = document.createElement("canvas");
     const tmp = { width: result.width, height: result.height, palette: result.palette, pixels: result.framesPixels[i] };
@@ -600,8 +605,34 @@ function renderFrameBar() {
     num.textContent = String(i + 1);
     cell.appendChild(num);
     cell.addEventListener("click", () => switchFrame(i));
+    // §86: 取捨選択トグル（✓=取り込む / ✕=切り捨て）
+    const tg = document.createElement("button");
+    tg.type = "button";
+    tg.className = "studio-frame-toggle";
+    tg.textContent = excluded ? "✕" : "✓";
+    tg.title = excluded ? "このコマを取り込む" : "このコマを切り捨てる";
+    tg.addEventListener("click", (ev) => {
+      ev.stopPropagation(); // サムネのフレーム切替とは独立
+      if (excluded) excludedFrames.delete(i);
+      else if (nf - excludedFrames.size > 1) excludedFrames.add(i);
+      else { toast("最低1コマは残してください", "error"); return; }
+      renderFrameBar();
+    });
+    cell.appendChild(tg);
     bar.appendChild(cell);
   }
+  // §86: 全選択 / 全解除
+  const all = document.createElement("button");
+  all.type = "button";
+  all.className = "btn btn-small";
+  all.textContent = excludedFrames.size ? "全部取り込む" : "全部切り捨て";
+  all.title = excludedFrames.size ? "切り捨てをすべて解除" : "1コマ目以外を切り捨て";
+  all.addEventListener("click", () => {
+    if (excludedFrames.size) excludedFrames.clear();
+    else for (let i = 1; i < nf; i++) excludedFrames.add(i);
+    renderFrameBar();
+  });
+  bar.appendChild(all);
 }
 
 function switchFrame(i) {
@@ -832,6 +863,21 @@ function confirmStudio() {
   const allFrames = res.framesPixels && res.framesPixels.length > 1
     ? res.framesPixels.map((px) => ({ pixels: padPixels(px, res.width, res.height, W, H) }))
     : [{ pixels }];
+  // §86: 切り捨て指定されたフレームを除外（共通パレット・共通スケールは全コマ基準のまま）
+  let keptIdx = allFrames.map((_, i) => i);
+  if (allFrames.length > 1 && excludedFrames.size) {
+    keptIdx = keptIdx.filter((i) => !excludedFrames.has(i));
+    if (keptIdx.length === 0) keptIdx = [0];
+    if (keptIdx.length !== allFrames.length) {
+      const dropped = allFrames.length - keptIdx.length;
+      const kept = keptIdx.map((i) => allFrames[i]);
+      allFrames.length = 0;
+      allFrames.push(...kept);
+      frameParams = keptIdx.map((i) => frameParams[i] || {});
+      toast(`${dropped}コマを切り捨てて${kept.length}コマで確定しました`);
+    }
+  }
+
   // §77: パーツごとにレイヤー分け（単一フレーム変換のみ）
   if ($("studioPartsChk")?.checked && allFrames.length > 1) {
     toast("フレーム分割（無劣化の自動分割・シート分割）とパーツ分けは併用できません。無劣化1:1や分割をOFFにするとパーツ分けできます", "error");
@@ -859,6 +905,7 @@ function confirmStudio() {
       ...knobs,
       grid: { ...grid },
       split: { mode: split.mode, align: split.align, gridCols: split.gridCols, gridRows: split.gridRows, boxes: split.boxes.map((b) => ({ ...b })) },
+      excludedFrames: [...excludedFrames], // §86: 再変換で復元
       // §30: フレーム別つまみの配列（多フレーム時のみ。再変換で復元）
       ...(multi ? { frameParams: frameParams.map((pf) => ({ ...pf })) } : {}),
     },
@@ -910,6 +957,7 @@ function applyCandidateUi(on) {
 }
 
 export async function openStudio(dataUrl, savedParams = null, opts = {}) {
+  excludedFrames = new Set(); // §86: 起動ごとにリセット
   candidateMode = null; // §44.1: 通常モードへ復帰
   candidateAutoNote = "";
   await loadSource(dataUrl);
