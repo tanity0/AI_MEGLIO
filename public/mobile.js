@@ -55,6 +55,66 @@ export function initMobile() {
 
   initGestureGuard();
   initTimelineCollapse(timelineBar, timelineCollapseBtn);
+  initMobileSheet(mq); // §81
+}
+
+// §81: モバイルではヘッダーの操作群とプロファイル行をボトムシートへ移設し、
+// ↩↪ を下部ツールバーへ統合する。DOMごと移動するので既存のイベント結線はそのまま生きる
+// （§61 のマジックオプションと同じ流儀）。デスクトップ幅へ戻したら元の位置へ復帰。
+function initMobileSheet(mq) {
+  const header = document.getElementById("appHeader");
+  const actions = document.querySelector(".header-actions");
+  const profileBar = document.getElementById("profileBar");
+  const sheet = document.getElementById("mobileMenuSheet");
+  const sheetBody = document.getElementById("mobileSheetBody");
+  const menuBtn = document.getElementById("mobileMenuBtn");
+  const quick = document.getElementById("headerQuickLink");
+  const toolbar = document.getElementById("mobileToolbar");
+  const undoBtn = document.getElementById("mobileUndoBtn");
+  const redoBtn = document.getElementById("mobileRedoBtn");
+  if (!header || !actions || !sheet || !sheetBody || !menuBtn) return;
+  const body = document.body;
+  const actionsHome = actions.parentElement;
+  const profileAnchor = document.getElementById("appMain");
+  const quickHome = quick ? quick.parentElement : null;
+  const undoHome = undoBtn ? undoBtn.parentElement : null;
+
+  const openSheet = () => { sheet.hidden = false; };
+  const closeSheet = () => { sheet.hidden = true; };
+  menuBtn.addEventListener("click", () => (sheet.hidden ? openSheet() : closeSheet()));
+  sheet.querySelectorAll('[data-action="close-sheet"]').forEach((el) => el.addEventListener("click", closeSheet));
+  // シート内の操作（保存・書き出し等）を押したら閉じてキャンバスへ戻る
+  sheetBody.addEventListener("click", (ev) => {
+    const t = ev.target;
+    if (t instanceof HTMLElement && t.closest("button, a, label.btn") && !t.closest("select, input")) closeSheet();
+  });
+
+  function toMobile() {
+    if (body.classList.contains("sheet-ready")) return;
+    if (quick) header.insertBefore(quick, menuBtn); // ⚡はヘッダーに残す
+    sheetBody.append(actions);
+    if (profileBar) sheetBody.append(profileBar);
+    if (toolbar && undoBtn && redoBtn) { toolbar.prepend(redoBtn); toolbar.prepend(undoBtn); }
+    body.classList.add("sheet-ready");
+  }
+  function toDesktop() {
+    if (!body.classList.contains("sheet-ready")) return;
+    closeSheet();
+    actionsHome.append(actions);
+    if (quick && quickHome) quickHome.prepend(quick);
+    if (profileBar && profileAnchor && profileAnchor.parentElement) {
+      profileAnchor.parentElement.insertBefore(profileBar, profileAnchor);
+    }
+    if (undoHome && undoBtn && redoBtn) { undoHome.append(undoBtn); undoHome.append(redoBtn); }
+    body.classList.remove("sheet-ready");
+  }
+  function sync() {
+    if (mq.matches) toMobile();
+    else toDesktop();
+  }
+  if (typeof mq.addEventListener === "function") mq.addEventListener("change", sync);
+  else if (typeof mq.addListener === "function") mq.addListener(sync);
+  sync();
 }
 
 // §50.4: タイムライン折りたたみ（モバイルのみ。つまみボタン自体はCSSでデスクトップ非表示のため

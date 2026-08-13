@@ -2625,6 +2625,9 @@ export function initEditor(store, toast) {
     zoomLabel.textContent = `${store.state.zoom}x`;
     toolButtons.forEach((btn) => btn.classList.toggle("is-active", btn.dataset.tool === store.state.tool));
     wrap.classList.toggle("pan-tool", store.state.tool === "pan"); // §71: grabカーソル
+    // §81: モバイルUIの出し分け（ブラシサイズ列・選択解除ボタン）
+    document.body.classList.toggle("brush-tool", store.state.tool === "pen" || store.state.tool === "eraser");
+    document.body.classList.toggle("has-selection", !!store.state.selection);
     brushSizeButtons.forEach((btn) => btn.classList.toggle("is-active", Number(btn.dataset.size) === store.state.brushSize));
     document.getElementById("selMoveBtn")?.classList.toggle("is-active", !!floating); // §32
     placeMagicOptions(); // §51/§61: マジック選択ツール選択時のみオプション表示（スマホはフローティング）

@@ -18,7 +18,7 @@
     <span class="brand-name">AI Meglio</span>
   </div>
   <div class="header-actions">
-    <a href="./autosprite.html" target="_blank" class="btn" title="1枚のキャラ画像からムーブセット一式のスプライトシートを生成（AutoSprite風・§52）">⚡ クイック生成</a>
+    <a id="headerQuickLink" href="./autosprite.html" target="_blank" class="btn" title="1枚のキャラ画像からムーブセット一式のスプライトシートを生成（AutoSprite風・§52）">⚡ クイック生成</a>
     <button id="newProjectBtn" class="btn" title="新規プロジェクト">新規</button>
     <button id="canvasResizeBtn" class="btn" title="キャンバスサイズを変更（アンカー基準で拡大/縮小、16〜512）">キャンバス</button>
     <label class="btn" for="importImageInput" title="ドット絵画像（PNG/GIF/WebP）を読み込み、frame 0 = ベースフレームにする">
@@ -45,7 +45,22 @@
     <button id="liveSaveBtn" class="btn" title="現在のプロジェクトを共有ファイル live_project.json に書き戻す（Codexが続きを読める）" hidden>ライブ保存</button>
     <span id="liveSyncStatus" class="live-sync-status" hidden></span>
   </div>
+  <!-- §81: モバイル専用「⋯ メニュー」。押すと .header-actions と #profileBar を
+       ボトムシートへ移設して表示する（デスクトップではCSSで非表示） -->
+  <button id="mobileMenuBtn" type="button" class="mobile-menu-btn" title="メニュー" aria-label="メニュー">⋯</button>
 </header>
+
+<!-- §81: モバイル用ボトムシート（メニュー）。中身は mobile.js が実行時に移設する -->
+<div id="mobileMenuSheet" class="mobile-sheet" hidden>
+  <div class="mobile-sheet-backdrop" data-action="close-sheet"></div>
+  <div class="mobile-sheet-panel">
+    <div class="mobile-sheet-head">
+      <span class="mobile-sheet-title">メニュー</span>
+      <button type="button" class="mobile-sheet-close" data-action="close-sheet" aria-label="閉じる">✕</button>
+    </div>
+    <div id="mobileSheetBody" class="mobile-sheet-body"></div>
+  </div>
+</div>
 
 <!-- §50.1: 自動保存からの再開バナー（IndexedDB。起動時に自動保存があり、かつ現在が
      空プロジェクト相当のときだけ表示。通常は hidden） -->
