@@ -1758,7 +1758,10 @@ canvas, img {
 #magicFloatWrap {
   position: absolute;
   left: 8px;
-  right: 64px;
+  /* §84.1: 既定を「内容幅の狭い状態」に（従来は right:64px まで横いっぱいに伸びていた）。
+     画面を覆いすぎないよう最大幅だけ制限する。 */
+  right: auto;
+  max-width: min(320px, calc(100vw - 80px));
   bottom: 50px;
   z-index: 60;
   background: rgba(29, 32, 41, 0.92);
@@ -1909,11 +1912,14 @@ canvas, img {
 
   /* §84: マジックオプションの折りたたみ（畳むと🪄つまみだけ） */
   #magicFloatWrap { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+  /* §84.1: 畳んだら中身を実際に消す（.magic-row の display:flex が [hidden] に勝つため
+     ここで明示的に打ち消す）。残るのは🪄ハンドルだけ。 */
+  #magicFloatWrap.is-collapsed #magicOptions { display: none !important; }
+  #magicFloatWrap.is-collapsed { padding: 4px; background: transparent; border-color: transparent; box-shadow: none; }
   #magicCollapseBtn {
     min-width: 44px; min-height: 44px; border-radius: 10px;
     background: rgba(36, 38, 49, 0.92); border: 1px solid var(--border); font-size: 16px;
   }
-  #magicFloatWrap.is-collapsed { right: auto; }
 
   /* --- ブラシサイズ: 右端縦積み → ツールバー直上の横並び（ペン/消しゴム時のみ） --- */
   #mobileBrushControls {

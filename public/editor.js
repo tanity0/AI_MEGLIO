@@ -828,6 +828,8 @@ export function initEditor(store, toast) {
   const HOLD_EYEDROP_MS = 700;
   let strokeSnap = null; // §76: 遅延pushUndo用の事前スナップショット
   let strokePainted = false; // §80: このタッチ列で実際に画素を塗ったか（2本指タップ誤爆の抑止）
+  let pendingErase = null; // §87: 消しゴムの保留セル（すぐ離す=1ドット消し）
+  let holdErase = false;   // §87: 消しゴム長押し中（拡大鏡表示・離した位置の1ドットを消す）
   let holdTimer = null;
   let holdEyedrop = false;
   let holdStartCell = null;
@@ -900,6 +902,8 @@ export function initEditor(store, toast) {
   function abortStroke() {
     clearHoldTimer();
     pendingPen = null;
+    pendingErase = null; // §87
+    holdErase = false;   // §87
     holdEyedrop = false;
     dragging = false;
     dragTool = null;
@@ -1064,15 +1068,19 @@ export function initEditor(store, toast) {
         scheduleHoverUpdate(); // §50.3: 拡大鏡を即座に表示（次のpointermoveを待たない）
       }, HOLD_EYEDROP_MS);
     } else if (tool === "eraser") {
-      // §76: 実際に消えた時だけ履歴へ（空エリアなぞりで空アンドゥを積まない）
-      strokeSnap = store.snapshot();
-      if (paintBrushAt(frameIndex, x, y, 0, store.state.brushSize)) {
-        store.pushUndo(strokeSnap);
-        strokeSnap = null;
-        strokePainted = true; // §80
-        scheduleRender();
-      }
-      lastPaintedCell = `${x},${y}`;
+      // §87: 消しゴムもペンと同じ3方向ジェスチャー。押下時点では消さない。
+      // すぐ離す=1ドット消し / 動かす=線状に消す / 0.7秒静止=拡大鏡（離した位置の1ドットを消す）
+      pendingErase = { x, y };
+      holdStartCell = `${x},${y}`;
+      clearHoldTimer();
+      holdTimer = setTimeout(() => {
+        if (!dragging || dragTool !== "eraser" || !pendingErase) return;
+        pendingErase = null;
+        holdErase = true;
+        dragTool = null; // 移動しても線を引かない（位置の微調整に使う）
+        canvas.style.cursor = "cell";
+        scheduleHoverUpdate(); // 拡大鏡を即座に表示
+      }, HOLD_EYEDROP_MS);
     } else if (tool === "fill") {
       const snap = store.snapshot(); // §76: 同色塗りで空アンドゥを積まない
       if (floodFill(frameIndex, x, y, store.state.colorIndex)) {
@@ -1110,6 +1118,20 @@ export function initEditor(store, toast) {
     const { x, y } = cellFromEvent(ev);
     const frameIndex = store.state.currentFrame;
     if (holdTimer && `${x},${y}` !== holdStartCell) clearHoldTimer();
+    // §87: 消しゴムの保留セルから動いた瞬間に線状消しを開始（ペンと同じ挙動）
+    if (dragTool === "eraser" && pendingErase && `${x},${y}` !== `${pendingErase.x},${pendingErase.y}`) {
+      strokeSnap = store.snapshot();
+      if (paintStroke(frameIndex, pendingErase, { x, y }, 0, store.state.brushSize)) {
+        store.pushUndo(strokeSnap);
+        strokeSnap = null;
+        strokePainted = true;
+      }
+      pendingErase = null;
+      lastCell = { x, y };
+      lastPaintedCell = `${x},${y}`;
+      scheduleRender();
+      return;
+    }
     if (dragTool === "pen" && pendingPen && `${x},${y}` !== `${pendingPen.x},${pendingPen.y}`) {
       // 保留中のドットを起点に、動いた瞬間から即座に線を引き始める（移動しきい値=1セルでラグなし）。
       // 起点→現在点をブレゼンハムで補間するため、高速ドラッグでも隙間が出ない。
@@ -1125,7 +1147,7 @@ export function initEditor(store, toast) {
       scheduleRender();
       return;
     }
-    if ((dragTool === "pen" && !pendingPen) || dragTool === "eraser") {
+    if ((dragTool === "pen" && !pendingPen) || (dragTool === "eraser" && !pendingErase)) {
       const key = `${x},${y}`;
       if (key !== lastPaintedCell) {
         const color = dragTool === "eraser" ? 0 : store.state.colorIndex;
@@ -1158,6 +1180,17 @@ export function initEditor(store, toast) {
       pickColorAt(x, y);
       holdEyedrop = false;
       canvas.style.cursor = "";
+    } else if (holdErase || (pendingErase && dragTool === "eraser")) {
+      // §87: 長押し（拡大鏡）後は離した位置、すぐ離した場合は押した位置の1ドットを消す
+      const cell = holdErase ? cellFromEvent(ev) : pendingErase;
+      const snap = store.snapshot();
+      if (paintBrushAt(store.state.currentFrame, cell.x, cell.y, 0, store.state.brushSize)) {
+        store.pushUndo(snap);
+        strokePainted = true;
+      }
+      holdErase = false;
+      canvas.style.cursor = "";
+      render();
     } else if (pendingPen && dragTool === "pen") {
       // すぐ離した → ドット確定（§76: 同色ドットは履歴に積まない）
       const snap = store.snapshot();
@@ -1174,6 +1207,8 @@ export function initEditor(store, toast) {
       render();
     }
     pendingPen = null;
+    pendingErase = null; // §87
+    holdErase = false;   // §87
     dragging = false;
     strokeSnap = null; // §76
     dragTool = null;
@@ -1325,7 +1360,8 @@ export function initEditor(store, toast) {
     return a === 255 ? `rgb(${r},${g},${b})` : `rgba(${r},${g},${b},${a / 255})`;
   }
   function drawEyedropMagnifier() {
-    if (!holdEyedrop || !hoverIsTouch || !hoverCell || !hoverClient) return;
+    // §87: 消しゴムの長押し（holdErase）でも同じ拡大鏡を出す
+    if ((!holdEyedrop && !holdErase) || !hoverIsTouch || !hoverCell || !hoverClient) return;
     const p = project();
     const frameIndex = store.state.currentFrame;
     const half = Math.floor(EYEDROP_MAG_CELLS / 2);
@@ -1370,8 +1406,8 @@ export function initEditor(store, toast) {
       cctx.lineTo(mx + magSize, my + i * EYEDROP_MAG_CELL_PX);
       cctx.stroke();
     }
-    // 中心マーカー（吸い取り対象セル）
-    cctx.strokeStyle = "#ffd666";
+    // 中心マーカー（吸い取り/消去の対象セル）。§87: 消しゴム時は赤系
+    cctx.strokeStyle = holdErase ? "#ff6b6b" : "#ffd666";
     cctx.lineWidth = 2;
     cctx.strokeRect(mx + half * EYEDROP_MAG_CELL_PX + 1, my + half * EYEDROP_MAG_CELL_PX + 1, EYEDROP_MAG_CELL_PX - 2, EYEDROP_MAG_CELL_PX - 2);
     // 吸い取り色プレビュー（パネル右上の丸スウォッチ）
@@ -1837,17 +1873,38 @@ export function initEditor(store, toast) {
   function fpSave() {
     try { localStorage.setItem(FP_KEY, JSON.stringify(fpState)); } catch {}
   }
-  function fpClampPosition() {
+  // §88: 既定位置（右上寄り）
+  function fpDefaultPos() {
     const w = floatPalette.offsetWidth || 196;
     const h = floatPalette.offsetHeight || 140;
-    const maxX = Math.max(0, window.innerWidth - w);
-    const maxY = Math.max(0, window.innerHeight - h);
-    if (!Number.isFinite(fpState.x)) fpState.x = Math.max(0, maxX - 24); // 既定: 右上寄り
-    if (!Number.isFinite(fpState.y)) fpState.y = Math.min(120, maxY);
-    fpState.x = Math.max(0, Math.min(maxX, fpState.x));
-    fpState.y = Math.max(0, Math.min(maxY, fpState.y));
+    return {
+      x: Math.max(0, window.innerWidth - w - 24),
+      y: Math.max(0, Math.min(120, window.innerHeight - h)),
+    };
+  }
+  // §88: 位置の反映のみ（画面内クランプはしない＝好きなだけ画面外へ出せる）
+  function fpClampPosition() {
+    if (!Number.isFinite(fpState.x) || !Number.isFinite(fpState.y)) {
+      const d = fpDefaultPos();
+      if (!Number.isFinite(fpState.x)) fpState.x = d.x;
+      if (!Number.isFinite(fpState.y)) fpState.y = d.y;
+    }
     floatPalette.style.left = fpState.x + "px";
     floatPalette.style.top = fpState.y + "px";
+  }
+  // §88: 表示のたびに「掴める位置か」を判定し、画面内に48px未満しか残っていなければ
+  // 既定位置へ戻す（＝出しすぎて見失っても、閉じて開き直せば必ず復帰できる）
+  function fpEnsureReachable() {
+    const w = floatPalette.offsetWidth || 196;
+    const h = floatPalette.offsetHeight || 140;
+    const MIN = 48;
+    const outX = !Number.isFinite(fpState.x) || fpState.x > window.innerWidth - MIN || fpState.x + w < MIN;
+    const outY = !Number.isFinite(fpState.y) || fpState.y > window.innerHeight - MIN || fpState.y + h < MIN;
+    if (outX || outY) {
+      const d = fpDefaultPos();
+      fpState.x = d.x;
+      fpState.y = d.y;
+    }
   }
   function fpSetVisible(visible) {
     fpState.visible = !!visible;
@@ -1855,6 +1912,7 @@ export function initEditor(store, toast) {
     floatPaletteToggleBtn.classList.toggle("is-active", fpState.visible);
     mobileColorChipBtn?.classList.toggle("is-active", fpState.visible); // §50.4
     if (fpState.visible) {
+      fpEnsureReachable(); // §88: 画面外へ行きすぎていたら既定位置へ
       fpClampPosition();
       fpLastSignature = ""; // 再表示時は必ず再構築
       updateFloatPalette();
