@@ -584,6 +584,24 @@ export function initEditor(store, toast) {
   // §34.3: mirrorDraw が ON なら、ブラシを構成する各ピクセルを縦軸対称位置にも同時に塗る
   // （ブラシサイズ・ブレゼンハム補間経由のストロークにも自然に適用される：paintStroke は
   // 補間した各点でこの関数を呼ぶため）。
+  // §90.1: 消しゴムが1画素も変えられなかったとき、合成結果にはその位置に絵がある＝
+  // 「見えている絵は別のレイヤー」。黙って無反応にせず理由を伝える（5秒に1回まで）。
+  function hintIfOtherLayer(frameIndex, cx, cy) {
+    const p = project();
+    const frame = p.frames[frameIndex];
+    if (!frame || !frame.layers || frame.layers.length < 2) return;
+    if (!inBounds(cx, cy)) return;
+    const idx = cy * p.width + cx;
+    if (!frame.pixels[idx]) return; // 合成でも透明＝もともと何も無い
+    const active = frameActiveLayerPixels(frame);
+    if (active[idx]) return; // アクティブに絵がある＝別の理由
+    const now = Date.now();
+    if (now - lastEraseHintAt < 5000) return;
+    lastEraseHintAt = now;
+    const name = frame.layers[frame.activeLayer || 0]?.name || `レイヤー${(frame.activeLayer || 0) + 1}`;
+    toast(`その点の絵は別のレイヤーにあります（編集中: ${name}）。レイヤー窓(L)で切り替えてください`, "error");
+  }
+
   function paintBrushAt(frameIndex, cx, cy, colorIndex, size) {
     const half = Math.floor((size - 1) / 2);
     let changed = false;
@@ -829,6 +847,7 @@ export function initEditor(store, toast) {
   let strokeSnap = null; // §76: 遅延pushUndo用の事前スナップショット
   let strokePainted = false; // §80: このタッチ列で実際に画素を塗ったか（2本指タップ誤爆の抑止）
   let pendingErase = null; // §87: 消しゴムの保留セル（すぐ離す=1ドット消し）
+  let lastEraseHintAt = 0; // §90.1: 「別レイヤー」案内のスロットリング
   let holdErase = false;   // §87: 消しゴム長押し中（拡大鏡表示・離した位置の1ドットを消す）
   let holdTimer = null;
   let holdEyedrop = false;
@@ -977,6 +996,22 @@ export function initEditor(store, toast) {
   }
   window.addEventListener("pointerup", endTouch, true);
   window.addEventListener("pointercancel", endTouch, true);
+  // §90.2: iOSがタッチを取り消したときも、多指ジェスチャーでなければ保留中の消去を確定する
+  // （§87で「離した時に確定」へ変えたため、取り消されると1ドットも消えない事故が起きうる）
+  window.addEventListener("pointercancel", (ev) => {
+    if (touchPoints.size >= 2) return; // パン/ピンチ扱い＝消さない
+    if (!pendingErase && !holdErase) return;
+    const cell = holdErase ? cellFromEvent(ev) : pendingErase;
+    const snap = store.snapshot();
+    if (cell && paintBrushAt(store.state.currentFrame, cell.x, cell.y, 0, store.state.brushSize)) {
+      store.pushUndo(snap);
+      strokePainted = true;
+    }
+    pendingErase = null;
+    holdErase = false;
+    canvas.style.cursor = "";
+    render();
+  });
 
   // 空き領域の左ドラッグ / どこでも中ボタンドラッグで表示位置をパン
   let panning = null;
@@ -1125,6 +1160,8 @@ export function initEditor(store, toast) {
         store.pushUndo(strokeSnap);
         strokeSnap = null;
         strokePainted = true;
+      } else {
+        hintIfOtherLayer(frameIndex, x, y); // §90.1
       }
       pendingErase = null;
       lastCell = { x, y };
@@ -1187,6 +1224,8 @@ export function initEditor(store, toast) {
       if (paintBrushAt(store.state.currentFrame, cell.x, cell.y, 0, store.state.brushSize)) {
         store.pushUndo(snap);
         strokePainted = true;
+      } else {
+        hintIfOtherLayer(store.state.currentFrame, cell.x, cell.y); // §90.1
       }
       holdErase = false;
       canvas.style.cursor = "";
