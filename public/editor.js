@@ -602,6 +602,33 @@ export function initEditor(store, toast) {
     toast(`その点の絵は別のレイヤーにあります（編集中: ${name}）。レイヤー窓(L)で切り替えてください`, "error");
   }
 
+  // §91: ブラシ範囲の画素を退避/復元（長押し成立時に「押した瞬間の消去」を取り消す）
+  function captureBrushCells(frameIndex, cx, cy, size) {
+    const p = project();
+    const frame = p.frames[frameIndex];
+    const pixels = frameActiveLayerPixels(frame);
+    const half = Math.floor((size - 1) / 2);
+    const cells = [];
+    for (let dy = 0; dy < size; dy++) {
+      for (let dx = 0; dx < size; dx++) {
+        const px = cx - half + dx, py = cy - half + dy;
+        if (!inBounds(px, py)) continue;
+        const idx = py * p.width + px;
+        cells.push({ idx, val: pixels[idx] });
+      }
+    }
+    return { frameIndex, cells };
+  }
+  function restoreBrushCells(cap) {
+    if (!cap) return;
+    const p = project();
+    const frame = p.frames[cap.frameIndex];
+    if (!frame) return;
+    const pixels = frameActiveLayerPixels(frame);
+    for (const c of cap.cells) pixels[c.idx] = c.val;
+    recompositeFrame(frame);
+  }
+
   function paintBrushAt(frameIndex, cx, cy, colorIndex, size) {
     const half = Math.floor((size - 1) / 2);
     let changed = false;
@@ -996,18 +1023,9 @@ export function initEditor(store, toast) {
   }
   window.addEventListener("pointerup", endTouch, true);
   window.addEventListener("pointercancel", endTouch, true);
-  // §90.2: iOSがタッチを取り消したときも、多指ジェスチャーでなければ保留中の消去を確定する
-  // （§87で「離した時に確定」へ変えたため、取り消されると1ドットも消えない事故が起きうる）
-  window.addEventListener("pointercancel", (ev) => {
-    if (touchPoints.size >= 2) return; // パン/ピンチ扱い＝消さない
-    if (!pendingErase && !holdErase) return;
-    const cell = holdErase ? cellFromEvent(ev) : pendingErase;
-    const snap = store.snapshot();
-    if (cell && paintBrushAt(store.state.currentFrame, cell.x, cell.y, 0, store.state.brushSize)) {
-      store.pushUndo(snap);
-      strokePainted = true;
-    }
-    pendingErase = null;
+  // §91: 取り消し時の後始末（押下時点で既に消えているため、ここで消す処理は不要）
+  window.addEventListener("pointercancel", () => {
+    if (!holdErase) return;
     holdErase = false;
     canvas.style.cursor = "";
     render();
@@ -1103,17 +1121,32 @@ export function initEditor(store, toast) {
         scheduleHoverUpdate(); // §50.3: 拡大鏡を即座に表示（次のpointermoveを待たない）
       }, HOLD_EYEDROP_MS);
     } else if (tool === "eraser") {
-      // §87: 消しゴムもペンと同じ3方向ジェスチャー。押下時点では消さない。
-      // すぐ離す=1ドット消し / 動かす=線状に消す / 0.7秒静止=拡大鏡（離した位置の1ドットを消す）
-      pendingErase = { x, y };
+      // §91: 押した瞬間に消す（確実に消える）。0.7秒の長押しが成立したら、この消去を
+      // 取り消して拡大鏡を出し、離した位置の1ドットだけを消す（§87の精密消しは維持）。
+      const cap = captureBrushCells(frameIndex, x, y, store.state.brushSize);
+      strokeSnap = store.snapshot();
+      let pushed = false;
+      if (paintBrushAt(frameIndex, x, y, 0, store.state.brushSize)) {
+        store.pushUndo(strokeSnap);
+        pushed = true;
+        strokeSnap = null;
+        strokePainted = true; // §80
+        scheduleRender();
+      } else {
+        hintIfOtherLayer(frameIndex, x, y); // §90.1
+      }
+      lastPaintedCell = `${x},${y}`;
+      pendingErase = null;
       holdStartCell = `${x},${y}`;
       clearHoldTimer();
       holdTimer = setTimeout(() => {
-        if (!dragging || dragTool !== "eraser" || !pendingErase) return;
-        pendingErase = null;
+        if (!dragging || dragTool !== "eraser") return;
+        restoreBrushCells(cap); // 押下時の消去を取り消す
+        if (pushed) store.undoStack.pop(); // そのとき積んだ履歴も戻す（履歴を汚さない）
         holdErase = true;
         dragTool = null; // 移動しても線を引かない（位置の微調整に使う）
         canvas.style.cursor = "cell";
+        render();
         scheduleHoverUpdate(); // 拡大鏡を即座に表示
       }, HOLD_EYEDROP_MS);
     } else if (tool === "fill") {
@@ -1153,22 +1186,6 @@ export function initEditor(store, toast) {
     const { x, y } = cellFromEvent(ev);
     const frameIndex = store.state.currentFrame;
     if (holdTimer && `${x},${y}` !== holdStartCell) clearHoldTimer();
-    // §87: 消しゴムの保留セルから動いた瞬間に線状消しを開始（ペンと同じ挙動）
-    if (dragTool === "eraser" && pendingErase && `${x},${y}` !== `${pendingErase.x},${pendingErase.y}`) {
-      strokeSnap = store.snapshot();
-      if (paintStroke(frameIndex, pendingErase, { x, y }, 0, store.state.brushSize)) {
-        store.pushUndo(strokeSnap);
-        strokeSnap = null;
-        strokePainted = true;
-      } else {
-        hintIfOtherLayer(frameIndex, x, y); // §90.1
-      }
-      pendingErase = null;
-      lastCell = { x, y };
-      lastPaintedCell = `${x},${y}`;
-      scheduleRender();
-      return;
-    }
     if (dragTool === "pen" && pendingPen && `${x},${y}` !== `${pendingPen.x},${pendingPen.y}`) {
       // 保留中のドットを起点に、動いた瞬間から即座に線を引き始める（移動しきい値=1セルでラグなし）。
       // 起点→現在点をブレゼンハムで補間するため、高速ドラッグでも隙間が出ない。
@@ -1184,7 +1201,7 @@ export function initEditor(store, toast) {
       scheduleRender();
       return;
     }
-    if ((dragTool === "pen" && !pendingPen) || (dragTool === "eraser" && !pendingErase)) {
+    if ((dragTool === "pen" && !pendingPen) || dragTool === "eraser") {
       const key = `${x},${y}`;
       if (key !== lastPaintedCell) {
         const color = dragTool === "eraser" ? 0 : store.state.colorIndex;
@@ -1217,9 +1234,9 @@ export function initEditor(store, toast) {
       pickColorAt(x, y);
       holdEyedrop = false;
       canvas.style.cursor = "";
-    } else if (holdErase || (pendingErase && dragTool === "eraser")) {
-      // §87: 長押し（拡大鏡）後は離した位置、すぐ離した場合は押した位置の1ドットを消す
-      const cell = holdErase ? cellFromEvent(ev) : pendingErase;
+    } else if (holdErase) {
+      // §91: 長押し（拡大鏡）で位置を合わせてから離した位置の1ドットを消す
+      const cell = cellFromEvent(ev);
       const snap = store.snapshot();
       if (paintBrushAt(store.state.currentFrame, cell.x, cell.y, 0, store.state.brushSize)) {
         store.pushUndo(snap);
