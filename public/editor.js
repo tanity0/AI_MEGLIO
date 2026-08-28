@@ -1482,6 +1482,56 @@ export function initEditor(store, toast) {
     cctx.restore();
   }
 
+  // ---------------------------------------------------------------------
+  // §92.1: 「描けない」の自己診断。ペン/消しゴムでキャンバスの上を押したのに
+  // 別の要素がイベントを受け取った＝何かが覆っている、を無言にしない。
+  // ---------------------------------------------------------------------
+  let lastCoverHintAt = 0;
+  window.addEventListener("pointerdown", (ev) => {
+    const tool = store.state.tool;
+    if (tool !== "pen" && tool !== "eraser") return;
+    const t = ev.target;
+    if (t === canvas || t === cursorCanvas || t === wrap) return; // 正常経路
+    const r = canvas.getBoundingClientRect();
+    if (r.width === 0) return;
+    if (ev.clientX < r.left || ev.clientX > r.right || ev.clientY < r.top || ev.clientY > r.bottom) return;
+    const now = Date.now();
+    if (now - lastCoverHintAt < 5000) return;
+    lastCoverHintAt = now;
+    const el = t instanceof HTMLElement ? t : null;
+    const host = el ? (el.closest("#floatPalette, #floatLayers, #magicFloatWrap, #mobileToolbar, .mobile-sheet, #mobileZoomControls, #mobileBrushControls") || el) : null;
+    const label = host?.id === "floatPalette" ? "パレット窓"
+      : host?.id === "floatLayers" ? "レイヤー窓"
+      : host?.id === "magicFloatWrap" ? "マジック選択のパネル"
+      : host?.id === "mobileToolbar" ? "下のツールバー"
+      : host?.id === "mobileBrushControls" ? "ブラシサイズの列"
+      : host?.id === "mobileZoomControls" ? "ズームボタン"
+      : host?.classList?.contains("mobile-sheet") ? "メニュー"
+      : (host?.id ? `#${host.id}` : "別のパネル");
+    toast(`キャンバスの上に「${label}」が重なっているため描けません（閉じるか動かしてください／メニューの「表示をリセット」でも戻せます）`, "error");
+  }, true);
+
+  // §92.2: 表示リセット（絵には触れず、詰まった表示状態だけを既定へ戻す）
+  function resetViewState() {
+    try { if (floating) cancelFloating(); } catch {}
+    store.state.selection = null;
+    store.state.tool = "pen";
+    fpSetVisible(false);
+    flSetVisible(false);
+    try { localStorage.removeItem("aiMeglio.floatPalette"); } catch {}
+    try { localStorage.removeItem("aiMeglio.floatLayers"); } catch {}
+    try { localStorage.setItem("aiMeglio.magicPanelOpen", "1"); } catch {}
+    magicPanelOpen = true;
+    syncMagicCollapsed();
+    store.state.zoomAuto = true;
+    store.state.zoom = computeAutoZoom();
+    store.notify();
+    render();
+    centerCanvasScroll();
+    toast("表示をリセットしました（絵は変更していません）");
+  }
+  document.getElementById("resetViewBtn")?.addEventListener("click", resetViewState);
+
   // §51.1: マスク選択の表示（半透明塗り＋輪郭。マーチングアントは不要）。
   // floating中はsel.maskが存在しない（liftSelectionでbbox矩形選択に退避済み）ため、
   // 通常の選択矩形描画やフローティング描画と競合しない。
