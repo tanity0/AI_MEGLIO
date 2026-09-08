@@ -177,6 +177,10 @@ async function downloadDataUrl(dataUrl, filename) {
     const blob = await res.blob();
     const file = new File([blob], filename, { type: blob.type || "application/octet-stream" });
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      // §93: 「画像を保存」だと写真アプリで透過が落ちるため「"ファイル"に保存」を促す
+      if (/^image\//.test(file.type) && typeof toastRef === "function") {
+        toastRef('共有シートでは「"ファイル"に保存」を選んでください（「画像を保存」だと透過が失われます）');
+      }
       await navigator.share({ files: [file], title: filename });
       return;
     }
@@ -195,7 +199,10 @@ async function downloadDataUrl(dataUrl, filename) {
 // ---------------------------------------------------------------------------
 // UI 初期化
 // ---------------------------------------------------------------------------
+let toastRef = null; // §93: downloadDataUrl から案内を出すため保持
+
 export function initGameExport(store, toast) {
+  toastRef = toast;
   const profileSelect = document.getElementById("profileSelect");
   const tagChecklist = document.getElementById("tagChecklist");
   const openExportBtn = document.getElementById("openExportBtn");

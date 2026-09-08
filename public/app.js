@@ -809,6 +809,11 @@ async function downloadBlob(blob, filename) {
   try {
     const file = new File([blob], filename, { type: blob.type || "application/octet-stream" });
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      // §93: iOSの共有シートで「画像を保存」を選ぶと写真アプリがアルファを落とす。
+      // 透過を保ったまま保存するには「"ファイル"に保存」を選ぶ必要があるため明示する。
+      if (/^image\//.test(file.type)) {
+        toast('共有シートでは「"ファイル"に保存」を選んでください（「画像を保存」だと透過が失われます）');
+      }
       await navigator.share({ files: [file], title: filename });
       return;
     }
