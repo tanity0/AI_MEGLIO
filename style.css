@@ -1,0 +1,1994 @@
+:root {
+  --bg-0: #14151c;
+  --bg-1: #1b1d27;
+  --bg-2: #242631;
+  --bg-3: #2e303d;
+  --border: #3a3d4d;
+  --text-0: #eef0f8;
+  --text-1: #b8bad0;
+  --text-2: #7d7f95;
+  --accent: #6ee7c8;
+  --accent-dark: #2fae8c;
+  --danger: #ef6d7a;
+  --warn: #e8b654;
+  --radius: 6px;
+  /* §45: 背景（透明部分の表示色）。既定=市松（暗）。backdrop.js が上書きする（表示専用） */
+  --bd-color: #202020;
+  --bd-img:
+    linear-gradient(45deg, #333333 25%, transparent 25%), linear-gradient(-45deg, #333333 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #333333 75%), linear-gradient(-45deg, transparent 75%, #333333 75%);
+  --bd-wrap: #363636;
+  font-variant-numeric: tabular-nums;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  background: var(--bg-0);
+  color: var(--text-0);
+  font-family: -apple-system, "Segoe UI", "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif;
+  font-size: 14px;
+  /* §49.8: iOS Safari のゴムスクロール（ページ全体のバウンス）でヘッダー/タイムラインが
+     画面外へ押し出されるのを抑止する。個々のスクロールコンテナ（ドロワー/モーダル等）の
+     内部スクロールは touch-action の指定どおり引き続き機能する。 */
+  overscroll-behavior: none;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  height: 100vh; /* dvh 未対応環境向けフォールバック */
+  overflow: hidden;
+}
+
+/* §49.8: 実表示高さ基準のレイアウト。iOS Safari は下部バー（URLバー等）の伸縮に応じて
+   100vh がレイアウトビューポート（＝バー最小時の高さ）基準のまま変わらず、結果として
+   ヘッダーやタイムラインが実際のビジュアルビューポートの外に押し出される。
+   100dvh（動的ビューポート単位）が使える環境ではそちらを優先し、実表示高さに追従させる。 */
+@supports (height: 100dvh) {
+  body { height: 100dvh; }
+}
+
+button {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+/* §49.8: ダブルタップズーム誤爆防止（UI全域への適用範囲の点検・拡大）。
+   §49.7 では .mobile-zoom-btn にのみ touch-action:manipulation を適用していたが、
+   連打・連続タップされうるボタン/チップ/チェック類全般に広げる。
+   キャンバス・変換スタジオの自作ピンチ（PointerEvents実装）が使う要素
+   （#canvasWrap/#mainCanvas/.studio-viewport canvas 等）は別途 touch-action:none が
+   明示指定されており、ここでの対象外（別セレクタなので影響しない）。 */
+button, .btn, .tool-btn, .drawer-handle, .tag-chip, .frame-thumb, .check-row, .radio-row, select {
+  touch-action: manipulation;
+}
+
+/* ---------- header ---------- */
+#appHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.brand { display: flex; align-items: center; gap: 8px; font-weight: 700; letter-spacing: 0.02em; }
+.brand-mark { color: var(--accent); }
+.header-actions { display: flex; gap: 8px; align-items: center; }
+.header-sep { width: 1px; align-self: stretch; background: var(--border); margin: 2px 2px; }
+/* §29: ライブ同期ステータス */
+.live-sync-status { font-size: 11px; color: var(--text-2); white-space: nowrap; }
+/* .btn の display:inline-flex が UA の [hidden] を上書きするため明示的に隠す */
+#liveSaveBtn[hidden] { display: none; }
+.check-row.inline:has(#liveSyncToggle:checked) { color: var(--accent); }
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-2);
+  color: var(--text-0);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+  white-space: nowrap; /* §27.3 縦一文字折り返し防止 */
+  text-decoration: none; /* §52: <a class="btn">（クイック生成リンク）の下線を消す */
+}
+.btn:hover { background: var(--bg-3); border-color: var(--accent-dark); }
+.btn:active { transform: translateY(1px); }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn-accent { background: var(--accent-dark); border-color: var(--accent-dark); color: #0b1410; font-weight: 600; }
+.btn-accent:hover { background: var(--accent); border-color: var(--accent); }
+.btn-small { padding: 4px 8px; font-size: 12px; }
+
+/* ---------- main layout ---------- */
+#appMain {
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: 200px 1fr 320px;
+  min-height: 0;
+}
+
+aside, #canvasPanel {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+#toolPanel {
+  background: var(--bg-1);
+  border-right: 1px solid var(--border);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.panel-title {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-2);
+  margin: 6px 0 2px;
+}
+.panel-subtitle {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-2);
+  margin: 10px 0 4px;
+}
+
+.tool-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+.tool-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 4px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-1);
+  cursor: pointer;
+  font-size: 16px;
+}
+.tool-btn span { font-size: 10px; color: var(--text-2); }
+.tool-btn:hover { border-color: var(--accent-dark); }
+.tool-btn.is-active { border-color: var(--accent); background: var(--bg-3); color: var(--text-0); }
+.tool-btn.is-active span { color: var(--accent); }
+
+.tool-options { display: flex; flex-direction: column; gap: 8px; padding: 8px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+/* §49.7-1: .btn 同様 white-space:nowrap が無かったため、ヘッダーの狭い横スクロール行で
+   flex-shrink により .check-row（「ピンポン」「保存後にフォルダを開く」等のラベル）の幅が
+   詰められた際にテキストが縦に折り返し、行の高さが十数〜百数十px に膨れ上がって
+   #appHeader 全体の高さを押し広げていた（実機バグの根因）。折り返し禁止で1行固定にする。 */
+.check-row { display: flex; align-items: center; gap: 6px; color: var(--text-1); font-size: 12px; cursor: pointer; white-space: nowrap; }
+.zoom-row { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-1); }
+.zoom-row input[type=range] { flex: 1; }
+/* §45.1: 背景（透明部分の表示色）セレクタ+任意色ピッカー */
+.backdrop-row { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-1); }
+.backdrop-row select { flex: 1; min-width: 0; }
+.backdrop-row input[type=color] { width: 28px; height: 22px; padding: 0; border: 1px solid var(--border); border-radius: 4px; background: none; cursor: pointer; }
+.brush-row { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-1); }
+.brush-size-group { display: flex; gap: 4px; }
+.brush-size-btn {
+  appearance: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  color: var(--text-1);
+  font-size: 11px;
+  cursor: pointer;
+}
+.brush-size-btn:hover { border-color: var(--accent-dark); }
+.brush-size-btn.is-active { border-color: var(--accent); background: var(--bg-3); color: var(--text-0); }
+#zoomLabel { width: 32px; text-align: right; color: var(--text-2); }
+
+/* ---------- §51: マジック選択ツール（しきい値つきマジックワンド） ---------- */
+.magic-row { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--text-1); }
+.magic-threshold-row { display: flex; align-items: center; gap: 6px; }
+.magic-threshold-row input[type=range] { flex: 1; min-width: 50px; }
+#magicThresholdLabel { width: 24px; text-align: right; color: var(--text-2); }
+.magic-mode-group { display: flex; gap: 4px; }
+.magic-mode-btn {
+  flex: 1 1 auto;
+  appearance: none;
+  padding: 5px 4px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  color: var(--text-1);
+  font-size: 11px;
+  cursor: pointer;
+}
+.magic-mode-btn:hover { border-color: var(--accent-dark); }
+.magic-mode-btn.is-active { border-color: var(--accent); background: var(--bg-3); color: var(--text-0); }
+/* §51.6: マスク選択の拡張/縮小ボタン */
+.magic-morph-row { display: flex; gap: 4px; }
+.magic-morph-row .btn { flex: 1 1 auto; }
+
+/* ---------- §34 エディタ拡張 ---------- */
+.onion-row, .grid-row, .mirror-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-1);
+  flex-wrap: wrap;
+}
+.onion-row select, .grid-row select { font-size: 11px; }
+.onion-row input[type=range] { flex: 1; min-width: 50px; }
+#onionOpacityLabel { width: 32px; text-align: right; color: var(--text-2); }
+.mirror-row input[type=number] { width: 64px; font-size: 11px; }
+.palette-actions { display: flex; gap: 6px; }
+.palette-actions .btn { flex: 1; }
+.color-replace-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  margin-top: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-2);
+}
+.color-replace-panel[hidden] { display: none; } /* display:flex が UA の [hidden] を上書きするため明示（§34修正） */
+.color-replace-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; }
+.color-replace-row select { max-width: 130px; }
+
+/* ---------- §37 フローティングパレット窓 ---------- */
+.float-palette {
+  position: fixed;
+  z-index: 400; /* モーダル(500)未満・通常UIより上 */
+  width: 196px;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none; /* iPad: 窓ドラッグ中のページスクロール抑止 */
+}
+.float-palette[hidden] { display: none; }
+.float-palette-titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 4px 4px 10px;
+  min-height: 32px; /* iPadでも掴めるサイズ */
+  background: var(--bg-2);
+  border-radius: 8px 8px 0 0;
+  cursor: move;
+  font-size: 12px;
+  color: var(--text-1);
+  touch-action: none;
+}
+.fp-close {
+  appearance: none;
+  width: 30px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-1);
+  font-size: 15px;
+  cursor: pointer;
+}
+.fp-close:hover { border-color: var(--border); background: var(--bg-3); color: var(--text-0); }
+.fp-tabs { display: flex; gap: 2px; padding: 4px 6px 0; }
+.fp-tab {
+  appearance: none;
+  flex: 1;
+  padding: 6px 2px; /* iPadタップ可能なサイズ */
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-2);
+  color: var(--text-1);
+  font-size: 11px;
+  cursor: pointer;
+}
+.fp-tab.is-active { border-color: var(--accent); background: var(--bg-3); color: var(--text-0); }
+.fp-scope { padding: 4px 8px 0; font-size: 11px; }
+.fp-scope[hidden] { display: none; } /* .check-row の display:flex が UA の [hidden] を上書きするため明示 */
+.fp-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 4px;
+  padding: 8px;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+.fp-grid .fp-empty { grid-column: 1 / -1; font-size: 11px; color: var(--text-2); text-align: center; padding: 6px 0; }
+
+/* ---------- §38 フォルダへ保存（隣接する小ボタン） ---------- */
+.btn-folder { padding-left: 6px; padding-right: 6px; margin-left: -4px; }
+
+/* ---------- §36 GPTへ送るダイアログ ---------- */
+.sg-modal { max-width: 460px; display: flex; flex-direction: column; gap: 10px; }
+.sg-modal .form-row { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-1); }
+.sg-modal .sg-custom-row input { flex: 1; }
+#sgTotal { width: 64px; }
+
+/* ---------- §35 レイヤーパネル ---------- */
+#layerSection { margin-top: 10px; }
+#layerSection > summary { cursor: pointer; list-style: revert; }
+.layer-actions { display: flex; flex-wrap: wrap; gap: 4px; padding: 6px 0; }
+.layer-actions .btn { flex: 1 1 auto; min-width: 40px; padding-left: 6px; padding-right: 6px; }
+.layer-list { display: flex; flex-direction: column; gap: 4px; }
+.layer-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-2);
+  font-size: 12px;
+  color: var(--text-1);
+  cursor: pointer;
+}
+.layer-row.is-active { border-color: var(--accent); background: var(--bg-3); color: var(--text-0); }
+.layer-row .layer-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.layer-row input[type=range] { width: 56px; }
+.layer-row .layer-rename {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  padding: 2px;
+  font-size: 12px;
+}
+.layer-row .layer-rename:hover { color: var(--text-0); }
+
+.palette-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 4px;
+  max-height: 30vh;
+  overflow-y: auto;
+}
+.swatch {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 4px;
+  border: 2px solid var(--border);
+  cursor: pointer;
+  background-image:
+    linear-gradient(45deg, #444 25%, transparent 25%), linear-gradient(-45deg, #444 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #444 75%), linear-gradient(-45deg, transparent 75%, #444 75%);
+  background-size: 8px 8px;
+  background-position: 0 0, 0 4px, 4px -4px, -4px 0px;
+}
+.swatch > i { position: absolute; inset: 0; border-radius: 2px; }
+.swatch.is-selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+
+/* ---------- canvas panel ---------- */
+#canvasPanel {
+  background: var(--bg-0);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  position: relative;
+}
+#canvasWrap {
+  flex: 1;
+  width: 100%;
+  display: flex;
+  min-height: 0;
+  overflow: auto;
+  cursor: grab;
+  touch-action: none; /* §31.3: 1本指=描画/パン、2本指=パン・ピンチズームをJS側で処理するため既定のタッチ挙動を無効化 */
+  background: var(--bd-wrap); /* §45.2: キャンバス外周は背景色と同系で僅かに差を付ける */
+}
+#canvasWrap.panning { cursor: grabbing; }
+/* §72: パレット色調整パネル */
+.color-adj { display: flex; flex-direction: column; gap: 6px; background: var(--panel2, #242836); border: 1px solid var(--border, #333849); border-radius: 8px; padding: 8px 10px; margin-top: 8px; font-size: 12px; }
+.color-adj label { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.color-adj label input[type="range"] { flex: 1; min-width: 80px; }
+.color-adj label span { min-width: 3em; text-align: right; }
+.color-adj-actions { display: flex; gap: 8px; }
+#canvasWrap.pan-tool, #canvasWrap.pan-tool canvas { cursor: grab; } /* §71 */
+#canvasWrap.pan-tool.panning, #canvasWrap.pan-tool.panning canvas { cursor: grabbing; }
+/* §85: パン余白は JS が inline margin で付ける。flexの伸長で高さが変わらないよう
+   align-self: flex-start（中央寄せはスクロール位置で行う） */
+#canvasWrap > #canvasStack { margin: auto; position: relative; flex: 0 0 auto; align-self: flex-start; }
+#canvasStack > canvas { display: block; }
+#mainCanvas {
+  image-rendering: pixelated;
+  border: 1px solid var(--border);
+  cursor: crosshair;
+  /* §45.2: 透明部分の表示色（表示専用。canvas自体は透明のままなので書き出し非影響） */
+  background-color: var(--bd-color);
+  background-image: var(--bd-img);
+  background-size: 8px 8px;
+  background-position: 0 0, 0 4px, 4px -4px, -4px 0px;
+  touch-action: none; /* §31.3: iPad/ペンタブで描画中にページスクロールさせない */
+  -webkit-touch-callout: none; /* iOS長押しメニュー抑制 */
+}
+#cursorCanvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none; /* §31.2: ブラシサイズのカーソルプレビュー専用オーバーレイ。描画イベントは下のmainCanvasへ */
+  image-rendering: pixelated;
+}
+#canvasStatus {
+  display: flex;
+  gap: 16px;
+  color: var(--text-2);
+  font-size: 12px;
+  padding: 4px 0;
+}
+.canvas-size-btn {
+  appearance: none;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+}
+.canvas-size-btn:hover { color: var(--accent); text-decoration: underline; }
+
+/* ---------- §28: キャンバスリサイズ ---------- */
+.cr-size-row { display: flex; gap: 14px; }
+.cr-anchor-wrap { display: flex; flex-direction: column; gap: 6px; }
+.cr-anchor-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 36px);
+  grid-template-rows: repeat(3, 36px);
+  gap: 4px;
+}
+.cr-anchor-cell {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  position: relative;
+}
+.cr-anchor-cell:hover { background: var(--bg-3); }
+.cr-anchor-cell.is-active { background: var(--accent-dark); border-color: var(--accent); }
+.cr-anchor-cell::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-2);
+}
+.cr-anchor-cell.is-active::after { background: var(--bg-0); }
+
+/* ---------- AI panel ---------- */
+#aiPanel {
+  background: var(--bg-1);
+  border-left: 1px solid var(--border);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ai-tabs {
+  display: flex;
+  gap: 4px;
+}
+.ai-tab {
+  flex: 1;
+  background: var(--bg-2);
+  color: var(--text-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius) var(--radius) 0 0;
+  padding: 7px 10px;
+  cursor: pointer;
+}
+.ai-tab:hover { color: var(--text-0); }
+.ai-tab.is-active {
+  background: var(--bg-3);
+  color: var(--accent);
+  font-weight: 600;
+  border-color: var(--accent-dark);
+}
+.tab-body { display: flex; flex-direction: column; gap: 8px; }
+.tab-body[hidden] { display: none; }
+
+.motion-form { display: flex; flex-direction: column; gap: 8px; }
+.form-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-1);
+}
+.motion-form select, .motion-form input[type=number], .motion-form input[type=text] {
+  background: var(--bg-2);
+  color: var(--text-0);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 5px 6px;
+  font-family: inherit;
+  font-size: 13px;
+}
+.motion-form select, .motion-form input[type=number] { width: 140px; }
+.motion-form input[type=text] { width: 100%; }
+
+/* ---------- リグタブ（§14） ---------- */
+.part-form {
+  border: 1px solid var(--accent-dark);
+  border-radius: var(--radius);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--bg-2);
+}
+.part-form[hidden] { display: none; }
+.pivot-pick { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+#partPreviewCanvas {
+  image-rendering: pixelated;
+  border: 1px solid var(--border);
+  background-color: #202020;
+  cursor: crosshair;
+}
+.hint { font-size: 11px; color: var(--text-2); }
+.check-row.inline { display: inline-flex; margin-left: 8px; }
+
+.part-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 20vh;
+  overflow-y: auto;
+}
+.part-list .part-empty { font-size: 11px; color: var(--text-2); padding: 4px; }
+.part-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 4px 6px;
+  font-size: 12px;
+}
+.part-item.is-selected { border-color: var(--accent); }
+.part-item .part-name {
+  flex: 1;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--text-0);
+  cursor: pointer;
+  padding: 2px;
+  font-size: 12px;
+}
+.part-item.is-selected .part-name { color: var(--accent); font-weight: 700; }
+.part-item .part-z { width: 44px; }
+.part-item .part-parent { max-width: 90px; }
+.part-item .part-role { max-width: 64px; }
+.part-item .part-fixed {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 11px;
+  color: var(--text-1);
+  white-space: nowrap;
+}
+.part-item input, .part-item select {
+  background: var(--bg-1);
+  color: var(--text-0);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 4px;
+  font-size: 11px;
+}
+
+.rig-adjust {
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.adjust-btns .btn { flex: 0 1 auto; min-width: 38px; }
+
+.target-info {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--accent);
+}
+.scope-fieldset {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 10px 10px;
+  margin: 0;
+}
+.scope-fieldset legend { font-size: 11px; color: var(--text-2); padding: 0 4px; }
+.radio-row { display: flex; align-items: center; gap: 6px; padding: 3px 0; font-size: 13px; cursor: pointer; }
+
+#instructionInput {
+  width: 100%;
+  resize: vertical;
+  background: var(--bg-2);
+  color: var(--text-0);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px;
+  font-family: inherit;
+  font-size: 13px;
+}
+#instructionInput:focus { outline: none; border-color: var(--accent-dark); }
+
+.ai-actions { display: flex; gap: 8px; flex-wrap: wrap; /* §27.3 nowrap化に伴いはみ出す場合は折返す */ }
+.ai-actions .btn { flex: 1; justify-content: center; }
+.ai-progress { min-height: 18px; font-size: 12px; color: var(--text-2); }
+.ai-progress.is-busy::before {
+  content: "";
+  display: inline-block;
+  width: 10px; height: 10px;
+  margin-right: 6px;
+  border-radius: 50%;
+  border: 2px solid var(--accent-dark);
+  border-top-color: transparent;
+  animation: spin 0.7s linear infinite;
+  vertical-align: middle;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.history-log {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  max-height: 22vh;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.history-log li {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 8px;
+  font-size: 12px;
+}
+.history-log li.is-error { border-color: var(--danger); color: #f3b3ba; }
+.history-log .h-instruction { color: var(--text-0); font-weight: 600; margin-bottom: 2px; }
+.history-log .h-detail { color: var(--text-2); }
+
+.preview-row { display: flex; gap: 10px; align-items: flex-start; }
+#previewCanvas {
+  image-rendering: pixelated;
+  border: 1px solid var(--border);
+  /* §45.2: 再生プレビューの透明部分も背景設定に追随 */
+  background-image: var(--bd-img);
+  background-size: 8px 8px;
+  background-position: 0 0, 0 4px, 4px -4px, -4px 0px;
+  background-color: var(--bd-color);
+}
+.preview-controls { display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
+
+/* ---------- timeline ---------- */
+#timelineBar {
+  flex: 0 0 auto;
+  background: var(--bg-1);
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 14px 8px;
+}
+/* §47.1: ギャラリー表示中はタイムラインをモーダル背景より前面にしてフレーム選択
+   （クリック）を可能にする。選択はプール内の対応カードのハイライトに連動する。
+   変換スタジオ（#studioPanel）はさらに前面（700）なので、ギャラリーから候補調整で
+   スタジオを開いている間はタイムラインに覆われない（トースト999/ヘルプ1000未満） */
+body.mc-gallery-open #timelineBar { position: relative; z-index: 600; }
+/* §49.9: .modal-overlay の背景領域（バックドロップ）自体でのピンチも抑止しておく
+   （中の .modal は上の .modal ルールで touch-action:pan-x pan-y 済み）。 */
+#studioPanel { z-index: 700; touch-action: pan-x pan-y; }
+.timeline-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  overflow-x: auto;
+}
+
+/* ---------- tag bar (§16.1) ---------- */
+#tagBar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  min-height: 26px;
+}
+.tag-bar-label {
+  font-size: 10px;
+  color: var(--text-2);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  flex: 0 0 auto;
+}
+#tagList { display: flex; gap: 4px; align-items: center; overflow-x: auto; }
+.tag-chip {
+  flex: 0 0 auto;
+  background: var(--bg-2);
+  color: var(--text-1);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.tag-chip:hover { border-color: var(--accent-dark); }
+.tag-chip.is-active { border-color: var(--accent); color: var(--accent); background: var(--bg-3); font-weight: 700; }
+.tag-form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-2);
+  border: 1px solid var(--accent-dark);
+  border-radius: var(--radius);
+  padding: 3px 8px;
+  font-size: 11px;
+  color: var(--text-1);
+}
+.tag-form[hidden] { display: none; }
+.tag-form input[type=text] { width: 90px; }
+.tag-form input[type=number] { width: 44px; }
+.tag-form input {
+  background: var(--bg-1);
+  color: var(--text-0);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 4px;
+  font-size: 11px;
+}
+.tag-form label { display: flex; align-items: center; gap: 3px; }
+
+#frameList {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  overflow-x: auto;
+  flex: 1;
+}
+.frame-thumb {
+  position: relative;
+  width: 48px;
+  height: 48px;
+  flex: 0 0 auto;
+  border: 2px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  overflow: hidden;
+  /* §45.2: タイムラインサムネの透明部分も背景設定に追随 */
+  background-image: var(--bd-img);
+  background-size: 8px 8px;
+  background-position: 0 0, 0 4px, 4px -4px, -4px 0px;
+  background-color: var(--bd-color);
+}
+.frame-thumb canvas { image-rendering: pixelated; width: 100%; height: 100%; display: block; }
+.frame-thumb .frame-index {
+  position: absolute; bottom: 0; right: 2px;
+  font-size: 9px; color: var(--text-1);
+  text-shadow: 0 0 2px #000;
+}
+.frame-thumb.is-active { border-color: var(--accent); }
+.frame-thumb.in-tag { box-shadow: 0 -2px 0 0 var(--warn); }
+
+.frame-cell { display: flex; flex-direction: column; align-items: center; gap: 2px; flex: 0 0 auto; }
+.frame-cell .deviation {
+  font-size: 10px;
+  color: var(--text-2);
+  line-height: 1;
+  min-height: 10px;
+}
+.frame-cell .deviation.is-warn { color: var(--warn); font-weight: 700; }
+.frame-thumb .base-badge {
+  position: absolute; top: 0; left: 0;
+  font-size: 8px;
+  background: var(--accent-dark);
+  color: #0b1410;
+  padding: 1px 3px;
+  border-radius: 0 0 4px 0;
+  font-weight: 700;
+}
+
+.timeline-controls { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.timeline-controls .sep { width: 1px; height: 20px; background: var(--border); margin: 0 4px; }
+.fps-row { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-1); }
+.fps-row input { width: 48px; background: var(--bg-2); color: var(--text-0); border: 1px solid var(--border); border-radius: 4px; padding: 3px 4px; }
+
+/* ---------- §50.1 自動保存からの再開バナー / §50.7 SW更新案内バナー（同系デザイン） ---------- */
+#resumeBanner, #updateBanner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  padding: 8px 14px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--accent-dark);
+  font-size: 12px;
+  color: var(--text-0);
+}
+#resumeBanner[hidden], #updateBanner[hidden] { display: none; }
+.resume-banner-text { flex: 1 1 240px; min-width: 0; }
+.resume-banner-actions { display: flex; gap: 8px; flex: 0 0 auto; }
+
+/* ---------- toast ---------- */
+#toastRoot {
+  position: fixed;
+  bottom: 70px;
+  right: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  z-index: 999;
+}
+.toast {
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  font-size: 12px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+  animation: fadein 0.15s ease-out;
+}
+.toast.is-error { border-color: var(--danger); color: #f3b3ba; }
+@keyframes fadein { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--bg-3); border-radius: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* ---------- ゲーム制作レイヤー（§16） ---------- */
+#profileBar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 14px;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-1);
+  flex: 0 0 auto;
+}
+.profile-row { display: flex; align-items: center; gap: 6px; }
+#profileSelect {
+  background: var(--bg-2);
+  color: var(--text-0);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px 6px;
+  font-size: 12px;
+}
+#tagChecklist { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+.req-chip {
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: default;
+  background: var(--bg-2);
+}
+.req-chip.is-ok { color: var(--accent); border-color: var(--accent-dark); }
+.req-chip.is-missing { color: var(--danger); border-color: var(--danger); cursor: pointer; }
+.req-chip.is-missing:hover { background: var(--bg-3); }
+.profile-spacer { flex: 1; }
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 500;
+}
+.modal-overlay[hidden] { display: none; }
+.modal {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px;
+  width: 460px;
+  max-width: 92vw;
+  max-height: 88vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+  /* §49.9: モーダル内の縦スクロール（このoverflow-y:auto）・横スクロールは許可しつつ、
+     iOS Safariのページピンチズームの起点になるのを防ぐ。自作ピンチ対象のキャンバス
+     （.studio-viewport canvas 等、touch-action:none）は個別セレクタの方が詳細度が高く
+     優先されるため、ここでの指定に上書きされない。 */
+  touch-action: pan-x pan-y;
+}
+.modal-head { display: flex; align-items: center; justify-content: space-between; }
+.modal-head h2 { margin: 0; font-size: 15px; }
+.modal input[type=text], .modal input[type=number], .modal select {
+  background: var(--bg-2);
+  color: var(--text-0);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 5px 6px;
+  font-size: 13px;
+}
+.mirror-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.variant-list {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.variant-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+#gameView { display: flex; flex-direction: column; gap: 6px; }
+#gameViewCanvas {
+  width: 100%;
+  image-rendering: pixelated;
+  border: 1px solid var(--border);
+  background: #202020;
+}
+.gameview-controls { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--text-1); }
+.form-row.inline { display: inline-flex; justify-content: flex-start; gap: 6px; }
+
+.palette-candidate {
+  border: 1px solid var(--accent-dark);
+  border-radius: var(--radius);
+  padding: 8px;
+  background: var(--bg-2);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.palette-candidate[hidden] { display: none; }
+#paletteCandidateCanvas {
+  image-rendering: pixelated;
+  border: 1px solid var(--border);
+  background: #202020;
+}
+
+/* ---------- トンマナ（§17） ---------- */
+#styleSection {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-2);
+  padding: 6px 10px;
+}
+#styleSection summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-1);
+  user-select: none;
+}
+#styleSection[open] summary { color: var(--accent); }
+.style-body { display: flex; flex-direction: column; gap: 8px; padding-top: 8px; }
+.style-row { display: flex; gap: 10px; align-items: flex-start; }
+.style-row-btns { display: flex; flex-direction: column; gap: 6px; }
+#styleThumb {
+  width: 72px;
+  height: 72px;
+  object-fit: contain;
+  image-rendering: pixelated;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #202020;
+}
+#styleGuideText {
+  width: 100%;
+  resize: vertical;
+  background: var(--bg-1);
+  color: var(--text-0);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px;
+  font-size: 12px;
+  font-family: inherit;
+}
+.style-badge {
+  align-self: center;
+  flex: 0 0 auto;
+  font-size: 10px;
+  background: var(--accent-dark);
+  color: #0b1410;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-weight: 700;
+}
+
+/* ---------- 変換スタジオ（§18.2） ---------- */
+.studio-modal { width: 900px; max-width: 96vw; }
+.studio-compare { display: flex; gap: 8px; height: 320px; flex-shrink: 0; }
+.studio-viewport {
+  flex: 1;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  position: relative;
+  background-image:
+    linear-gradient(45deg, #333 25%, transparent 25%), linear-gradient(-45deg, #333 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #333 75%), linear-gradient(-45deg, transparent 75%, #333 75%);
+  background-size: 12px 12px;
+  background-position: 0 0, 0 6px, 6px -6px, -6px 0px;
+  background-color: #202020;
+}
+.studio-viewport .hint { position: absolute; top: 2px; left: 6px; z-index: 2; text-shadow: 0 0 3px #000; }
+/* §49.7-3: 2本指ピンチズーム・1本指ドラッグパンをJS側(studio.js)で処理するため、
+   §31.3の主キャンバスと同様に既定のタッチ挙動（ページスクロール・ブラウザの拡大縮小）を
+   無効化する。禁止範囲はプレビューcanvas自体のみ（§49.6の原則どおりモーダル本文の
+   縦スクロールは #studioPanel .modal 側の overflow-y:auto のまま生かす）。 */
+.studio-viewport canvas { display: block; cursor: grab; touch-action: none; }
+/* §30: フレーム選択バー */
+.studio-frame-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 4px 0;
+  flex-shrink: 0;
+}
+.studio-frame-bar[hidden] { display: none; }
+/* .btn の display:inline-flex が UA の [hidden] を上書きするため明示的に隠す */
+#studioApplyAllFramesBtn[hidden] { display: none; }
+.studio-frame-thumb {
+  position: relative;
+  display: inline-flex;
+  padding: 2px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  line-height: 0;
+}
+.studio-frame-thumb:hover { border-color: var(--accent-dark); }
+.studio-frame-thumb.is-active { border-color: var(--accent); }
+.studio-frame-thumb canvas { image-rendering: pixelated; background: #202020; }
+.studio-frame-thumb span {
+  position: absolute;
+  bottom: 1px;
+  right: 2px;
+  font-size: 9px;
+  color: var(--text-0);
+  text-shadow: 0 0 3px #000, 0 0 2px #000;
+  line-height: 1;
+}
+.studio-gallery {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  max-height: 300px;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+.studio-gallery:empty { display: none; }
+.cand-cell {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  cursor: pointer;
+  background: var(--bg-2);
+}
+.cand-cell:hover { border-color: var(--accent-dark); }
+.cand-cell.is-active { border-color: var(--accent); }
+.cand-cell canvas { image-rendering: pixelated; max-width: 100%; background: #202020; }
+.cand-cell span { font-size: 10px; color: var(--text-2); }
+.studio-knobs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 16px;
+  font-size: 12px;
+}
+.studio-knobs input[type=range] { width: 130px; }
+.studio-knobs input[type=number] { width: 64px; }
+
+/* ---------- メインパレット（§18.3）/ 高解像度ヒント（§18.4） ---------- */
+.main-palette { grid-template-columns: repeat(8, 1fr); max-height: 12vh; }
+.main-palette-ctl { display: flex; gap: 6px; align-items: center; margin: 4px 0; }
+.main-palette-ctl input { width: 52px; background: var(--bg-2); color: var(--text-0); border: 1px solid var(--border); border-radius: 4px; padding: 2px 4px; }
+.swatch.is-group-active { border-color: var(--warn); box-shadow: 0 0 0 1px var(--warn); }
+.hires-hint {
+  background: var(--bg-2);
+  border: 1px solid var(--warn);
+  border-radius: var(--radius);
+  padding: 6px 8px;
+  color: var(--warn);
+}
+
+/* ---------- マルチポーズ分割（§20） ---------- */
+.studio-split[hidden] { display: none; }
+.studio-split {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  border: 1px solid var(--accent-dark);
+  border-radius: var(--radius);
+  padding: 6px 10px;
+  background: var(--bg-2);
+  font-size: 12px;
+}
+.split-grid-inputs input {
+  width: 44px;
+  background: var(--bg-1);
+  color: var(--text-0);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 4px;
+}
+
+/* ---------- 設定ヘルプ（§21） ---------- */
+.help-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin-left: 4px;
+  border-radius: 50%;
+  border: 1px solid var(--text-2);
+  background: transparent;
+  color: var(--text-2);
+  font-size: 10px;
+  line-height: 1;
+  cursor: help;
+  flex: 0 0 auto;
+  vertical-align: middle;
+  padding: 0;
+}
+.help-icon:hover { border-color: var(--accent); color: var(--accent); }
+.help-popover {
+  position: fixed;
+  z-index: 1000;
+  background: var(--bg-3);
+  color: var(--text-0);
+  border: 1px solid var(--accent-dark);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.5);
+}
+.deviation[data-help-hover] { cursor: help; text-decoration: underline dotted; }
+
+.undo-row { display: flex; gap: 4px; }
+.undo-row .btn { flex: 1; }
+
+/* §51.5: 選択解除の隣にクリアボタン */
+.sel-clear-row { display: flex; gap: 4px; }
+.sel-clear-row .btn { flex: 1; }
+
+/* §32: 選択範囲の変形 */
+.sel-transform { display: flex; flex-direction: column; gap: 4px; }
+.sel-transform-btns { display: flex; flex-wrap: wrap; gap: 4px; }
+.sel-transform-btns .btn { flex: 1 1 auto; min-width: 44px; padding-left: 6px; padding-right: 6px; }
+#selMoveBtn.is-active { border-color: var(--accent); background: var(--bg-3); color: var(--text-0); }
+
+.part-item.is-hidden-part { opacity: 0.45; }
+.part-item.is-hidden-part .part-name { text-decoration: line-through; }
+
+/* ---------- ポーズガイド再描画（§22） ---------- */
+.redraw-opts { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12px; }
+.radio-row.inline { display: inline-flex; padding: 0; }
+
+/* §22.10 描き直しラボ */
+.redraw-lab { margin-top: 4px; }
+.redraw-lab summary { cursor: pointer; font-size: 12px; color: var(--text-1); }
+.redraw-lab textarea { width: 100%; margin-top: 4px; box-sizing: border-box; }
+.redraw-feedback { margin-left: 6px; display: inline-flex; gap: 4px; align-items: center; }
+
+/* §25 モーション候補スタジオ */
+.mc-modal { width: 1100px; max-width: 96vw; max-height: 92vh; display: flex; flex-direction: column; }
+.mc-head-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.mc-preview-wrap { display: inline-flex; border: 1px solid var(--border); background: var(--bg-0); padding: 2px; }
+.mc-preview-wrap canvas {
+  image-rendering: pixelated; max-width: 72px; max-height: 72px;
+  /* §45.2: ギャラリーのミニプレビューの透明部分も背景設定に追随 */
+  background-color: var(--bd-color);
+  background-image: var(--bd-img);
+  background-size: 8px 8px;
+  background-position: 0 0, 0 4px, 4px -4px, -4px 0px;
+}
+/* §42: プール表示（列分けなしの1グリッド）＋選択番号バッジ */
+.mc-grid { display: flex; flex-wrap: wrap; gap: 10px; overflow: auto; padding: 8px 2px; align-content: flex-start; }
+.mc-cell { position: relative; border: 2px solid var(--border); border-radius: 6px; padding: 4px; background: var(--bg-0); display: flex; flex-direction: column; gap: 4px; align-items: center; width: 148px; box-sizing: border-box; }
+.mc-cell.is-selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+/* §47.1: タイムラインのフレーム選択と連動した一時ハイライト（選択枠と区別できる暖色の外枠） */
+.mc-cell.is-frame-sync { outline: 3px solid var(--warn); outline-offset: 2px; }
+.mc-cell.is-error { border-color: var(--danger); }
+.mc-cell canvas {
+  image-rendering: pixelated; cursor: pointer; max-width: 128px;
+  /* §45.2: ギャラリーサムネの透明部分も背景設定に追随 */
+  background-color: var(--bd-color);
+  background-image: var(--bd-img);
+  background-size: 8px 8px;
+  background-position: 0 0, 0 4px, 4px -4px, -4px 0px;
+}
+.mc-sel-badge {
+  position: absolute; top: 4px; left: 4px; z-index: 1;
+  min-width: 30px; height: 30px; padding: 0 6px; border-radius: 15px;
+  background: var(--accent); color: #0b2b21;
+  font-size: 19px; font-weight: 800; line-height: 30px; text-align: center;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+  pointer-events: none; /* バッジの上でもクリックはセルのcanvasに通す */
+}
+.mc-sel-count { font-size: 12px; color: var(--accent); border: 1px solid var(--accent-dark); border-radius: 8px; padding: 2px 8px; white-space: nowrap; }
+.mc-cell-actions { display: flex; gap: 4px; flex-wrap: wrap; justify-content: center; }
+.mc-pending { font-size: 12px; color: var(--text-1); padding: 24px 8px; }
+.mc-error { font-size: 11px; color: #f3b3ba; max-width: 130px; word-break: break-all; }
+.mc-confirmed { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; font-size: 12px; padding: 4px 0; }
+.mc-confirmed[hidden] { display: none; }
+.mc-badge { font-size: 10px; color: var(--text-1); }
+.mc-inbox-badge { font-size: 11px; color: var(--accent); border: 1px solid var(--accent); border-radius: 8px; padding: 1px 6px; cursor: pointer; } /* §39: クリックでギャラリーを開く */
+.mc-inbox-badge:hover { background: var(--bg-3); }
+
+/* §39-4: 取り込みプレビュー */
+.mc-import-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  margin: 6px 0;
+  border: 1px solid var(--accent-dark);
+  border-radius: var(--radius);
+  background: var(--bg-2);
+  /* §49.9: 取り込みプレビュー内のスクロールは許可、ページピンチズームは不許可 */
+  touch-action: pan-x pan-y;
+}
+.mc-import-preview[hidden] { display: none; }
+.mc-import-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+.mc-import-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-1);
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--text-1);
+}
+.mc-import-cell img { image-rendering: pixelated; max-width: 96px; max-height: 96px; background: #202020; border: 1px solid var(--border); }
+.mc-import-cell:has(input:not(:checked)) { opacity: 0.4; }
+/* §41-3: 取り込みプレビューの簡易つまみ */
+.mc-import-knobs { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12px; }
+/* §25.7 差分採用マージ */
+.mc-merge { border: 1px solid var(--border); border-radius: 6px; padding: 6px; margin: 6px 0; display: flex; flex-direction: column; gap: 6px; }
+.mc-merge[hidden] { display: none; }
+.mc-merge-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; }
+.mc-merge-chips { display: flex; gap: 4px; flex-wrap: wrap; }
+.mc-chip { border-width: 2px; }
+.mc-merge-canvas-wrap { overflow: auto; max-height: 60vh; }
+.mc-merge-canvas-wrap canvas { image-rendering: pixelated; cursor: crosshair; }
+.mc-chip-partial { border-style: dashed; color: var(--accent); }
+
+/* ---------- §27 上級者向け折りたたみ ---------- */
+.adv-collapse {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-1);
+  margin: 8px 0;
+}
+.adv-collapse > summary {
+  cursor: pointer;
+  padding: 7px 10px;
+  font-size: 12px;
+  color: var(--text-1);
+  user-select: none;
+  list-style: revert;
+}
+.adv-collapse > summary:hover { color: var(--text-0); }
+.adv-collapse[open] > summary {
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 8px;
+  color: var(--text-0);
+}
+.adv-collapse[open] { padding-bottom: 8px; }
+
+/* ---------- §48.2 静的モードで隠すUIの [hidden] 保険 ----------
+   .btn(display:inline-flex) / .check-row(display:flex) / #aiPanel(display:flex) /
+   .profile-row・.radio-row(display:flex) が UA の [hidden]{display:none} に勝ってしまう
+   バグがこのプロジェクトで3回発生している。ID+属性セレクタで明示的に上書きする。 */
+#sendToGptBtn[hidden],
+#liveSyncRow[hidden],
+#autoOpenFolderRow[hidden],
+#saveJsonFolderBtn[hidden],
+#exportPngFolderBtn[hidden],
+#exportGifFolderBtn[hidden],
+#headerGalleryBtn[hidden],
+#headerSepGpt[hidden],
+#aiPanel[hidden],
+#profileBar .profile-row[hidden],
+#exportDestRepoLabel[hidden],
+#mcKitBtn[hidden],
+#mcProgress[hidden] {
+  display: none;
+}
+.adv-collapse > *:not(summary) { margin-left: 10px; margin-right: 10px; }
+
+/* ---------- §49: スマホレイアウト（サイドパネルのドロワー化＋キャンバスズームUI) ----------
+   閾値は JS 側の matchMedia (public/mobile.js) と同一クエリ (max-width: 820px) に統一。
+   デスクトップ/iPad横（>820px）に一切影響しないよう、新規セレクタは原則この @media 内、
+   もしくはデフォルトで display:none にしてある要素のみで完結させる。 */
+.drawer-handle { display: none; }
+/* §81: モバイル専用UI（メニューボタン・ボトムシート）はデスクトップでは非表示 */
+.mobile-menu-btn { display: none; }
+.mobile-sheet { display: none; }
+#drawerBackdrop { display: none; }
+#mobileZoomControls { display: none; }
+#mobileUndoControls { display: none; } /* §49.5 */
+#mobileBrushControls { display: none; } /* §49.11 */
+#mobileToolbar { display: none; } /* §50.4 */
+.timeline-collapse-btn { display: none; } /* §50.4 */
+
+@media (max-width: 820px) {
+  /* 左右パネルはオフキャンバス（position:fixed）になるためグリッド枠から外し、
+     キャンバスパネルが全幅を使うようにする */
+  #appMain { grid-template-columns: 1fr; }
+
+  /* ---- §49.7-1: ヘッダーの作り直し。1行固定（nowrap・高さ固定）＋横スクロール保証。
+     根因は .check-row にテキスト折返し禁止(white-space:nowrap)が無く、横スクロール行の
+     中で flex-shrink により折り返されて縦に膨れていたこと（上の .check-row 修正で対処済み）。
+     ここでは再発防止の防御線として、ヘッダー行の子要素を明示的に縮まない(flex-shrink:0)・
+     1行(white-space:nowrap)固定にし、#appHeader 自体にも高さ上限を与えて何かの理由で
+     子が膨れても行の高さには影響しないようにする（overflow:hidden はセーフティネット、
+     通常時は子の実サイズがそのまま収まる）。 ---- */
+  #appHeader {
+    flex-wrap: nowrap;
+    /* §49.8: viewport-fit=cover に伴い、ノッチ/Dynamic Island のセーフエリア分だけ
+       上端パディングを増やし、その分だけ高さも伸ばして1行52px分の表示領域を確保する
+       （env() 未対応環境ではフォールバック0pxで従来どおり）。 */
+    height: calc(52px + env(safe-area-inset-top, 0px));
+    min-height: calc(52px + env(safe-area-inset-top, 0px));
+    max-height: calc(52px + env(safe-area-inset-top, 0px));
+    padding-top: calc(8px + env(safe-area-inset-top, 0px));
+    overflow: hidden;
+  }
+  .brand { flex: 0 0 auto; white-space: nowrap; }
+  .header-actions {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    flex-wrap: nowrap;
+    -webkit-overflow-scrolling: touch;
+    height: 100%;
+  }
+  .header-actions > * { flex: 0 0 auto; white-space: nowrap; }
+  /* #profileBar 自体は §49.6 から overflow-x:auto/flex-wrap:nowrap 済み（このルールを維持）。
+     #tagChecklist は意図的に flex-wrap:wrap（必要タグが多い時に複数行で見せる仕様）なので、
+     #appHeader と違って高さを固定しない（固定するとチップが見えなくなる回帰になるため）。 */
+  #profileBar { overflow-x: auto; flex-wrap: nowrap; -webkit-overflow-scrolling: touch; }
+  /* .profile-spacer だけは flex:1（伸びる）で「ゲーム書き出し」を右端へ押し出す既存挙動を
+     維持するため、それ以外の子だけ flex:0 0 auto・nowrap にする（§49.7-1点検・折返し防止） */
+  #profileBar > *:not(.profile-spacer) { flex: 0 0 auto; white-space: nowrap; }
+  /* タグバー（§49.7-1: プロファイル行・タグバーも同様に点検）: #tagBar は元々 overflow-x:auto
+     で、子（.tag-bar-label/.tag-chip）はもともと flex:0 0 auto かつ .tag-chip は
+     white-space:nowrap 済みなので折返しの心配は無い。touch-action:pan-x も既に付与済み
+     （§49.6）。ここでは追加のCSSは不要。折返し由来のバグが無いことをテストで確認する。 */
+
+  /* ---- サイドパネルのオフキャンバスドロワー化（§49.2） ---- */
+  #toolPanel, #aiPanel {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    width: 82vw;
+    max-width: 320px;
+    z-index: 450; /* モーダル群(500〜700)・トースト(999)より下 */
+    transition: transform 0.22s ease;
+    box-shadow: 0 0 28px rgba(0, 0, 0, 0.55);
+  }
+  #toolPanel {
+    left: 0;
+    border-right: 1px solid var(--border);
+    transform: translateX(calc(-100% - 10px)); /* 確実に画面外へ（境界の丸め誤差対策） */
+  }
+  #aiPanel {
+    right: 0;
+    border-left: 1px solid var(--border);
+    transform: translateX(calc(100% + 10px));
+  }
+  body.drawer-left-open #toolPanel { transform: translateX(0); }
+  body.drawer-right-open #aiPanel { transform: translateX(0); }
+
+  /* つまみボタン（左右端中央・縦長・44px以上のタップ領域・半透明） */
+  .drawer-handle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: fixed;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 44px;
+    height: 88px;
+    background: rgba(46, 48, 61, 0.78);
+    color: var(--text-0);
+    border: 1px solid var(--border);
+    z-index: 451; /* ドロワーの僅かに上・モーダルよりは下 */
+    cursor: pointer;
+    font-size: 14px;
+    padding: 0;
+  }
+  .drawer-handle-left { left: 0; border-radius: 0 8px 8px 0; border-left: none; }
+  .drawer-handle-right { right: 0; border-radius: 8px 0 0 8px; border-right: none; }
+  /* 静的モードでは #aiPanel 自体が丸ごと非表示（§48.2）なので、右のつまみも隠す */
+  body.static-mode .drawer-handle-right { display: none; }
+
+  /* バックドロップ: 開いている間だけキャンバス側を覆い、タップ（=キャンバス外タップ）で自動的に閉じる */
+  #drawerBackdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.45);
+    z-index: 440; /* ドロワー(450)より下・通常UIより上 */
+  }
+  body.drawer-left-open #drawerBackdrop,
+  body.drawer-right-open #drawerBackdrop {
+    display: block;
+  }
+
+  /* ---- キャンバスズームUI（§49.3・右下フローティング。＋/−/⤢全体） ---- */
+  #mobileZoomControls {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    position: absolute;
+    right: 12px;
+    bottom: 12px;
+    z-index: 60; /* カーソルオーバーレイより前面・モーダル(500〜)より背面 */
+  }
+  .mobile-zoom-btn {
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    background: rgba(36, 38, 49, 0.8);
+    color: var(--text-0);
+    border: 1px solid var(--border);
+    font-size: 18px;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    /* §49.7-2: ↩/↪の連打（同グループの＋/−/⤢も同様）がダブルタップズーム等の既定ジェスチャー
+       判定に食われて取りこぼされないよう、タップを即座にclickへ確定させる。 */
+    touch-action: manipulation;
+  }
+  .mobile-zoom-btn:active { background: rgba(56, 58, 71, 0.9); }
+  .mobile-zoom-btn:disabled { opacity: 0.35; cursor: default; }
+  .mobile-zoom-btn:disabled:active { background: rgba(36, 38, 49, 0.8); }
+
+  /* ---- クイックブラシサイズUI（§49.11・キャンバス右側、ズームボタン群(§49.3)より
+     視覚的に上に縦積み）。同じ .mobile-zoom-btn の円形半透明デザインを流用しつつ、
+     5個収めるため 40px・4px間隔とやや詰めてある。
+     実測（390×844）: ズームボタン群は bottom:12px 起点で高さ148px（top≈532px）、
+     右ドロワーつまみ(#aiDrawerHandle)は position:fixed; top:50% で画面中央（top≈378〜
+     bottom≈466px）に固定表示される。この2つの間（466〜532px）は約66pxしかなく5ボタンは
+     収まらないため、ズーム群のすぐ上に積むのではなく、つまみより上側（キャンバス上部・
+     #canvasStatus より上のcanvasWrap内、top:12px起点）に置くことで、ズームボタン群より
+     上・かつ画面中央のつまみとも重ならない配置にする（縦位置が離れているだけで
+     「ズームボタン群の上」という視覚的な積み順は保たれる）。5ボタン(40px)+間隔(4px)×4=
+     216px は、canvasPanel上端からつまみ上端までの実測290px以内に収まる。
+     画面高が足りない狭小機では gap を詰めて収める方針（§49.11-2）。 ---- */
+  #mobileBrushControls {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    position: absolute;
+    right: 12px;
+    top: 12px;
+    z-index: 60; /* §49.3/49.5と同じ層（カーソルオーバーレイより前面・モーダルより背面） */
+  }
+  .mobile-brush-btn {
+    width: 40px;
+    height: 40px;
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .mobile-brush-btn.is-active { border-color: var(--accent); background: var(--bg-3); color: var(--text-0); }
+
+  /* ---- クイックアンドゥUI（§49.5・左下フローティング。§49.3のズームボタンと左右対称）----
+     つまみ（.drawer-handle-left: left:0, top:50%, height:88px）とは
+     縦位置が被らないよう bottom 起点で配置する。 */
+  #mobileUndoControls {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    position: absolute;
+    left: 12px;
+    bottom: 12px;
+    z-index: 60; /* カーソルオーバーレイより前面・モーダル(500〜)より背面 */
+  }
+
+  /* ---- タイムライン: compact（下部のまま、高さを抑える） ----
+     §49.8: viewport-fit=cover に伴い、ホームバー（ホームインジケーター）のセーフエリア分だけ
+     下端パディングを増やし、操作ボタンがホームバーの裏に隠れないようにする。 */
+  #timelineBar { padding: 4px 8px calc(6px + env(safe-area-inset-bottom, 0px)); gap: 4px; }
+  .frame-thumb { width: 36px; height: 36px; }
+  /* §49.6: .timeline-controls が flex:0 0 auto（縮まない）のため、幅の狭いモバイルでは
+     .timeline-main が nowrap のままだと #frameList（flex:1、サムネ列）の取り分が
+     0pxまで潰れてしまい、サムネが1枚も見えず横スクロールもできなくなっていた（実機バグ）。
+     .timeline-main を折り返し、サムネ列とコントロール列をそれぞれ専用の1行（幅100%）に
+     分けることでサムネ列に必ず横幅を確保し、横スクロールを機能させる。 */
+  .timeline-main { flex-wrap: wrap; }
+  #frameList { flex: 1 1 100%; min-width: 0; touch-action: pan-x; }
+  .timeline-controls { flex: 1 1 100%; flex-wrap: wrap; row-gap: 4px; }
+
+  /* ---- §49.6 モバイルのスクロール監査: タッチスクロール禁止はキャンバス（描画面）
+     だけに限定する。既存の overflow-x/y:auto コンテナに明示的な touch-action を付与し、
+     ヘッダー横スクロール（横=pan-x）・タグ行横スクロール（pan-x）・ドロワー縦スクロール
+     （縦=pan-y。最下部のレイヤー等まで届く）を実機（スマホSafari/Chrome）で確実にする。 */
+  .header-actions, #profileBar, #tagBar, #tagList { touch-action: pan-x; }
+  #toolPanel, #aiPanel { touch-action: pan-y; }
+
+  /* ---- §50.4: フローティングツールバー（キャンバス下端中央・タイムライン直上） ----
+     左右のクイックアンドゥ(§49.5・left:12px幅44px)/ズーム(§49.3・right:12px幅44px)と
+     水平方向で重ならないよう、中央帯（左右とも56px以上の余白）に収まるボタンサイズ・
+     間隔にしてある。§51でマジック選択ツールが増えて6ツールになったため、
+     ボタン径を38→34px・色チップを34→30pxに縮小して収める
+     （6ツール(34px)+色チップ(30px)+gap(4px)×6=258px。390px幅なら中央配置で
+     左右とも約66pxの余白が残り、コーナーの44px幅ボタンと非重複）。 */
+  #mobileToolbar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    position: absolute;
+    left: 50%;
+    bottom: 8px;
+    transform: translateX(-50%);
+    z-index: 60; /* §49.3/49.5/49.11と同じ層 */
+  }
+  .mobile-tool-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    background: rgba(36, 38, 49, 0.8);
+    border: 1px solid var(--border);
+    color: var(--text-0);
+    font-size: 15px;
+    padding: 0;
+    touch-action: manipulation;
+  }
+  .mobile-tool-btn span { display: none; } /* 左パネル版のラベル<span>は円形ボタンでは非表示 */
+  .mobile-tool-btn.is-active { border-color: var(--accent); background: var(--bg-3); }
+  #mobileColorChipBtn {
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    border: 2px solid var(--border);
+    padding: 0;
+    cursor: pointer;
+    touch-action: manipulation;
+    /* §45.2と同様、透明色(index0)は市松で示す */
+    background-image: var(--bd-img);
+    background-size: 6px 6px;
+    background-position: 0 0, 0 3px, 3px -3px, -3px 0px;
+    background-color: var(--bd-color);
+  }
+  #mobileColorChipBtn.is-active { border-color: var(--accent); }
+
+  /* ---- §50.4: タイムライン折りたたみつまみ ---- */
+  #timelineBar { position: relative; }
+  .timeline-collapse-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: absolute;
+    top: 2px;
+    right: 6px;
+    width: 34px;
+    height: 22px;
+    background: rgba(46, 48, 61, 0.78);
+    color: var(--text-0);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-size: 12px;
+    padding: 0;
+    z-index: 5;
+    touch-action: manipulation;
+  }
+  /* 折りたたみ: タグ/サムネ/操作列（再生ボタン以外）を隠し、高さを最小にする
+     （再生ボタン(#playBtn)とこのつまみだけ残す）。 */
+  #timelineBar.is-collapsed { gap: 0; padding-top: 4px; }
+  #timelineBar.is-collapsed #tagBar,
+  #timelineBar.is-collapsed #frameList {
+    display: none;
+  }
+  #timelineBar.is-collapsed .timeline-controls > *:not(#playBtn) {
+    display: none;
+  }
+  #timelineBar.is-collapsed .timeline-controls { flex: 0 0 auto; }
+
+  /* ---- §50.5: 取り込み系のモバイル最適化 ----
+     range要素はブラウザ既定のサムが小さく（実機実測で18px前後）指での微調整が難しいため、
+     モバイル幅では -webkit-appearance:none 等で見た目を作り直し、要素の当たり判定（高さ）
+     ≈32px・サム≈24pxを保証する。デスクトップ（>820px）は無指定のままブラウザ既定。
+     対象は変換スタジオ（.studio-knobs）のつまみに限定する。一時的に input[type=range] 全体
+     （#mcModal .mc-import-knobs の背景除去閾値/フチ光彩除去つまみ等を含む）に適用したところ、
+     ギャラリー表示中だけ #timelineBar が前面にせり出す仕様（body.mc-gallery-open時
+     z-index:600・下のコメント参照）と衝突し、取り込みプレビューの高さが押し広げられて
+     OK/キャンセルボタンがタイムラインの裏に隠れる回帰が実機相当のテストで確認されたため。 */
+  .studio-knobs input[type=range] {
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
+    height: 32px;
+    padding: 0;
+    margin: 0;
+    background: transparent;
+    vertical-align: middle;
+    touch-action: manipulation;
+  }
+  .studio-knobs input[type=range]::-webkit-slider-runnable-track {
+    height: 6px;
+    border-radius: 3px;
+    background: var(--bg-3);
+  }
+  .studio-knobs input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 1px solid var(--accent-dark);
+    margin-top: -9px; /* (24px - 6px)/2 でトラック中央に揃える */
+    cursor: pointer;
+  }
+  .studio-knobs input[type=range]::-moz-range-track {
+    height: 6px;
+    border-radius: 3px;
+    background: var(--bg-3);
+  }
+  .studio-knobs input[type=range]::-moz-range-thumb {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 1px solid var(--accent-dark);
+    cursor: pointer;
+  }
+
+  /* 変換スタジオ（#studioPanel）のつまみ行: 2列グリッドは指幅では窮屈なので1列化し、
+     行間も広げる。ラベル+スライダーが1行に収まらない場合は .form-row の
+     flex-wrap:wrap により自動的に折り返して縦積みになる（justify-content:space-betweenは維持）。 */
+  .studio-knobs {
+    grid-template-columns: 1fr;
+    gap: 10px 0;
+  }
+  .studio-knobs .form-row {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+  .studio-knobs .form-row input[type=range] {
+    flex: 1 1 160px;
+    width: auto;
+    min-width: 120px;
+  }
+
+  /* ギャラリー（モーション候補スタジオ）・書き出しダイアログのボタンをタップしやすい
+     40px以上の高さに拡大する（.btn-small の小さいpaddingも上書き。デスクトップは
+     .btn/.btn-small の既定サイズのまま）。
+     注意: #mcModal 全体（.mc-cell-actions のナッジ矢印・.mc-import-preview の取り込み
+     チェック列・.mc-merge の部位取り込みツール列など）に一律で適用すると、モーダル内の
+     縦積みコンテンツが押し広げられ、ギャラリー表示中だけ #timelineBar が前面に
+     せり出す仕様（body.mc-gallery-openでのz-index:600・上のコメント参照）と衝突して
+     スクロール後もタイムラインの裏に隠れてタップ不能になる回帰が実機相当のテストで
+     確認された。ヘッダーの主要操作列（.mc-head-actions＝候補追加/反転/中断/確定/閉じる等）
+     だけを対象にし、モーダル本文でスクロール位置に依存する深いネストのボタン群は
+     従来サイズのまま維持する。 */
+  .mc-head-actions .btn,
+  #exportPanel .btn {
+    min-height: 40px;
+    padding: 8px 14px;
+  }
+}
+
+
+/* ---------- §61: スマホ長押し対策とマジックオプションのフローティング ---------- */
+/* 長押しでのテキスト選択を全域で抑止（入力欄だけ許可） */
+body {
+  -webkit-user-select: none;
+  user-select: none;
+}
+input, textarea, [contenteditable="true"] {
+  -webkit-user-select: text;
+  user-select: text;
+}
+/* 長押しの画像メニュー・ドラッグ開始を抑止（キャンバス/画像全般） */
+canvas, img {
+  -webkit-touch-callout: none;
+  -webkit-user-drag: none;
+  user-select: none;
+}
+/* §61: スマホ時のマジック選択オプション（しきい値バー等）のフローティング表示。
+   モバイルツールバー（下部）に被らない位置に固定。 */
+/* §61.2: キャンバスセクション内の absolute 配置に変更。モバイルツールバー
+   （下端中央・34px+8px）の直上、右下のズームUI（44px列+余白）を避けた幅。
+   z-index はズームUI/ツールバーと同じ60（ドロワーのバックドロップ440より下）。 */
+#magicFloatWrap {
+  position: absolute;
+  left: 8px;
+  /* §84.1: 既定を「内容幅の狭い状態」に（従来は right:64px まで横いっぱいに伸びていた）。
+     画面を覆いすぎないよう最大幅だけ制限する。 */
+  right: auto;
+  max-width: min(320px, calc(100vw - 80px));
+  bottom: 50px;
+  z-index: 60;
+  background: rgba(29, 32, 41, 0.92);
+  border: 1px solid var(--border, #333849);
+  border-radius: 10px;
+  padding: 8px 10px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+  touch-action: manipulation;
+}
+#magicFloatWrap .magic-row { margin: 0; }
+#magicFloatWrap[hidden] { display: none; }
+
+
+/* ===========================================================================
+   §81: iPhone（15 Pro Max = 430×932pt）向けUI/UX刷新
+   - ヘッダーの操作群をボトムシートへ（横スクロール1198pxの解消）
+   - 下部ツールバーを全幅バー化＋44pxタップ領域＋セーフエリア対応
+   - ブラシサイズを横並び化（右端の遮りを解消）
+   閾値は既存のモバイル判定（max-width: 820px）と同一。
+   =========================================================================== */
+@media (max-width: 820px) {
+  /* --- ヘッダー: ブランド + ⚡クイック生成 + ⋯ のみ --- */
+  .mobile-menu-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 44px;
+    height: 44px;
+    margin-left: auto;
+    border-radius: 10px;
+    background: var(--bg-3);
+    border: 1px solid var(--border);
+    color: var(--text-0);
+    font-size: 20px;
+    line-height: 1;
+    padding: 0;
+  }
+  /* ヘッダー内に残す操作は「⚡ クイック生成」だけ（残りはシートへ移設される） */
+  body.sheet-ready #headerQuickLink {
+    display: inline-flex;
+    align-items: center;
+    height: 44px;
+    padding: 0 12px;
+    white-space: nowrap;
+  }
+
+  /* --- ボトムシート --- */
+  .mobile-sheet { display: block; position: fixed; inset: 0; z-index: 800; }
+  .mobile-sheet[hidden] { display: none; }
+  .mobile-sheet-backdrop { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.55); }
+  .mobile-sheet-panel {
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    max-height: 82vh;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-1);
+    border-top: 1px solid var(--border);
+    border-radius: 16px 16px 0 0;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.4);
+  }
+  .mobile-sheet-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 12px 6px;
+    border-bottom: 1px solid var(--border);
+  }
+  .mobile-sheet-title { font-size: 15px; font-weight: 600; }
+  .mobile-sheet-close {
+    width: 44px; height: 44px; border-radius: 10px; padding: 0;
+    background: var(--bg-3); border: 1px solid var(--border); color: var(--text-0); font-size: 16px;
+  }
+  .mobile-sheet-body {
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-y;
+    padding: 10px 12px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  /* シート内は縦積み・幅いっぱい・44px以上（指で押しやすく） */
+  .mobile-sheet-body .header-actions,
+  .mobile-sheet-body #profileBar {
+    display: flex; flex-direction: column; align-items: stretch;
+    gap: 8px; overflow: visible; height: auto; flex-wrap: wrap;
+  }
+  .mobile-sheet-body .btn,
+  .mobile-sheet-body .check-row,
+  .mobile-sheet-body .profile-row,
+  .mobile-sheet-body label.btn {
+    min-height: 44px;
+    display: flex; align-items: center; gap: 8px;
+    font-size: 15px;
+    padding: 0 14px;
+    white-space: normal;
+  }
+  .mobile-sheet-body select { min-height: 40px; font-size: 15px; flex: 1; }
+  /* §81: シート内でも hidden 属性（静的モードで隠す項目等）は必ず非表示にする
+     — 上の display 指定が [hidden] を上書きしてしまうのを防ぐ */
+  .mobile-sheet-body [hidden] { display: none !important; }
+  /* 単独で並ぶ「?」ヘルプアイコンはシートでは省く（行が増えて読みにくいため） */
+  .mobile-sheet-body .help-icon { display: none; }
+  .mobile-sheet-body .header-sep,
+  .mobile-sheet-body .profile-spacer { display: none; }
+  .mobile-sheet-body #tagChecklist { flex-wrap: wrap; }
+
+  /* --- 下部ツールバー: 全幅バー・44px・セーフエリア --- */
+  #mobileToolbar {
+    left: 0;
+    right: 0;
+    bottom: 0;
+    transform: none;
+    justify-content: space-between;
+    gap: 2px;
+    padding: 4px 6px calc(4px + env(safe-area-inset-bottom, 0px));
+    background: rgba(20, 21, 28, 0.94);
+    backdrop-filter: blur(8px);
+    border-top: 1px solid var(--border);
+  }
+  .mobile-tool-btn,
+  #mobileToolbar .mobile-zoom-btn {
+    flex: 1 1 0;
+    min-width: 0;
+    max-width: 56px;
+    width: auto;
+    height: 44px;
+    border-radius: 10px;
+    font-size: 19px;
+  }
+  #mobileColorChipBtn { flex: 0 0 auto; width: 44px; height: 44px; border-radius: 10px; }
+  /* 選択解除・クリアは選択があるときだけ出す（幅の確保・§82） */
+  #mobileToolbar [data-action="deselect"],
+  #mobileToolbar [data-action="clearsel"] { display: none; }
+  body.has-selection #mobileToolbar [data-action="deselect"],
+  body.has-selection #mobileToolbar [data-action="clearsel"] { display: flex; }
+
+  /* ツールバー（と表示中のブラシ列）にステータスが重ならないよう下端に余白 */
+  #canvasStatus { margin-bottom: calc(56px + env(safe-area-inset-bottom, 0px)); }
+  body.brush-tool #canvasStatus { margin-bottom: calc(108px + env(safe-area-inset-bottom, 0px)); }
+
+  /* 左下の↩↪フローティングは廃止（ツールバーへ統合） */
+  body.sheet-ready #mobileUndoControls { display: none; }
+
+  /* ズームボタンはツールバーの上へ（重なり回避） */
+  #mobileZoomControls { bottom: calc(60px + env(safe-area-inset-bottom, 0px)); }
+
+  /* §84: マジックオプションの折りたたみ（畳むと🪄つまみだけ） */
+  #magicFloatWrap { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+  /* §84.1: 畳んだら中身を実際に消す（.magic-row の display:flex が [hidden] に勝つため
+     ここで明示的に打ち消す）。残るのは🪄ハンドルだけ。 */
+  #magicFloatWrap.is-collapsed #magicOptions { display: none !important; }
+  #magicFloatWrap.is-collapsed { padding: 4px; background: transparent; border-color: transparent; box-shadow: none; }
+  #magicCollapseBtn {
+    min-width: 44px; min-height: 44px; border-radius: 10px;
+    background: rgba(36, 38, 49, 0.92); border: 1px solid var(--border); font-size: 16px;
+  }
+
+  /* --- ブラシサイズ: 右端縦積み → ツールバー直上の横並び（ペン/消しゴム時のみ） --- */
+  #mobileBrushControls {
+    flex-direction: row;
+    top: auto;
+    right: auto;
+    left: 50%;
+    transform: translateX(-50%);
+    bottom: calc(56px + env(safe-area-inset-bottom, 0px));
+    gap: 6px;
+    display: none;
+  }
+  body.brush-tool #mobileBrushControls { display: flex; }
+  .mobile-brush-btn { width: 44px; height: 44px; border-radius: 10px; font-size: 15px; }
+
+  /* --- タップ領域44px（モバイルで見える操作） --- */
+  .magic-mode-btn, #magicGrowBtn, #magicShrinkBtn, #magicInvertBtn { min-height: 44px; font-size: 14px; }
+  .magic-morph-row, .magic-mode-group { gap: 6px; }
+  #magicThresholdRange { height: 44px; }
+  .mobile-zoom-btn { width: 48px; height: 48px; }
+  .drawer-handle { min-height: 96px; width: 30px; }
+
+  /* ドロワー（ツール/AIパネル）内も指で押しやすいサイズに。縦に伸びるぶんは
+     ドロワーが縦スクロール（touch-action: pan-y）するので問題ない。 */
+  #toolPanel .btn, #aiPanel .btn,
+  #toolPanel .tool-btn, #aiPanel .ai-tab,
+  #toolPanel .magic-mode-btn { min-height: 44px; font-size: 14px; }
+  #toolPanel select, #aiPanel select,
+  #toolPanel input[type="number"], #aiPanel input[type="number"],
+  #toolPanel input[type="text"], #aiPanel input[type="text"] { min-height: 40px; font-size: 15px; }
+  #toolPanel .brush-size-btn { width: 44px; height: 44px; font-size: 15px; }
+  #toolPanel input[type="range"], #aiPanel input[type="range"] { height: 40px; }
+  #toolPanel .check-row, #aiPanel .check-row { min-height: 40px; }
+  #toolPanel .help-icon, #aiPanel .help-icon { width: 24px; height: 24px; font-size: 13px; }
+
+  /* タイムライン（常時表示）も指で扱えるサイズへ。フレーム選択のサムネは最優先で44px。 */
+  #timelineBar .frame-thumb { width: 44px; height: 44px; }
+  #timelineBar .btn, #timelineBar button { min-height: 40px; }
+  #timelineBar .tag-chip { min-height: 32px; display: inline-flex; align-items: center; }
+  #timelineBar input[type="number"], #timelineBar select { min-height: 40px; font-size: 15px; }
+  #timelineCollapseBtn { min-height: 28px; }
+
+  /* ツールバーのボタン幅も44pxを確保（余白と間隔を詰める） */
+  #mobileToolbar { gap: 1px; padding: 4px 4px calc(4px + env(safe-area-inset-bottom, 0px)); }
+}
+
+/* §86: 変換スタジオのフレーム取捨選択 */
+.studio-frame-thumb { position: relative; }
+.studio-frame-thumb.is-excluded { opacity: 0.35; }
+.studio-frame-thumb.is-excluded canvas { filter: grayscale(1); }
+.studio-frame-toggle {
+  position: absolute; top: 2px; right: 2px;
+  min-width: 22px; min-height: 22px; padding: 0; line-height: 1;
+  border-radius: 6px; font-size: 12px;
+  background: rgba(20, 21, 28, 0.85); border: 1px solid var(--border); color: var(--text-0);
+}
+.studio-frame-thumb.is-excluded .studio-frame-toggle { color: var(--err); border-color: var(--err); }
+@media (max-width: 820px) {
+  .studio-frame-toggle { min-width: 32px; min-height: 32px; font-size: 14px; }
+}
+
+/* §89: レイヤーのフローティング窓（パレット窓と同じ作り・少し広め） */
+.float-layers { width: 240px; max-height: 70vh; display: flex; flex-direction: column; }
+.float-layers .fp-body { overflow-y: auto; padding: 6px 8px 8px; touch-action: pan-y; }
+.float-layers #layerSection { margin: 0; }
+.float-layers #layerSection > summary { font-size: 12px; }
+#layerFloatToggleBtn { margin-left: auto; }
+.panel-title { display: flex; align-items: center; gap: 6px; }
+@media (max-width: 820px) {
+  .float-layers { width: min(300px, calc(100vw - 24px)); }
+  .float-layers .layer-actions .btn { min-height: 40px; }
+}
