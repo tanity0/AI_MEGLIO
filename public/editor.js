@@ -1491,24 +1491,20 @@ export function initEditor(store, toast) {
     const tool = store.state.tool;
     if (tool !== "pen" && tool !== "eraser") return;
     const t = ev.target;
-    if (t === canvas || t === cursorCanvas || t === wrap) return; // 正常経路
+    if (!(t instanceof HTMLElement)) return;
+    // §92.1-2: 案内を出すのは「浮き窓（パレット窓・レイヤー窓）が置きっぱなしで
+    // キャンバスを覆っている」場合だけ。ツールバー・メニュー・ズーム等の操作UIは
+    // 意図して重ねてあるので黙って通す（毎回出てうるさい、という実機報告への対応）。
+    const host = t.closest("#floatPalette, #floatLayers");
+    if (!host) return;
     const r = canvas.getBoundingClientRect();
     if (r.width === 0) return;
     if (ev.clientX < r.left || ev.clientX > r.right || ev.clientY < r.top || ev.clientY > r.bottom) return;
     const now = Date.now();
-    if (now - lastCoverHintAt < 5000) return;
+    if (now - lastCoverHintAt < 60000) return; // 1分に1回まで
     lastCoverHintAt = now;
-    const el = t instanceof HTMLElement ? t : null;
-    const host = el ? (el.closest("#floatPalette, #floatLayers, #magicFloatWrap, #mobileToolbar, .mobile-sheet, #mobileZoomControls, #mobileBrushControls") || el) : null;
-    const label = host?.id === "floatPalette" ? "パレット窓"
-      : host?.id === "floatLayers" ? "レイヤー窓"
-      : host?.id === "magicFloatWrap" ? "マジック選択のパネル"
-      : host?.id === "mobileToolbar" ? "下のツールバー"
-      : host?.id === "mobileBrushControls" ? "ブラシサイズの列"
-      : host?.id === "mobileZoomControls" ? "ズームボタン"
-      : host?.classList?.contains("mobile-sheet") ? "メニュー"
-      : (host?.id ? `#${host.id}` : "別のパネル");
-    toast(`キャンバスの上に「${label}」が重なっているため描けません（閉じるか動かしてください／メニューの「表示をリセット」でも戻せます）`, "error");
+    const label = host.id === "floatPalette" ? "パレット窓" : "レイヤー窓";
+    toast(`${label}がキャンバスに重なっています（×で閉じるか、タイトルバーを掴んで移動できます）`);
   }, true);
 
   // §92.2: 表示リセット（絵には触れず、詰まった表示状態だけを既定へ戻す）
