@@ -89,30 +89,60 @@ export function removeBackground(data, w, h, opts = {}) {
   // （グラデーション背景を外側から食べ進む。キャラ輪郭=急な色差で止まる）
   const chainThr = multiBg && bgColors.length ? Math.min(28, threshold) : 0;
   const visited = new Uint8Array(w * h);
-  const flat = [];
-  for (let x = 0; x < w; x++) { flat.push([x, 0], [x, h - 1]); }
-  for (let y = 0; y < h; y++) { flat.push([0, y], [w - 1, y]); }
-  while (flat.length) {
-    const [x, y, pr, pg, pb] = flat.pop();
-    if (x < 0 || y < 0 || x >= w || y >= h) continue;
-    const idx = y * w + x;
-    if (visited[idx]) continue;
-    visited[idx] = 1;
+  // §98: スタックは [x, y] のJS配列ではなく Int32Array に画素インデックスで積む。
+  // 従来は1マスごとに小さな配列を生成しており、2048×2048の画像では
+  // 約1540万個を生成・ピーク約480MBに達してモバイルのタブが落ちていた。
+  let cap = Math.max(4096, (w + h) * 8);
+  let stack = new Int32Array(cap);
+  // 連鎖除去（multiBg）のときだけ親画素の色を並走配列で持つ（-1 = 親なし）
+  let parentCol = chainThr > 0 ? new Int32Array(cap) : null;
+  let sp = 0;
+  const pushCell = (idx, pcol) => {
+    if (sp === cap) {
+      cap *= 2;
+      const ns = new Int32Array(cap); ns.set(stack); stack = ns;
+      if (parentCol) { const np = new Int32Array(cap); np.set(parentCol); parentCol = np; }
+    }
+    stack[sp] = idx;
+    if (parentCol) parentCol[sp] = pcol;
+    sp++;
+  };
+  // 連鎖除去が無いときは除去の可否が親画素に依存しないので、積む時点で visited を
+  // 立ててよい（同じマスを何度も積まない＝スタックが w*h 以下に収まる）。
+  // 連鎖除去があるときは「どの親から先に到達したか」で結果が変わりうるため、
+  // 従来どおり取り出した時点で visited を立て、積む前の枝刈りだけ行う。
+  const markOnPush = chainThr === 0;
+  const pushIfNew = (nidx, pcol) => {
+    if (visited[nidx]) return; // 処理済み（or 積み済み）なら取り出しても捨てられる
+    if (markOnPush) visited[nidx] = 1;
+    pushCell(nidx, pcol);
+  };
+  for (let x = 0; x < w; x++) { pushIfNew(x, -1); pushIfNew((h - 1) * w + x, -1); }
+  for (let y = 0; y < h; y++) { pushIfNew(y * w, -1); pushIfNew(y * w + (w - 1), -1); }
+  while (sp > 0) {
+    sp--;
+    const idx = stack[sp];
+    const pc = parentCol ? parentCol[sp] : -1;
+    if (!markOnPush) {
+      if (visited[idx]) continue;
+      visited[idx] = 1;
+    }
+    const x = idx % w, y = (idx / w) | 0;
     const o = idx * 4;
     let remove = isBgLike(o);
-    if (!remove && chainThr > 0 && pr !== undefined) {
-      const dr = out[o] - pr, dg = out[o + 1] - pg, db = out[o + 2] - pb;
+    if (!remove && chainThr > 0 && pc >= 0) {
+      const dr = out[o] - ((pc >> 16) & 255), dg = out[o + 1] - ((pc >> 8) & 255), db = out[o + 2] - (pc & 255);
       remove = dr * dr + dg * dg + db * db <= chainThr * chainThr;
     }
     if (!remove) continue;
     const wasOpaque = out[o + 3] >= 32;
     out[o + 3] = 0;
-    if (chainThr > 0 && wasOpaque) {
-      flat.push([x + 1, y, out[o], out[o + 1], out[o + 2]], [x - 1, y, out[o], out[o + 1], out[o + 2]],
-        [x, y + 1, out[o], out[o + 1], out[o + 2]], [x, y - 1, out[o], out[o + 1], out[o + 2]]);
-    } else {
-      flat.push([x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]);
-    }
+    const pcol = (chainThr > 0 && wasOpaque) ? ((out[o] << 16) | (out[o + 1] << 8) | out[o + 2]) : -1;
+    // 取り出し順を従来（[x+1,y] [x-1,y] [x,y+1] [x,y-1] の順に push → LIFO）と揃える
+    if (x + 1 < w) pushIfNew(idx + 1, pcol);
+    if (x - 1 >= 0) pushIfNew(idx - 1, pcol);
+    if (y + 1 < h) pushIfNew(idx + w, pcol);
+    if (y - 1 >= 0) pushIfNew(idx - w, pcol);
   }
 
   // フチ光彩除去（§18.2-1）: 透明に隣接する帯（1〜glowWidth px）のうち、
