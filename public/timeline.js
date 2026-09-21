@@ -1,5 +1,5 @@
 // timeline.js — フレーム一覧・タグバー（§16.1）・再生（タイムラインバー）
-import { drawFrameToContext, deviationPercent, adjustTagsOnInsert, adjustTagsOnDelete, uniqueTagName, cloneFrame } from "./app.js";
+import { drawFrameScaled, deviationPercent, adjustTagsOnInsert, adjustTagsOnDelete, uniqueTagName, cloneFrame } from "./app.js";
 
 const THUMB_SIZE = 48;
 
@@ -274,7 +274,8 @@ export function initTimeline(store, toast) {
     canvas.width = Math.max(1, Math.round(p.width * scale));
     canvas.height = Math.max(1, Math.round(p.height * scale));
     const ctx = canvas.getContext("2d");
-    drawFrameToContext(ctx, p, frameIndex, scale);
+    // §97: 1画素ずつ fillRect せず ImageData+drawImage で一括描画
+    drawFrameScaled(ctx, p, frameIndex, canvas.width, canvas.height);
   }
 
   function render() {

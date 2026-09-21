@@ -119,18 +119,73 @@ export function hexToRgba(hex) {
 // ---------------------------------------------------------------------------
 // 描画共通処理: フレームをコンテキストに cellSize でドット単位に描く
 // ---------------------------------------------------------------------------
+// §97: パレット → fillStyle 文字列のLUT。従来は1画素ごとに hexToRgba で文字列を
+// 解析し、さらに fillStyle 用の文字列を組み立てていた（128×128なら16384回）。
+function paletteStyleLUT(palette) {
+  const lut = new Array(palette.length);
+  for (let i = 0; i < palette.length; i++) {
+    const hex = palette[i];
+    if (!hex) { lut[i] = null; continue; }
+    const [r, g, b, a] = hexToRgba(hex);
+    lut[i] = a === 0 ? null : (a === 255 ? `rgb(${r},${g},${b})` : `rgba(${r},${g},${b},${a / 255})`);
+  }
+  return lut;
+}
+
+// §97: パレット → RGBA バイト列のLUT（ImageData 用）
+function paletteRgbaLUT(palette) {
+  const lut = new Uint8ClampedArray(palette.length * 4);
+  for (let i = 0; i < palette.length; i++) {
+    const hex = palette[i];
+    if (!hex) continue;
+    const [r, g, b, a] = hexToRgba(hex);
+    lut[i * 4] = r; lut[i * 4 + 1] = g; lut[i * 4 + 2] = b; lut[i * 4 + 3] = a;
+  }
+  return lut;
+}
+
 export function drawPixels(ctx, pixels, width, height, palette, cellSize) {
+  const lut = paletteStyleLUT(palette);
+  let cur = null; // fillStyle への代入も毎回文字列解析が走るので、変わった時だけ設定する
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
-      const idx = pixels[y * width + x];
-      const hex = palette[idx];
-      if (!hex) continue;
-      const [r, g, b, a] = hexToRgba(hex);
-      if (a === 0) continue;
-      ctx.fillStyle = a === 255 ? `rgb(${r},${g},${b})` : `rgba(${r},${g},${b},${a / 255})`;
+      const style = lut[pixels[y * width + x]];
+      if (!style) continue;
+      if (style !== cur) { ctx.fillStyle = style; cur = style; }
       ctx.fillRect(x * cellSize, y * cellSize, cellSize, cellSize);
     }
   }
+}
+
+// §97: サムネイルのように「縮小して一度に描く」用途向けの高速パス。
+// 等倍のImageDataを組み立ててから drawImage で拡縮する（1画素ずつ fillRect すると
+// 128×128で16384回の描画呼び出しになり、コマ数ぶん繰り返すと数百msに達する）。
+let thumbScratch = null;
+let thumbScratchCtx = null;
+export function drawFrameScaled(ctx, project, frameIndex, destW, destH) {
+  const { width, height, frames, palette } = project;
+  const frame = frames[frameIndex];
+  if (!frame) return;
+  if (!thumbScratch) thumbScratch = document.createElement("canvas");
+  if (thumbScratch.width !== width || thumbScratch.height !== height) {
+    thumbScratch.width = width;
+    thumbScratch.height = height;
+    thumbScratchCtx = thumbScratch.getContext("2d");
+  }
+  if (!thumbScratchCtx) thumbScratchCtx = thumbScratch.getContext("2d");
+  const rgba = paletteRgbaLUT(palette);
+  const img = thumbScratchCtx.createImageData(width, height);
+  const d = img.data, px = frame.pixels;
+  for (let i = 0; i < px.length; i++) {
+    const o = px[i] * 4, q = i * 4;
+    d[q] = rgba[o]; d[q + 1] = rgba[o + 1]; d[q + 2] = rgba[o + 2]; d[q + 3] = rgba[o + 3];
+  }
+  thumbScratchCtx.putImageData(img, 0, 0);
+  ctx.clearRect(0, 0, destW, destH);
+  const smooth = ctx.imageSmoothingEnabled;
+  ctx.imageSmoothingEnabled = false; // ドット絵なので最近傍で縮小する
+  ctx.drawImage(thumbScratch, 0, 0, width, height, 0, 0, destW, destH);
+  ctx.imageSmoothingEnabled = smooth;
 }
 
 export function drawFrameToContext(ctx, project, frameIndex, cellSize, opts = {}) {
@@ -651,6 +706,44 @@ export function createSampleProject() {
 // ストア（状態管理・Undo/Redo・pub/sub）
 // ---------------------------------------------------------------------------
 const UNDO_LIMIT = 50;
+// §97: 履歴はメモリ量でも上限を設ける。1エントリの大きさは
+// キャンバス面積 × コマ数に比例するため、件数だけの上限では大きなプロジェクトで
+// 数百MBに達し、モバイルSafariがタブごと落ちる。
+const UNDO_BYTES_BUDGET = 24 * 1024 * 1024;
+const UNDO_MIN_ENTRIES = 5; // 予算を超えても最低これだけは残す
+
+// スナップショット1件が抱えるピクセルのバイト数（Uint8Array = 1画素1バイト）
+function snapshotBytes(p) {
+  let n = 0;
+  for (const f of p.frames) {
+    if (Array.isArray(f.layers) && f.layers.length) {
+      for (const l of f.layers) n += l.pixels.length;
+      if (f.pixels && f.layers.length > 1) n += f.pixels.length; // 合成キャッシュ
+    } else if (f.pixels) n += f.pixels.length;
+  }
+  if (p.baseFrame) n += p.baseFrame.length;
+  return n;
+}
+
+// 履歴から取り出したスナップショットを現役プロジェクトとして使う前に、
+// 履歴管理用の内部プロパティを落とす
+function adoptSnapshot(snap) {
+  delete snap.__loadBoundary;
+  delete snap.__bytes;
+  return snap;
+}
+
+function trimHistory(stack) {
+  while (stack.length > UNDO_LIMIT) stack.shift();
+  let total = 0;
+  for (const s of stack) {
+    if (!Number.isFinite(s.__bytes)) s.__bytes = snapshotBytes(s);
+    total += s.__bytes;
+  }
+  while (stack.length > UNDO_MIN_ENTRIES && total > UNDO_BYTES_BUDGET) {
+    total -= stack.shift().__bytes;
+  }
+}
 
 class Store {
   constructor() {
@@ -700,9 +793,11 @@ class Store {
     for (const fn of this.listeners) fn();
   }
   // §76: plain を渡すと「事前に取ったスナップショット」を履歴へ積む（遅延pushUndo用）
-  pushUndo(plain = null) {
-    this.undoStack.push(plain || projectToPlain(this.state.project));
-    if (this.undoStack.length > UNDO_LIMIT) this.undoStack.shift();
+  pushUndo(snap = null) {
+    // §97: 履歴は projectToPlain（JSON用・1画素が8バイトのプレーン配列）ではなく
+    // cloneProject（Uint8Array のまま複製）で積む。メモリが約1/4になる。
+    this.undoStack.push(snap || cloneProject(this.state.project));
+    trimHistory(this.undoStack);
     this.redoStack.length = 0;
     // §49.7-2: アンドゥ不発の根因。pushUndo() は undoStack/redoStack を変更する唯一の経路の
     // 一つだが、これまで notify() を呼んでいなかった。editor.js のドット/ストローク確定
@@ -715,7 +810,7 @@ class Store {
     this.notify();
   }
   snapshot() { // §76: 変化があった時だけ積む遅延pushUndo用の事前スナップショット
-    return projectToPlain(this.state.project);
+    return cloneProject(this.state.project); // §97
   }
   // §80: 次の undo が「画像読み込み前」へ戻る境界かどうか
   peekUndoBoundary() {
@@ -724,18 +819,18 @@ class Store {
   }
   undo() {
     if (this.undoStack.length === 0) return false;
-    this.redoStack.push(projectToPlain(this.state.project));
-    const plain = this.undoStack.pop();
-    this.state.project = projectFromPlain(plain);
+    this.redoStack.push(cloneProject(this.state.project)); // §97
+    trimHistory(this.redoStack);
+    this.state.project = adoptSnapshot(this.undoStack.pop());
     this.clampAfterProjectChange();
     this.notify();
     return true;
   }
   redo() {
     if (this.redoStack.length === 0) return false;
-    this.undoStack.push(projectToPlain(this.state.project));
-    const plain = this.redoStack.pop();
-    this.state.project = projectFromPlain(plain);
+    this.undoStack.push(cloneProject(this.state.project)); // §97
+    trimHistory(this.undoStack);
+    this.state.project = adoptSnapshot(this.redoStack.pop());
     this.clampAfterProjectChange();
     this.notify();
     return true;
@@ -758,7 +853,8 @@ class Store {
       this.state.rigSelectedPart = null;
     }
     const p = this.state.project;
-    if (!Array.isArray(p.tags)) p.tags = defaultTags(p);
+    // §97: 従来 undo は projectFromPlain 経由で「tagsが空なら既定タグ」を復元していた
+    if (!Array.isArray(p.tags) || p.tags.length === 0) p.tags = defaultTags(p);
     for (let i = p.tags.length - 1; i >= 0; i--) {
       const t = p.tags[i];
       t.start = Math.max(0, Math.min(n - 1, t.start));
@@ -773,9 +869,9 @@ class Store {
   }
   resetProject(project) {
     // §80: 「画像読み込み前」へ戻る境界に印を付ける（1回の↩で作業ごと消えないように）
-    const plain = projectToPlain(this.state.project);
-    plain.__loadBoundary = true;
-    this.pushUndo(plain);
+    const snap = cloneProject(this.state.project); // §97
+    snap.__loadBoundary = true;
+    this.pushUndo(snap);
     this.state.project = project;
     this.state.currentFrame = 0;
     this.state.selection = null;
