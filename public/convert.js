@@ -480,53 +480,92 @@ export function detectComponentsDetailed(data, w, h, opts = {}) {
   if (!boxes.length) return { boxes: [], fine: [], labelMap: labels };
   // 近接ボックスのマージ: 同一ポーズ内の分離パーツ（銃先・帽子など）を1体に統合。
   // マージン = 最大ボックス辺の5%（最低8px）。ポーズ間の大きな間隔は維持される。
-  let merged = boxes.map((b, i) => ({ ...b, labels: [i] }));
-  const maxDim = Math.max(...merged.map((b) => Math.max(b.x1 - b.x0 + 1, b.y1 - b.y0 + 1)));
+  const maxDim = Math.max(...boxes.map((b) => Math.max(b.x1 - b.x0 + 1, b.y1 - b.y0 + 1)));
   // §77: mergeMargin 指定で近接マージ距離を上書き可能（小さな変換後グリッドでは既定の
   // 最低8pxが広すぎてパーツ同士が融合するため）
-  const margin = Number.isFinite(opts.mergeMargin) ? opts.mergeMargin : Math.max(8, Math.round(maxDim * 0.05));
-  let changed = true;
-  while (changed) {
-    changed = false;
-    outer: for (let i = 0; i < merged.length; i++) {
-      for (let j = i + 1; j < merged.length; j++) {
-        const a = merged[i], b = merged[j];
-        const overlapX = a.x0 - margin <= b.x1 && b.x0 - margin <= a.x1;
-        const overlapY = a.y0 - margin <= b.y1 && b.y0 - margin <= a.y1;
-        if (overlapX && overlapY) {
-          merged[i] = {
-            x0: Math.min(a.x0, b.x0), y0: Math.min(a.y0, b.y0),
-            x1: Math.max(a.x1, b.x1), y1: Math.max(a.y1, b.y1),
-            area: a.area + b.area,
-            labels: a.labels.concat(b.labels),
-          };
-          merged.splice(j, 1);
-          changed = true;
-          break outer;
+  const explicitMargin = Number.isFinite(opts.mergeMargin);
+  const baseMargin = explicitMargin ? opts.mergeMargin : Math.max(8, Math.round(maxDim * 0.05));
+
+  // 指定マージンでマージ → 微小ボックス除去 → 行クラスタリング → 行内x順
+  const mergeAt = (margin) => {
+    let merged = boxes.map((b, i) => ({ ...b, labels: [i] }));
+    let changed = true;
+    while (changed) {
+      changed = false;
+      outer: for (let i = 0; i < merged.length; i++) {
+        for (let j = i + 1; j < merged.length; j++) {
+          const a = merged[i], b = merged[j];
+          const overlapX = a.x0 - margin <= b.x1 && b.x0 - margin <= a.x1;
+          const overlapY = a.y0 - margin <= b.y1 && b.y0 - margin <= a.y1;
+          if (overlapX && overlapY) {
+            merged[i] = {
+              x0: Math.min(a.x0, b.x0), y0: Math.min(a.y0, b.y0),
+              x1: Math.max(a.x1, b.x1), y1: Math.max(a.y1, b.y1),
+              area: a.area + b.area,
+              labels: a.labels.concat(b.labels),
+            };
+            merged.splice(j, 1);
+            changed = true;
+            break outer;
+          }
         }
       }
     }
-  }
-  const maxArea = Math.max(...merged.map((b) => b.area));
-  const kept = merged.filter((b) => b.area >= maxArea * 0.05);
-  // 行クラスタリング: y範囲が重なるものを同じ行に
-  kept.sort((a, b) => a.y0 - b.y0);
-  const rows = [];
-  for (const b of kept) {
-    const cy = (b.y0 + b.y1) / 2;
-    let row = rows.find((r) => cy <= r.maxY1);
-    if (!row) {
-      row = { boxes: [], maxY1: b.y1 };
-      rows.push(row);
+    const maxArea = Math.max(...merged.map((b) => b.area));
+    const kept = merged.filter((b) => b.area >= maxArea * 0.05);
+    // 行クラスタリング: y範囲が重なるものを同じ行に
+    kept.sort((a, b) => a.y0 - b.y0);
+    const rows = [];
+    for (const b of kept) {
+      const cy = (b.y0 + b.y1) / 2;
+      let row = rows.find((r) => cy <= r.maxY1);
+      if (!row) {
+        row = { boxes: [], maxY1: b.y1 };
+        rows.push(row);
+      }
+      row.boxes.push(b);
+      row.maxY1 = Math.max(row.maxY1, b.y1);
     }
-    row.boxes.push(b);
-    row.maxY1 = Math.max(row.maxY1, b.y1);
+    const out = [];
+    for (const row of rows) {
+      row.boxes.sort((a, b) => a.x0 - b.x0);
+      out.push(...row.boxes);
+    }
+    return out;
+  };
+
+  let ordered = mergeAt(baseMargin);
+
+  // §96: 隣のコマを融合してしまったケースの自動リトライ。
+  // スプライトシートはコマの大きさがほぼそろうので、「そろっていない」＝融合の疑いと
+  // 見なす。マージンを段階的に狭めて再検出し、コマ数が増えて かつ 大きさがそろう
+  // 結果が得られたときだけ差し替える（本当にコマごとに大きさが違うアセットや、
+  // 浮いたパーツを持つ1体を粉々にしないためのガード）。
+  if (!explicitMargin && boxes.length >= 2) {
+    // 偶数個のときは下側中央を使う（2コマが1つに融合した場合を拾うため）
+    const dims = (bs, horiz) => {
+      const v = bs.map((b) => (horiz ? b.x1 - b.x0 + 1 : b.y1 - b.y0 + 1)).sort((a, b) => a - b);
+      return { min: v[0], max: v[v.length - 1], med: v[(v.length - 1) >> 1] };
+    };
+    const looksUniform = (bs) => [true, false].every((hz) => {
+      const d = dims(bs, hz);
+      return d.med > 0 && d.max <= d.med * 1.5 && d.min >= d.med * 0.5;
+    });
+    // すでに2つ以上がそろって取れているなら触らない（1つだけの場合は
+    // 「全コマが1つに融合した」可能性があるので判定対象にする）
+    const alreadyGood = ordered.length >= 2 && looksUniform(ordered);
+    if (!alreadyGood) {
+      const ladder = [...new Set([Math.floor(baseMargin / 2), Math.floor(baseMargin / 4), 2, 1])]
+        .filter((m) => m >= 1 && m < baseMargin)
+        .sort((a, b) => b - a);
+      for (const m of ladder) {
+        const cand = mergeAt(m);
+        if (cand.length <= ordered.length) continue;
+        if (looksUniform(cand)) { ordered = cand; break; }
+      }
+    }
   }
-  const ordered = [];
-  for (const row of rows) {
-    row.boxes.sort((a, b) => a.x0 - b.x0);
-    ordered.push(...row.boxes);
-  }
+
   return { boxes: ordered, fine: boxes, labelMap: labels };
 }
 
