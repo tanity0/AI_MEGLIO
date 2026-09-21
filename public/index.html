@@ -36,6 +36,14 @@
     </label>
     <button id="exportPngBtn" class="btn" title="スプライトシートPNGを書き出し">PNG書き出し</button>
     <button id="exportPngFolderBtn" class="btn btn-folder" title="サーバーの saves/ フォルダへPNG書き出し（§38・保存後にフォルダを開く）">📁</button>
+    <label class="check-row inline" title="PNG書き出しの整数拡大。×1でドット等倍（ゲームに入れるならこれ）"><span>PNG倍率</span>
+      <select id="exportScaleSel">
+        <option value="1">×1（等倍）</option>
+        <option value="2">×2</option>
+        <option value="4">×4</option>
+        <option value="8">×8</option>
+      </select>
+    </label>
     <button id="exportGifBtn" class="btn btn-accent" title="アニメーションGIFを書き出し">GIF書き出し</button>
     <button id="exportGifFolderBtn" class="btn btn-folder" title="サーバーの saves/ フォルダへGIF書き出し（§38・保存後にフォルダを開く）">📁</button>
     <label class="check-row inline" title="GIFのフレーム列を往復展開して書き出す（端の重複なし）"><input type="checkbox" id="gifPingpongChk"> ピンポン</label>

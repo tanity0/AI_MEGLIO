@@ -955,9 +955,27 @@ function initHeader() {
     const json = JSON.stringify(projectToPlain(store.state.project), null, 0);
     return new Blob([json], { type: "application/json" });
   }
+  // §94: PNG書き出しの倍率（既定は×1＝ドット等倍。従来は×4固定で「変換したのに画像が大きい」
+  // という実機報告につながっていた）。選択は端末に記憶する。
+  const EXPORT_SCALE_KEY = "aiMeglio.exportScale";
+  const exportScaleSel = document.getElementById("exportScaleSel");
+  if (exportScaleSel) {
+    try {
+      const saved = localStorage.getItem(EXPORT_SCALE_KEY);
+      if (saved && [...exportScaleSel.options].some((o) => o.value === saved)) exportScaleSel.value = saved;
+    } catch {}
+    exportScaleSel.addEventListener("change", () => {
+      try { localStorage.setItem(EXPORT_SCALE_KEY, exportScaleSel.value); } catch {}
+    });
+  }
+  function exportScale() {
+    const v = parseInt(exportScaleSel?.value || "1", 10);
+    return Number.isFinite(v) && v >= 1 && v <= 8 ? v : 1;
+  }
+
   function buildSpritesheetBlob() {
     const { project } = store.state;
-    const scale = 4;
+    const scale = exportScale();
     const canvas = document.createElement("canvas");
     canvas.width = project.width * scale * project.frames.length;
     canvas.height = project.height * scale;
