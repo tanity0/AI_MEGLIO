@@ -347,8 +347,10 @@ function quantizeCellColors(allCellColors, colors, satProtect) {
   const uniq = new Map();
   for (const c of allCellColors) {
     if (!c) continue;
-    const key = `${Math.round(c[0])},${Math.round(c[1])},${Math.round(c[2])}`;
-    const e = uniq.get(key) || { c: [Math.round(c[0]), Math.round(c[1]), Math.round(c[2])], n: 0 };
+    // §95.3(d): 数万個の文字列キーを作るとGC負荷が大きいので整数キーにする
+    const r = Math.round(c[0]), g = Math.round(c[1]), b = Math.round(c[2]);
+    const key = (r << 16) | (g << 8) | b;
+    const e = uniq.get(key) || { c: [r, g, b], n: 0 };
     e.n++;
     uniq.set(key, e);
   }
@@ -651,9 +653,16 @@ export function convertFramesShared(rawData, w, h, global, boxes, perFrameParams
   // pass0: フレームごとに背景除去（フレーム別つまみ）→ その領域内の不透明bbox
   const frameBg = [];
   const bboxes = [];
+  // §95.3(c): 背景除去は画像全体を走査する重い処理。コマ別つまみを変えていなければ
+  // 全コマで結果が同じなので、threshold|glowWidth をキーに1回だけ実行して共有する
+  // （16コマで16回→1回。フルRGBAコピーを16枚持たずに済むのでメモリも軽い）。
+  const bgByKey = new Map();
   for (let i = 0; i < N; i++) {
     const pf = perFrameParams[i] || {};
-    const bg = removeBackground(rawData, w, h, { threshold: pf.bgThreshold ?? 48, glowWidth: pf.glowWidth ?? 0 });
+    const th = pf.bgThreshold ?? 48, gw = pf.glowWidth ?? 0;
+    const bgKey = `${th}|${gw}`;
+    let bg = bgByKey.get(bgKey);
+    if (!bg) { bg = removeBackground(rawData, w, h, { threshold: th, glowWidth: gw }); bgByKey.set(bgKey, bg); }
     frameBg.push(bg);
     const reg = regions[i];
     let x0 = reg.x1 + 1, y0 = reg.y1 + 1, x1 = reg.x0 - 1, y1 = reg.y0 - 1;
@@ -758,22 +767,49 @@ function nearestIdx(centroids, c) {
 function kmeansSeeds(points, K, satProtect) {
   const seeds = [];
   // 孤立色相の保護シード: 彩度が高く、より高頻度の色から色相が離れている色
+  // §95.3(a): 「自分より3倍以上高頻度の色が色相40°以内にいない」の判定を、総当たり
+  // O(P²)（16コマ変換ではPが数万 → 億単位の比較）から色相ソート＋スライディング最大の
+  // O(P log P) へ。判定結果は総当たりと完全に一致する（自分自身は n >= n*3 を満たさない
+  // ので除外は不要）。
   if (satProtect > 0) {
-    const withHue = points
-      .map((p) => ({ p, hsv: rgbToHsv(p.c[0], p.c[1], p.c[2]) }))
-      .filter((e) => e.hsv[1] > 0.25 && e.hsv[2] > 0.15);
-    const isolated = [];
-    for (const e of withHue) {
-      let isolatedHue = true;
-      for (const o of withHue) {
-        if (o === e || o.p.n < e.p.n * 3) continue;
-        if (hueDist(o.hsv[0], e.hsv[0]) < 40) { isolatedHue = false; break; }
-      }
-      if (isolatedHue) isolated.push(e);
+    const withHue = [];
+    for (let i2 = 0; i2 < points.length; i2++) {
+      const p = points[i2];
+      const hsv = rgbToHsv(p.c[0], p.c[1], p.c[2]);
+      // idx = 元の並び順。下の安定ソートを従来（points順）と一致させるために持つ
+      if (hsv[1] > 0.25 && hsv[2] > 0.15) withHue.push({ p, h: hsv[0], idx: i2 });
     }
-    isolated.sort((a, b) => b.p.n - a.p.n);
+    const isolated = [];
+    const P = withHue.length;
+    if (P) {
+      const sorted = withHue.slice().sort((a, b) => a.h - b.h);
+      // 色相は円環なので -360 / 0 / +360 の3周ぶんに展開し、線形の窓で扱えるようにする
+      const H = new Float64Array(P * 3);
+      const N = new Float64Array(P * 3);
+      for (let j = 0; j < P * 3; j++) {
+        const e = sorted[j % P];
+        H[j] = e.h + (Math.floor(j / P) - 1) * 360;
+        N[j] = e.p.n;
+      }
+      const dq = new Int32Array(P * 3); // 頻度が単調減少するインデックス列
+      let dh = 0, dt = 0, lo = 0, hi = 0;
+      for (let i2 = 0; i2 < P; i2++) {
+        const center = H[i2 + P];
+        while (hi < P * 3 && H[hi] < center + 40) {
+          while (dt > dh && N[dq[dt - 1]] <= N[hi]) dt--;
+          dq[dt++] = hi; hi++;
+        }
+        while (lo < hi && H[lo] <= center - 40) {
+          if (dt > dh && dq[dh] === lo) dh++;
+          lo++;
+        }
+        const maxN = dt > dh ? N[dq[dh]] : 0;
+        if (maxN < sorted[i2].p.n * 3) isolated.push(sorted[i2]);
+      }
+    }
+    isolated.sort((a, b) => (b.p.n - a.p.n) || (a.idx - b.idx));
     const nProtect = Math.min(isolated.length, Math.max(0, Math.round(satProtect * K * 0.25)));
-    for (let i = 0; i < nProtect; i++) seeds.push(isolated[i].p.c.slice());
+    for (let i2 = 0; i2 < nProtect; i2++) seeds.push(isolated[i2].p.c.slice());
   }
   // k-means++（頻度加重）
   if (seeds.length === 0) {
@@ -781,24 +817,30 @@ function kmeansSeeds(points, K, satProtect) {
     for (const p of points) if (p.n > heaviest.n) heaviest = p;
     seeds.push(heaviest.c.slice());
   }
+  // §95.3(b): 各点の「最寄りシードまでの距離²」を保持し、シード追加時にその1個ぶんだけ
+  // min更新する。従来は追加のたびに全シードを総当たりしていた（O(K²·P)）。
+  // 選ばれる確率分布は従来と同一。
+  const nPts = points.length;
+  const bestD2 = new Float64Array(nPts).fill(Infinity);
+  const applySeed = (sd) => {
+    for (let i2 = 0; i2 < nPts; i2++) {
+      const c = points[i2].c;
+      const dr = sd[0] - c[0], dg = sd[1] - c[1], db = sd[2] - c[2];
+      const d = dr * dr + dg * dg + db * db;
+      if (d < bestD2[i2]) bestD2[i2] = d;
+    }
+  };
+  for (const sd of seeds) applySeed(sd);
   while (seeds.length < K) {
     let sum = 0;
-    const d2s = points.map((p) => {
-      let bd = Infinity;
-      for (const s of seeds) {
-        const dr = s[0] - p.c[0], dg = s[1] - p.c[1], db = s[2] - p.c[2];
-        const d = dr * dr + dg * dg + db * db;
-        if (d < bd) bd = d;
-      }
-      const v = bd * p.n;
-      sum += v;
-      return v;
-    });
-    if (sum === 0) break;
+    for (let i2 = 0; i2 < nPts; i2++) sum += bestD2[i2] * points[i2].n;
+    if (!(sum > 0)) break;
     let r = Math.random() * sum;
     let pick = 0;
-    for (let i = 0; i < points.length; i++) { r -= d2s[i]; if (r <= 0) { pick = i; break; } }
-    seeds.push(points[pick].c.slice());
+    for (let i2 = 0; i2 < nPts; i2++) { r -= bestD2[i2] * points[i2].n; if (r <= 0) { pick = i2; break; } }
+    const sd = points[pick].c.slice();
+    seeds.push(sd);
+    applySeed(sd);
   }
   return seeds;
 }
