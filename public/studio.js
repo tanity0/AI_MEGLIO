@@ -1,6 +1,6 @@
 // studio.js — §18.2 変換スタジオ（インポートウィザードv2）UI
 // 候補ギャラリー → つまみでリアルタイム再変換 → 元画像との同期ズーム比較 → 確定
-import { removeBackground, estimateGrid, convertImage, convertSheetImage, convertFramesShared, detectComponents, detectComponentsDetailed, extractMainPalette, detectExactPixelArt, convertFramesExact } from "./convert.js";
+import { removeBackground, estimateGrid, convertImage, convertSheetImage, convertFramesShared, detectComponents, detectComponentsDetailed, extractMainPalette, detectExactPixelArt, convertFramesExact, applyFlatten } from "./convert.js";
 import { hexToRgba, defaultTags } from "./app.js";
 
 // §30: フレーム別に持つつまみ（サイズ・共有パレット以外＝サンプリング/背景除去系）
@@ -71,6 +71,7 @@ function defaultKnobs() {
     oneToOne: false,
     targetH: 64,
     colors: 64,
+    flatten: 0, // §99: 0=なし / 1=弱 / 2=強
     sizeDelta: 0,
     offsetDX: 0,
     offsetDY: 0,
@@ -231,6 +232,7 @@ async function runConvert() {
         exactBoxes = [{ x0, y0, x1, y1 }];
       }
       res = convertFramesExact(bgCache, srcData.w, srcData.h, exactBoxes, split.align, exactInfo);
+      applyFlatten(res, knobs.flatten); // §99
       if (res.framesPixels && res.framesPixels[activeFrame]) {
         res.pixels = res.framesPixels[activeFrame];
         // §59.7: アクティブフレームの元画像座標に重ねて表示（1コマ目の位置に固定されるズレを修正）
@@ -252,6 +254,7 @@ async function runConvert() {
       ensureFrameParams(boxes.length);
       const global = { targetH: knobs.oneToOne ? 0 : knobs.targetH, colors: knobs.colors, oneToOne: knobs.oneToOne, s: grid.s + knobs.sizeDelta };
       res = convertFramesShared(srcData.data, srcData.w, srcData.h, global, boxes, frameParams, split.align);
+      applyFlatten(res, knobs.flatten); // §99
       // プレビューはアクティブフレーム
       if (res.framesPixels && res.framesPixels[activeFrame]) {
         res.pixels = res.framesPixels[activeFrame];
@@ -260,12 +263,14 @@ async function runConvert() {
       }
     } else {
       res = doConvertWith(knobsToParams());
+      applyFlatten(res, knobs.flatten); // §99
     }
     if (gen !== convertGen) return;
     result = res;
     const nf = res.framesPixels ? res.framesPixels.length : 1;
     $("studioStatus").textContent =
       `出力: ${res.width}×${res.height}・${res.palette.length - 1}色（+透明）` +
+      (knobs.flatten ? `・平坦化${knobs.flatten === 2 ? "強" : "弱"}` : "") + // §99
       (nf > 1 ? `・${nf}フレーム（プレビュー: フレーム${activeFrame + 1}）・共有パレット` : "") +
       (candidateAutoNote ? ` ｜ ${candidateAutoNote}` : ""); // §43/§44: 自動調整の結果を併記
     renderFrameBar();
@@ -664,6 +669,7 @@ function focusActiveFrame() {
 const KNOB_BINDINGS = [
   ["studioTargetH", "targetH", Number],
   ["studioColors", "colors", Number],
+  ["studioFlatten", "flatten", Number], // §99
   ["studioDomBlend", "domBlend", Number],
   ["studioCenterWeight", "centerWeight", Number],
   ["studioEdgeProtect", "edgeProtect", Number],
@@ -688,7 +694,8 @@ function attachKnobs() {
   });
   $("studioExactChk").addEventListener("change", scheduleConvert); // §59.2
   for (const [id, key, cast] of KNOB_BINDINGS) {
-    $(id).addEventListener("input", () => {
+    // §99: <select> は input が飛ばない環境があるため change で拾う
+    $(id).addEventListener($(id).tagName === "SELECT" ? "change" : "input", () => {
       knobs[key] = cast($(id).value);
       candidateAutoNote = ""; // §43: 手動操作で自動調整の表示を解除
       if (key === "colors") $("studioColorsLabel").textContent = String(knobs.colors);

@@ -10,6 +10,16 @@ export const MAX_OUT = 512; // §79: 256→512
 function rgbToHex(r, g, b) {
   return "#" + [r, g, b].map((v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0")).join("");
 }
+// §99: パレット文字列 → RGB。app.js に依存させたくないので convert.js 内に持つ
+// （#rgb / #rrggbb / #rrggbbaa を許容。不正な値は黒として扱う）
+function hexToRgbTriplet(hex) {
+  let h = String(hex || "").replace("#", "");
+  if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+  if (h.length < 6) return [0, 0, 0];
+  const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16);
+  return [Number.isNaN(r) ? 0 : r, Number.isNaN(g) ? 0 : g, Number.isNaN(b) ? 0 : b];
+}
+
 function rgbToHsv(r, g, b) {
   const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
   const d = mx - mn;
@@ -912,6 +922,152 @@ function kmeansSeeds(points, K, satProtect) {
     applySeed(sd);
   }
   return seeds;
+}
+
+// ---------------------------------------------------------------------------
+// §99 平坦化: 減色後のインデックス格子に3×3の多数決フィルタをかける。
+// 変換はセルごとに独立して代表色を決めるため、元画像のわずかな濃淡がそのまま
+// 「隣同士が違う色」になって残り、ドット絵の特徴である平らな面が生まれない。
+// 各ドットを周囲9マスの最頻色へ寄せることで面を作る。
+//
+// 透明（インデックス0）は書き換えず、多数決の集計にも入れない
+// → シルエットは1ドットも変わらない（フチが痩せたり太ったりしない）。
+// 同数のときは自分の色を優先（それ以外は小さいインデックス）＝結果は決定的。
+// ---------------------------------------------------------------------------
+const FLATTEN_LEVELS = {
+  // median: 先に色をならす回数 / need: 多数決で置換に必要な票 / passes: 多数決の回数
+  1: { median: 0, need: 5, passes: 1 }, // 弱: 孤立ドットだけ消す（ディテールを残す）
+  2: { median: 1, need: 4, passes: 2 }, // 強: 色をならしてから面をまとめる
+};
+
+// 9個以下の値の中央値（挿入ソート。配列は破壊する）
+function medianOfFirst(a, m) {
+  for (let i = 1; i < m; i++) {
+    const v = a[i];
+    let j = i - 1;
+    while (j >= 0 && a[j] > v) { a[j + 1] = a[j]; j--; }
+    a[j + 1] = v;
+  }
+  return a[m >> 1];
+}
+
+// 色ならし: 3×3の中央値（RGB各チャンネル）→ パレット内の最近色へ割り当て直す。
+// 多数決だけでは「隣同士がわずかに違う色」が票を分け合って集約されないため、
+// 先に色をならしてから多数決にかけると面がまとまる（§99.4 の計測）。
+function medianRequantPass(src, w, h, rgbLut, n) {
+  const out = new Uint8Array(src);
+  const rs = new Uint8Array(9), gs = new Uint8Array(9), bs = new Uint8Array(9);
+  const nearest = new Map(); // ならし後のRGB → 最近パレット番号（毎画素の全探索を避ける）
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (src[y * w + x] === 0) continue; // 透明はそのまま
+      let m = 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        const ny = y + dy;
+        if (ny < 0 || ny >= h) continue;
+        for (let dx = -1; dx <= 1; dx++) {
+          const nx = x + dx;
+          if (nx < 0 || nx >= w) continue;
+          const v = src[ny * w + nx];
+          if (v === 0) continue; // 透明は数えない
+          const o = v * 3;
+          rs[m] = rgbLut[o]; gs[m] = rgbLut[o + 1]; bs[m] = rgbLut[o + 2]; m++;
+        }
+      }
+      if (!m) continue;
+      const R = medianOfFirst(rs, m), G = medianOfFirst(gs, m), B = medianOfFirst(bs, m);
+      const key = (R << 16) | (G << 8) | B;
+      let best = nearest.get(key);
+      if (best === undefined) {
+        let bd = Infinity;
+        best = 1;
+        for (let i = 1; i < n; i++) {
+          const o = i * 3, dr = rgbLut[o] - R, dg = rgbLut[o + 1] - G, db = rgbLut[o + 2] - B;
+          const d = dr * dr + dg * dg + db * db;
+          if (d < bd) { bd = d; best = i; }
+        }
+        nearest.set(key, best);
+      }
+      out[y * w + x] = best;
+    }
+  }
+  return out;
+}
+
+// 多数決: 各ドットを周囲9マスの最頻色へ寄せる。
+// 集計配列の全クリアと全走査（256色分）を毎ドット行うと、512×512×16コマで
+// 10億回規模になるため、実際に現れた色番号だけを触る（結果は同じ）。
+function majorityPass(src, w, h, need) {
+  const out = new Uint8Array(src);
+  const cnt = new Uint16Array(256);
+  const seen = new Uint8Array(9);  // 近傍に現れた色番号（重複なし・昇順）
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const self = src[y * w + x];
+      if (self === 0) continue; // 透明はそのまま
+      let ns = 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        const ny = y + dy;
+        if (ny < 0 || ny >= h) continue;
+        for (let dx = -1; dx <= 1; dx++) {
+          const nx = x + dx;
+          if (nx < 0 || nx >= w) continue;
+          const v = src[ny * w + nx];
+          if (v === 0) continue; // 透明は数えない
+          if (cnt[v] === 0) {
+            // 昇順を保って挿入（全走査版が「同数なら小さい番号」を選ぶのと一致させる）
+            let j = ns++;
+            while (j > 0 && seen[j - 1] > v) { seen[j] = seen[j - 1]; j--; }
+            seen[j] = v;
+          }
+          cnt[v]++;
+        }
+      }
+      let best = self, bn = cnt[self];
+      for (let i = 0; i < ns; i++) { const v = seen[i]; if (cnt[v] > bn) { bn = cnt[v]; best = v; } }
+      if (bn >= need && best !== self) out[y * w + x] = best;
+      for (let i = 0; i < ns; i++) cnt[seen[i]] = 0; // 触った分だけ戻す
+    }
+  }
+  return out;
+}
+
+export function flattenIndexed(pixels, w, h, level, palette) {
+  const cfg = FLATTEN_LEVELS[level];
+  if (!cfg) return pixels;
+  let src = pixels;
+  if (cfg.median > 0 && Array.isArray(palette) && palette.length > 1) {
+    const n = palette.length;
+    const rgbLut = new Uint8Array(n * 3);
+    for (let i = 0; i < n; i++) {
+      const hex = palette[i];
+      if (!hex) continue;
+      const [r, g, b] = hexToRgbTriplet(hex);
+      rgbLut[i * 3] = r; rgbLut[i * 3 + 1] = g; rgbLut[i * 3 + 2] = b;
+    }
+    for (let k = 0; k < cfg.median; k++) src = medianRequantPass(src, w, h, rgbLut, n);
+  }
+  for (let k = 0; k < cfg.passes; k++) src = majorityPass(src, w, h, cfg.need);
+  return src;
+}
+
+// 変換結果（convertImage / convertSheetImage / convertFramesShared /
+// convertFramesExact のいずれの形でも）へ平坦化を適用し、counts を数え直す。
+export function applyFlatten(res, level) {
+  if (!res || !FLATTEN_LEVELS[level]) return res;
+  const w = res.width, h = res.height, pal = res.palette;
+  const counts = new Uint32Array(pal.length);
+  const tally = (px) => { for (let i = 0; i < px.length; i++) if (px[i] < counts.length) counts[px[i]]++; };
+  if (Array.isArray(res.framesPixels)) {
+    res.framesPixels = res.framesPixels.map((px) => flattenIndexed(px, w, h, level, pal));
+    res.framesPixels.forEach(tally);
+    res.pixels = res.framesPixels[0];
+  } else if (res.pixels) {
+    res.pixels = flattenIndexed(res.pixels, w, h, level, pal);
+    tally(res.pixels);
+  }
+  res.counts = counts;
+  return res;
 }
 
 // ---------------------------------------------------------------------------
