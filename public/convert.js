@@ -325,13 +325,23 @@ export async function estimateGrid(data, w, h, onProgress) {
 // セル代表色サンプリング（共通ヘルパー・§18.2-3,6 / §20.2 で共用）
 function sampleCellsRegion(data, w, h, { cs, gx0, gy0, cols, rows, domBlend, centerWeight, edgeProtect }) {
   const cellColors = new Array(cols * rows).fill(null);
+  // §106: セルサイズが1pxを下回ると、隣り合うセルの丸め結果が同じ値に潰れて
+  // 範囲が空になる。従来はそのセルを飛ばしていたため、一定間隔で透明な行・列が
+  // 並ぶ「格子状の抜け」になっていた。潰れたセルは最も近い1画素を読む（最近傍拡大）。
+  const collapse = (a, b, limit) => {
+    if (b > a) return [a, b];
+    const q0 = Math.max(0, Math.min(limit - 1, a));
+    return [q0, q0 + 1];
+  };
   for (let cy = 0; cy < rows; cy++) {
-    const py0 = Math.max(0, Math.round(gy0 + cy * cs));
-    const py1 = Math.min(h, Math.round(gy0 + (cy + 1) * cs));
+    const [py0, py1] = collapse(
+      Math.max(0, Math.round(gy0 + cy * cs)),
+      Math.min(h, Math.round(gy0 + (cy + 1) * cs)), h);
     for (let cx = 0; cx < cols; cx++) {
-      const px0 = Math.max(0, Math.round(gx0 + cx * cs));
-      const px1 = Math.min(w, Math.round(gx0 + (cx + 1) * cs));
-      if (px1 <= px0 || py1 <= py0) continue;
+      const [px0, px1] = collapse(
+        Math.max(0, Math.round(gx0 + cx * cs)),
+        Math.min(w, Math.round(gx0 + (cx + 1) * cs)), w);
+      if (px1 <= px0 || py1 <= py0) continue; // 画像の外（クランプ不能）のみ飛ばす
       const midX = (px0 + px1) / 2, midY = (py0 + py1) / 2;
       const half = Math.max(1, (px1 - px0) / 2);
       const buckets = new Map(); // 5bit/ch量子化 → {wsum, r,g,b}

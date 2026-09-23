@@ -245,6 +245,7 @@ async function runConvert() {
       $("studioStatus").textContent =
         `出力: 幅${res.width}×高さ${res.height}・${res.palette.length - 1}色（+透明）・無劣化1:1（${exactInfo.block}×ドット絵を検出）` +
         (nfx > 1 ? `・${nfx}フレーム（プレビュー: フレーム${activeFrame + 1}）` : "");
+      syncTargetHNote(); // §106
       renderFrameBar();
       renderCompare();
       return;
@@ -274,6 +275,7 @@ async function runConvert() {
       (knobs.flatten ? `・平坦化${["", "弱", "強", "最強"][knobs.flatten] || ""}` : "") + // §99/§101
       (nf > 1 ? `・${nf}フレーム（プレビュー: フレーム${activeFrame + 1}）・共有パレット` : "") +
       (candidateAutoNote ? ` ｜ ${candidateAutoNote}` : ""); // §43/§44: 自動調整の結果を併記
+    syncTargetHNote(); // §106
     renderFrameBar();
     renderCompare();
   } catch (err) {
@@ -690,8 +692,17 @@ function syncTargetHNote() {
   const note = $("studioTargetHNote");
   if (!note) return;
   const why = knobs.oneToOne ? "1:1（グリッド推定サイズ）" : (exactActive() ? "無劣化1:1" : "");
-  note.textContent = why ? `← ${why}がONのため無効` : "";
-  note.hidden = !why;
+  if (why) { note.textContent = `← ${why}がONのため無効`; note.hidden = false; return; }
+  // §106: セルが1px未満＝元画像より多いドット数を要求している（拡大）。
+  // ドット絵は元画像に無い情報を作れないので、たいていは指定ミス。
+  const cs = result && result.srcCellSize;
+  if (Number.isFinite(cs) && cs < 1) {
+    note.textContent = `← 元画像より拡大しています（セル${cs.toFixed(2)}px）`;
+    note.hidden = false;
+    return;
+  }
+  note.textContent = "";
+  note.hidden = true;
 }
 
 function syncKnobUi() {
