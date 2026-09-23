@@ -188,7 +188,7 @@ export async function probeImage(file) {
  * 戻り値: project オブジェクト（frame 0 = ベースフレーム、project.baseFrame 保持）
  *         null = ユーザーがダイアログでキャンセル
  */
-export async function importImageFile(file) {
+export async function importImageFile(file, sourceDataUrl = null) {
   if (!/^image\/(png|gif|webp)$/.test(file.type)) {
     throw new Error("PNG / GIF / WebP のみ対応しています");
   }
@@ -246,6 +246,22 @@ export async function importImageFile(file) {
     }
   }
 
+  // §102: 直接取り込みでも元画像を保存し、あとから「再変換」で変換スタジオへ
+  // 持っていけるようにする。保存規約は §40（スタジオ経由）と揃える —
+  // 原本をそのまま保持し、12MBを超えるときだけ長辺2048pxへ縮小する。
+  const SOURCE_IMAGE_MAX_BYTES = 12 * 1024 * 1024;
+  let sourceImage = typeof sourceDataUrl === "string" && sourceDataUrl.startsWith("data:image/") ? sourceDataUrl : null;
+  let sourceShrunk = false;
+  if (sourceImage && sourceImage.length > SOURCE_IMAGE_MAX_BYTES) {
+    const scale = Math.min(1, 2048 / Math.max(width, height));
+    const sc = document.createElement("canvas");
+    sc.width = Math.max(1, Math.round(width * scale));
+    sc.height = Math.max(1, Math.round(height * scale));
+    sc.getContext("2d").drawImage(bitmap, 0, 0, sc.width, sc.height);
+    sourceImage = sc.toDataURL("image/png");
+    sourceShrunk = true;
+  }
+
   const project = {
     width: outW,
     height: outH,
@@ -256,6 +272,8 @@ export async function importImageFile(file) {
     lockedRects: [],
     variants: [],
     profile: null,
+    sourceImage,
+    sourceShrunk, // 呼び出し側が通知に使う（プロジェクトには載せない）
   };
   project.tags = [{ name: "all", start: 0, end: 0, fps: 8, loop: true }];
   return project;

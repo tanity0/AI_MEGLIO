@@ -1,7 +1,7 @@
 // studio.js — §18.2 変換スタジオ（インポートウィザードv2）UI
 // 候補ギャラリー → つまみでリアルタイム再変換 → 元画像との同期ズーム比較 → 確定
 import { removeBackground, estimateGrid, convertImage, convertSheetImage, convertFramesShared, detectComponents, detectComponentsDetailed, extractMainPalette, detectExactPixelArt, convertFramesExact, applyFlatten } from "./convert.js";
-import { hexToRgba, defaultTags } from "./app.js";
+import { hexToRgba, defaultTags, drawFrameToContext } from "./app.js";
 
 // §30: フレーム別に持つつまみ（サイズ・共有パレット以外＝サンプリング/背景除去系）
 const PER_FRAME_KEYS = ["bgThreshold", "glowWidth", "domBlend", "centerWeight", "edgeProtect", "satProtect", "offsetDX", "offsetDY"];
@@ -1101,14 +1101,46 @@ export function initStudio(storeRef, toastRef) {
   });
 
   // 元画像から再変換（§18.2）
+  // §102: 現在の全コマを等倍（1ドット＝1px）の横一列シートに描き出す。
+  // 元画像が無いプロジェクト（古い保存JSON・新規作成して手で描いたもの）を
+  // 再変換するための入力。コマ間は透明なのでスタジオの自動フレーム分割
+  // （§20.1/§96）でそのまま元のコマ数に分かれる。
+  function currentDotsAsSheet() {
+    const p = store.state.project;
+    const c = document.createElement("canvas");
+    c.width = p.width * p.frames.length;
+    c.height = p.height;
+    const ctx = c.getContext("2d");
+    for (let i = 0; i < p.frames.length; i++) {
+      ctx.save();
+      ctx.translate(i * p.width, 0);
+      drawFrameToContext(ctx, p, i, 1); // 等倍＝ドットの情報は失われない
+      ctx.restore();
+    }
+    return c.toDataURL("image/png");
+  }
+
+  // §102: 保存済みの変換設定が無いときの初期つまみ。既定（解像度64・色数64）のままだと
+  // 小さいドット絵が拡大されてしまうので、いまのプロジェクトの寸法・色数を初期値にする
+  // （＝開いた時点では現状維持。そこから色数や平坦化を動かす使い方になる）。
+  function paramsFromCurrentProject() {
+    const p = store.state.project;
+    return {
+      targetH: Math.max(16, Math.min(512, p.height)),
+      colors: Math.max(8, Math.min(256, p.palette.length - 1)),
+    };
+  }
+
   $("reconvertBtn").addEventListener("click", () => {
     const p = store.state.project;
     if (!p.sourceImage) {
-      toast("このプロジェクトには元画像が保存されていません（変換スタジオ経由で読み込むと保存されます）", "error");
+      // §102: 行き止まりにせず、いまのドットを入力にして再変換する
+      toast("元画像が無いので、いまのドットから再変換します（色数・平坦化を変えられます）");
+      openStudio(currentDotsAsSheet(), paramsFromCurrentProject(), { initialFrame: store.state.currentFrame });
       return;
     }
     // §47.2: 現在選択中のフレームに対応するコマのタブを初期アクティブで開く
-    openStudio(p.sourceImage, p.conversionParams || null, { initialFrame: store.state.currentFrame });
+    openStudio(p.sourceImage, p.conversionParams || paramsFromCurrentProject(), { initialFrame: store.state.currentFrame });
   });
 
   // E2E テスト用フック（UIには影響しない）

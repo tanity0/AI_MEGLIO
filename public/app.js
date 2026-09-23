@@ -1029,10 +1029,15 @@ function initHeader() {
       // それ以外は変換スタジオを開く
       const probe = await probeImage(file);
       if (probe.shortcut && !probe.sheet) { // §78: シートはスタジオへ（自動フレーム分割のため）
-        const project = await importImageFile(file);
+        // §102: 直接取り込みでも元画像を持たせ、あとから「再変換」できるようにする
+        const srcUrl = await fileToDataUrl(file);
+        const project = await importImageFile(file, srcUrl);
         if (!project) return; // ユーザーキャンセル
+        const shrunk = project.sourceShrunk;
+        delete project.sourceShrunk;
         store.resetProject(project);
-        toast(`画像を ${project.width}×${project.height}・${project.palette.length}色 として読み込みました（frame 0 = ベースフレーム）`);
+        toast(`画像を ${project.width}×${project.height}・${project.palette.length}色 として読み込みました（frame 0 = ベースフレーム）。色数や平坦化を変えたいときは「再変換」`);
+        if (shrunk) toast("元画像が12MBを超えるため、保存用に長辺2048pxへ縮小しました（以降の再変換はこの縮小版が入力になります）");
       } else {
         const dataUrl = await fileToDataUrl(file);
         toast(probe.sheet
