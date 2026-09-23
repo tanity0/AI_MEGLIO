@@ -2,7 +2,7 @@
 // 足元アンカー基準でキャンバスを拡大/縮小する。フロント主体（サーバーは width/height 8〜512 のみ関与）。
 import { hexToRgba, recompositeFrame } from "./app.js";
 
-const MIN_SIZE = 16;
+const MIN_SIZE = 8; // §104: 本体が扱える最小（projectFromPlain の下限）に合わせる
 const MAX_SIZE = 512; // §79: 256→512（§70.1の漏れ再発防止でここを最初に確認）
 
 // アンカー id -> [横, 縦]（l/m/r, t/m/b）
