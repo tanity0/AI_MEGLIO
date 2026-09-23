@@ -11,7 +11,7 @@ import {
 } from "./app.js";
 import { extractMainPalette } from "./convert.js";
 
-const MIN_ZOOM = 2;
+const MIN_ZOOM = 1; // §105: ドット等倍（1ドット=1px）まで縮小できるように（旧2）
 const MAX_ZOOM = 48;
 const BRUSH_SIZES = [1, 2, 3, 4, 8];
 // §49.1と同一クエリ。§50.6のフィット余白・パン可動域拡張をモバイルのみに限定するため
