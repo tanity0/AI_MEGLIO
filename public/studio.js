@@ -270,7 +270,7 @@ async function runConvert() {
     const nf = res.framesPixels ? res.framesPixels.length : 1;
     $("studioStatus").textContent =
       `出力: ${res.width}×${res.height}・${res.palette.length - 1}色（+透明）` +
-      (knobs.flatten ? `・平坦化${knobs.flatten === 2 ? "強" : "弱"}` : "") + // §99
+      (knobs.flatten ? `・平坦化${["", "弱", "強", "最強"][knobs.flatten] || ""}` : "") + // §99/§101
       (nf > 1 ? `・${nf}フレーム（プレビュー: フレーム${activeFrame + 1}）・共有パレット` : "") +
       (candidateAutoNote ? ` ｜ ${candidateAutoNote}` : ""); // §43/§44: 自動調整の結果を併記
     renderFrameBar();
