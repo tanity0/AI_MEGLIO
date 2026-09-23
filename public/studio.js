@@ -116,6 +116,7 @@ async function ensureBg() {
     exactInfo = detectExactPixelArt(bgCache, srcData.w, srcData.h); // §59.2
     const row = $("studioExactRow");
     if (row) row.hidden = !exactInfo.ok;
+    syncTargetHNote(); // §103
     detectSplit(); // §20.1: 連結成分の再検出
   }
   return bgCache;
@@ -242,7 +243,7 @@ async function runConvert() {
       result = res;
       const nfx = res.framesPixels.length;
       $("studioStatus").textContent =
-        `出力: ${res.width}×${res.height}・${res.palette.length - 1}色（+透明）・無劣化1:1（${exactInfo.block}×ドット絵を検出）` +
+        `出力: 幅${res.width}×高さ${res.height}・${res.palette.length - 1}色（+透明）・無劣化1:1（${exactInfo.block}×ドット絵を検出）` +
         (nfx > 1 ? `・${nfx}フレーム（プレビュー: フレーム${activeFrame + 1}）` : "");
       renderFrameBar();
       renderCompare();
@@ -269,7 +270,7 @@ async function runConvert() {
     result = res;
     const nf = res.framesPixels ? res.framesPixels.length : 1;
     $("studioStatus").textContent =
-      `出力: ${res.width}×${res.height}・${res.palette.length - 1}色（+透明）` +
+      `出力: 幅${res.width}×高さ${res.height}・${res.palette.length - 1}色（+透明）` + // §103
       (knobs.flatten ? `・平坦化${["", "弱", "強", "最強"][knobs.flatten] || ""}` : "") + // §99/§101
       (nf > 1 ? `・${nf}フレーム（プレビュー: フレーム${activeFrame + 1}）・共有パレット` : "") +
       (candidateAutoNote ? ` ｜ ${candidateAutoNote}` : ""); // §43/§44: 自動調整の結果を併記
@@ -678,6 +679,21 @@ const KNOB_BINDINGS = [
   ["studioGlowWidth", "glowWidth", Number],
 ];
 
+// §103: 「無劣化1:1（検出済み）」が実際に効いている状態か
+// （行が表示されていて、かつチェックが入っている）
+function exactActive() {
+  const row = $("studioExactRow");
+  return !!(row && !row.hidden && $("studioExactChk")?.checked);
+}
+// §103: 1:1系がONの間は解像度(高さ)が無視されるので、その旨を欄の隣に出す
+function syncTargetHNote() {
+  const note = $("studioTargetHNote");
+  if (!note) return;
+  const why = knobs.oneToOne ? "1:1（グリッド推定サイズ）" : (exactActive() ? "無劣化1:1" : "");
+  note.textContent = why ? `← ${why}がONのため無効` : "";
+  note.hidden = !why;
+}
+
 function syncKnobUi() {
   $("studioOneToOne").checked = knobs.oneToOne;
   for (const [id, key] of KNOB_BINDINGS) $(id).value = String(knobs[key]);
@@ -685,19 +701,32 @@ function syncKnobUi() {
   $("studioOffsetDX").textContent = String(knobs.offsetDX);
   $("studioOffsetDY").textContent = String(knobs.offsetDY);
   $("studioColorsLabel").textContent = String(knobs.colors);
+  syncTargetHNote(); // §103
 }
 
 function attachKnobs() {
   $("studioOneToOne").addEventListener("change", () => {
     knobs.oneToOne = $("studioOneToOne").checked;
+    syncTargetHNote(); // §103
     scheduleConvert();
   });
-  $("studioExactChk").addEventListener("change", scheduleConvert); // §59.2
+  $("studioExactChk").addEventListener("change", () => { syncTargetHNote(); scheduleConvert(); }); // §59.2 / §103
   for (const [id, key, cast] of KNOB_BINDINGS) {
     // §99: <select> は input が飛ばない環境があるため change で拾う
     $(id).addEventListener($(id).tagName === "SELECT" ? "change" : "input", () => {
       knobs[key] = cast($(id).value);
       candidateAutoNote = ""; // §43: 手動操作で自動調整の表示を解除
+      // §103: 解像度(高さ)を指定する操作は「1:1ではない出力がほしい」という意思表示。
+      // 1:1系がONのままだと入力が完全に無視されるので、自動で解除して効かせる。
+      if (key === "targetH") {
+        const wasOneToOne = knobs.oneToOne, wasExact = exactActive();
+        if (wasOneToOne) { knobs.oneToOne = false; $("studioOneToOne").checked = false; }
+        if (wasExact) $("studioExactChk").checked = false;
+        if (wasOneToOne || wasExact) {
+          syncTargetHNote(); // 解除したので「無効」表示も消す
+          toast(`解像度を指定したため「${wasOneToOne ? "1:1（グリッド推定サイズ）" : "無劣化1:1"}」を解除しました`);
+        }
+      }
       if (key === "colors") $("studioColorsLabel").textContent = String(knobs.colors);
       // §30: 多フレームでは背景除去はフレーム別に convertFramesShared 内で行うため
       // bgCache/ボックス検出は無効化しない（フレーム分割を安定させる）。単一時は従来どおり。
