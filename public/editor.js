@@ -469,6 +469,9 @@ export function initEditor(store, toast) {
     });
   }
 
+  // §100: 最後に自動フィットを掛けたプロジェクト世代
+  let lastFitEpoch = store.state.projectEpoch;
+
   function computeAutoZoom() {
     const p = project();
     // §50.6: モバイルのみ、フローティングUI（ツールバー・ズームボタン等）と被らないよう
@@ -2701,6 +2704,19 @@ export function initEditor(store, toast) {
   // ---------------------------------------------------------------------
   function render() {
     const p = project();
+    // §100: プロジェクトが差し替わったら（変換の確定・新規・JSON読込・画像を開く）
+    // 表示倍率を画面に合わせ直す。projectEpoch は resetProject でのみ増え、
+    // コマ編集では不変なので「差し替わった時」だけを拾える（§46）。
+    // 確定時は resetProject → studioPanel を隠す の順なので、この時点では
+    // #canvasWrap の寸法がまだ確定していない。1フレーム待ってから測る。
+    if (store.state.projectEpoch !== lastFitEpoch) {
+      lastFitEpoch = store.state.projectEpoch;
+      requestAnimationFrame(() => {
+        store.state.zoomAuto = true;
+        setZoom(computeAutoZoom(), { keepAuto: true });
+        centerCanvasScroll();
+      });
+    }
     const cellSize = store.state.zoom;
     canvas.width = p.width * cellSize;
     canvas.height = p.height * cellSize;
