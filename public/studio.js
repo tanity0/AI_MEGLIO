@@ -70,7 +70,7 @@ function defaultKnobs() {
   return {
     oneToOne: false,
     targetH: 64,
-    colors: 64,
+    colors: 32, // §107: 64→32（色数はドット絵らしさに最も効く・§99.2）
     flatten: 0, // §99: 0=なし / 1=弱 / 2=強
     sizeDelta: 0,
     offsetDX: 0,
