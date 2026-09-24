@@ -1,0 +1,10 @@
+{
+  "name": "zombie",
+  "exportDir": "public/sprites",
+  "format": "frames",
+  "scale": 1,
+  "naming": "{char}",
+  "requiredTags": ["idle", "walk", "attack", "death"],
+  "mirror": "runtime",
+  "primaryExport": "first-frame-of-idle"
+}
