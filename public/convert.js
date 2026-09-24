@@ -266,7 +266,13 @@ function downsampleData(data, w, h, maxSide) {
 
 export async function estimateGrid(data, w, h, onProgress) {
   // 粗探索（長辺320）
-  const coarse = downsampleData(data, w, h, 320);
+  // §108: 巨大な画像では 320 まで縮めると縮小率が小さすぎ、探索する最大セルサイズ
+  // (40px) を縮小後に換算しても下限 1.75px に届かず、候補がひとつも作れなくなる
+  // （長辺 40*320/1.75 ≒ 7314px 超で発生）。最大セルサイズが下限に届く大きさまで
+  // 粗探索の解像度を上げる（積分画像のメモリを抑えるため 1024 で頭打ち）。
+  const COARSE_MAX_CELL = 40, COARSE_MIN_CELL_W = 1.75;
+  const coarseSide = Math.min(1024, Math.max(320, Math.ceil(Math.max(w, h) * COARSE_MIN_CELL_W / COARSE_MAX_CELL)));
+  const coarse = downsampleData(data, w, h, coarseSide);
   const integA = buildIntegrals(coarse.data, coarse.w, coarse.h);
   const cands = [];
   let step = 0;
@@ -285,12 +291,22 @@ export async function estimateGrid(data, w, h, onProgress) {
     }
   }
   cands.sort((a, b) => a[4] - b[4]);
-  const minVar = cands[0][4];
-  const medVar = cands[Math.floor(cands.length / 2)][4];
-  // 最小分散の1.12倍以内で最大のセルサイズを採用（縮退対策）
-  let best = cands[0];
-  for (const c of cands) {
-    if (c[4] <= minVar * 1.12 && c[0] > best[0]) best = c;
+  let best, minVar, medVar;
+  if (cands.length) {
+    minVar = cands[0][4];
+    medVar = cands[Math.floor(cands.length / 2)][4];
+    // 最小分散の1.12倍以内で最大のセルサイズを採用（縮退対策）
+    best = cands[0];
+    for (const c of cands) {
+      if (c[4] <= minVar * 1.12 && c[0] > best[0]) best = c;
+    }
+  } else {
+    // §108: 粗探索が成立しない大きさ。例外にせず既定セルサイズで細探索へ進む。
+    // 解像度(高さ)指定モードではセルサイズを bbox から計算するため grid.s は使われず、
+    // 推定が粗くても変換そのものは成立する。信頼度は0として扱う。
+    best = [8, 8 * coarse.scale, 0, 0, Infinity];
+    minVar = Infinity;
+    medVar = 0;
   }
 
   // 細探索（長辺1024・±1.0を0.25刻み、位相±2pxを0.25刻み）
