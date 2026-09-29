@@ -7,6 +7,12 @@
 // §70/§79: 出力キャンバスの上限（§18.1の128 → 256 → 512）
 export const MAX_OUT = 512; // §79: 256→512
 
+// §109: 「見えている content」とみなすアルファの下限。
+// removeBackground が「元から透明」と判定する α<32 に揃える（従来はここだけ128で、
+// 同じファイル内に「見えている」の定義が2つあった）。α100前後で描かれた半透明の
+// 水溜り・グロー・霊体などが、bbox からもセルの不透明率からも消えて切り落とされていた。
+export const ALPHA_VISIBLE = 32;
+
 function rgbToHex(r, g, b) {
   return "#" + [r, g, b].map((v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0")).join("");
 }
@@ -208,7 +214,7 @@ function buildIntegrals(data, w, h) {
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       const o = (y * w + x) * 4;
-      const t = data[o + 3] < 128;
+      const t = data[o + 3] < ALPHA_VISIBLE;
       const vals = t ? [255, 0, 255] : [data[o], data[o + 1], data[o + 2]];
       for (let c = 0; c < 3; c++) {
         const v = vals[c];
@@ -368,7 +374,7 @@ function sampleCellsRegion(data, w, h, { cs, gx0, gy0, cols, rows, domBlend, cen
         for (let px = px0; px < px1; px++) {
           total++;
           const o = (py * w + px) * 4;
-          if (data[o + 3] < 128) continue;
+          if (data[o + 3] < ALPHA_VISIBLE) continue;
           opaque++;
           const ddx = (px + 0.5 - midX) / half, ddy = (py + 0.5 - midY) / half;
           const wgt = 1 + centerWeight * 2 * Math.exp(-(ddx * ddx + ddy * ddy) * 1.5);
@@ -443,7 +449,7 @@ export function convertImage(data, w, h, params) {
   // 非透明のバウンディングボックス
   let x0 = w, y0 = h, x1 = -1, y1 = -1;
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-    if (data[(y * w + x) * 4 + 3] >= 128) {
+    if (data[(y * w + x) * 4 + 3] >= ALPHA_VISIBLE) {
       if (x < x0) x0 = x; if (x > x1) x1 = x;
       if (y < y0) y0 = y; if (y > y1) y1 = y;
     }
@@ -505,7 +511,7 @@ export function detectComponentsDetailed(data, w, h, opts = {}) {
   const boxes = [];
   const stack = new Int32Array(w * h);
   for (let start = 0; start < w * h; start++) {
-    if (labels[start] !== -1 || data[start * 4 + 3] < 128) continue;
+    if (labels[start] !== -1 || data[start * 4 + 3] < ALPHA_VISIBLE) continue;
     const label = boxes.length;
     let sp = 0;
     stack[sp++] = start;
@@ -524,7 +530,7 @@ export function detectComponentsDetailed(data, w, h, opts = {}) {
           const nx = x + dx, ny = y + dy;
           if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
           const ni = ny * w + nx;
-          if (labels[ni] === -1 && data[ni * 4 + 3] >= 128) {
+          if (labels[ni] === -1 && data[ni * 4 + 3] >= ALPHA_VISIBLE) {
             labels[ni] = label;
             stack[sp++] = ni;
           }
@@ -763,7 +769,7 @@ export function convertFramesShared(rawData, w, h, global, boxes, perFrameParams
     let x0 = reg.x1 + 1, y0 = reg.y1 + 1, x1 = reg.x0 - 1, y1 = reg.y0 - 1;
     for (let y = reg.y0; y <= reg.y1; y++) {
       for (let x = reg.x0; x <= reg.x1; x++) {
-        if (bg[(y * w + x) * 4 + 3] >= 128) {
+        if (bg[(y * w + x) * 4 + 3] >= ALPHA_VISIBLE) {
           if (x < x0) x0 = x; if (x > x1) x1 = x;
           if (y < y0) y0 = y; if (y > y1) y1 = y;
         }

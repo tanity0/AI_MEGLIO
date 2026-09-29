@@ -1,6 +1,6 @@
 // studio.js — §18.2 変換スタジオ（インポートウィザードv2）UI
 // 候補ギャラリー → つまみでリアルタイム再変換 → 元画像との同期ズーム比較 → 確定
-import { removeBackground, estimateGrid, convertImage, convertSheetImage, convertFramesShared, detectComponents, detectComponentsDetailed, extractMainPalette, detectExactPixelArt, convertFramesExact, applyFlatten } from "./convert.js";
+import { removeBackground, estimateGrid, convertImage, convertSheetImage, convertFramesShared, detectComponents, detectComponentsDetailed, extractMainPalette, detectExactPixelArt, convertFramesExact, applyFlatten, ALPHA_VISIBLE } from "./convert.js";
 import { hexToRgba, defaultTags, drawFrameToContext } from "./app.js";
 
 // §30: フレーム別に持つつまみ（サイズ・共有パレット以外＝サンプリング/背景除去系）
@@ -165,7 +165,7 @@ function gridBoxes(cols, rows) {
       let bx0 = x1 + 1, by0 = y1 + 1, bx1 = -1, by1 = -1;
       for (let y = y0; y <= y1; y++) {
         for (let x = x0; x <= x1; x++) {
-          if (bgCache[(y * srcData.w + x) * 4 + 3] >= 128) {
+          if (bgCache[(y * srcData.w + x) * 4 + 3] >= ALPHA_VISIBLE) { // §109
             if (x < bx0) bx0 = x; if (x > bx1) bx1 = x;
             if (y < by0) by0 = y; if (y > by1) by1 = y;
           }
