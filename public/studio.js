@@ -100,6 +100,8 @@ function knobsToParams() {
     centerWeight: knobs.centerWeight,
     edgeProtect: knobs.edgeProtect,
     satProtect: knobs.satProtect,
+    // §110: 元画像が N倍スケールのドット絵なら、セルをその整数倍へ吸着させる
+    blockSnap: exactInfo && exactInfo.ok ? exactInfo.block : 0,
   };
 }
 
@@ -254,7 +256,7 @@ async function runConvert() {
       // §30: 多フレーム = フレーム別つまみ + 共有パレット（二段構え）
       saveActiveFrameParams();
       ensureFrameParams(boxes.length);
-      const global = { targetH: knobs.oneToOne ? 0 : knobs.targetH, colors: knobs.colors, oneToOne: knobs.oneToOne, s: grid.s + knobs.sizeDelta };
+      const global = { targetH: knobs.oneToOne ? 0 : knobs.targetH, colors: knobs.colors, oneToOne: knobs.oneToOne, s: grid.s + knobs.sizeDelta, blockSnap: exactInfo && exactInfo.ok ? exactInfo.block : 0 }; // §110
       res = convertFramesShared(srcData.data, srcData.w, srcData.h, global, boxes, frameParams, split.align);
       applyFlatten(res, knobs.flatten); // §99
       // プレビューはアクティブフレーム
@@ -273,6 +275,8 @@ async function runConvert() {
     $("studioStatus").textContent =
       `出力: 幅${res.width}×高さ${res.height}・${res.palette.length - 1}色（+透明）` + // §103
       (knobs.flatten ? `・平坦化${["", "弱", "強", "最強"][knobs.flatten] || ""}` : "") + // §99/§101
+      (!knobs.oneToOne && exactInfo?.ok && res.srcCellSize && Math.abs(res.srcCellSize / exactInfo.block - Math.round(res.srcCellSize / exactInfo.block)) < 1e-6
+        ? `・セルを元絵の${exactInfo.block}px格子に吸着` : "") + // §110
       (nf > 1 ? `・${nf}フレーム（プレビュー: フレーム${activeFrame + 1}）・共有パレット` : "") +
       (candidateAutoNote ? ` ｜ ${candidateAutoNote}` : ""); // §43/§44: 自動調整の結果を併記
     syncTargetHNote(); // §106

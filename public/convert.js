@@ -637,7 +637,7 @@ export function detectComponentsDetailed(data, w, h, opts = {}) {
 // 共通パレット（全ポーズ一括k-means）、共通セルサイズ
 // ---------------------------------------------------------------------------
 export function convertSheetImage(data, w, h, params, boxes, align = "bottom") {
-  const { s, targetH = 0, colors = 64, domBlend = 0.15, centerWeight = 0.5, edgeProtect = 0.3, satProtect = 0.5, offsetDX = 0, offsetDY = 0, sizeDelta = 0 } = params;
+  const { s, targetH = 0, colors = 64, domBlend = 0.15, centerWeight = 0.5, edgeProtect = 0.3, satProtect = 0.5, offsetDX = 0, offsetDY = 0, sizeDelta = 0, blockSnap = 0 } = params; // §110
   if (!boxes || boxes.length < 1) throw new Error("分割対象がありません");
 
   const maxBoxW = Math.max(...boxes.map((b) => b.x1 - b.x0 + 1));
@@ -650,6 +650,12 @@ export function convertSheetImage(data, w, h, params, boxes, align = "bottom") {
   const PAD_X = 2, PAD_TOP = 2, PAD_BOTTOM = 0;
   // 上限クランプ（§18.1→§70→§79: 512）
   cs = Math.max(cs, maxBoxW / (MAX_OUT - PAD_X * 2), maxBoxH / (MAX_OUT - PAD_TOP - PAD_BOTTOM));
+  // §110: 元画像が N倍スケールのドット絵なら、セルサイズを N の整数倍へ吸着
+  if (targetH > 0 && blockSnap >= 2) {
+    const k = Math.max(1, Math.round(cs / blockSnap));
+    const snapped = k * blockSnap;
+    if (snapped >= maxBoxW / (MAX_OUT - PAD_X * 2) && snapped >= maxBoxH / (MAX_OUT - PAD_TOP - PAD_BOTTOM)) cs = snapped;
+  }
   const poseColsMax = Math.ceil(maxBoxW / cs);
   const poseRowsMax = Math.ceil(maxBoxH / cs);
   const outW = Math.min(MAX_OUT, poseColsMax + PAD_X * 2);
@@ -743,7 +749,7 @@ function expandBoxesForPerFrame(boxes, w, h) {
 }
 
 export function convertFramesShared(rawData, w, h, global, boxes, perFrameParams, align = "bottom") {
-  const { targetH = 64, colors = 64, oneToOne = false, s = 8 } = global || {};
+  const { targetH = 64, colors = 64, oneToOne = false, s = 8, blockSnap = 0 } = global || {}; // §110
   const N = boxes.length;
   if (N < 1) throw new Error("フレームがありません");
 
@@ -786,6 +792,15 @@ export function convertFramesShared(rawData, w, h, global, boxes, perFrameParams
   let cs = oneToOne ? s : maxBoxH / targetH;
   const PAD_X = 2, PAD_TOP = 2, PAD_BOTTOM = 0;
   cs = Math.max(cs, maxBoxW / (MAX_OUT - PAD_X * 2), maxBoxH / (MAX_OUT - PAD_TOP - PAD_BOTTOM));
+  // §110: 元画像が N倍スケールのドット絵なら、セルサイズを N の整数倍へ吸着させる。
+  // cs が N の倍数でないと、サンプリング格子が元絵のドット格子に対して画面内で
+  // 少しずつドリフトし、同じ絵でも位置によって違うドットに落ちる（コマ間の印象差の主因）。
+  if (!oneToOne && blockSnap >= 2) {
+    const k = Math.max(1, Math.round(cs / blockSnap));
+    const snapped = k * blockSnap;
+    // 上限クランプを割らない範囲でのみ採用
+    if (snapped >= maxBoxW / (MAX_OUT - PAD_X * 2) && snapped >= maxBoxH / (MAX_OUT - PAD_TOP - PAD_BOTTOM)) cs = snapped;
+  }
   const poseColsMax = Math.ceil(maxBoxW / cs);
   const poseRowsMax = Math.ceil(maxBoxH / cs);
   const outW = Math.min(MAX_OUT, poseColsMax + PAD_X * 2);
