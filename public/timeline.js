@@ -326,8 +326,19 @@ export function initTimeline(store, toast) {
         badge.textContent = "基準";
         thumb.appendChild(badge);
       }
-      // §111: 非表示トグル（削除せずに検討するため。再生・PNG/GIF書き出しから外れる）
+      // §111: 非表示コマの見た目（トグル本体はサムネイルの下に置く）
       if (frame.hidden === true) thumb.classList.add("is-hidden-frame");
+      thumb.addEventListener("click", () => {
+        store.state.currentFrame = i;
+        store.notify();
+      });
+      cell.appendChild(thumb);
+
+      // サムネイルの下の段: 非表示トグル（§111）＋ 逸脱メーター（§13.2-4）
+      const foot = document.createElement("div");
+      foot.className = "frame-foot";
+
+      // §111: 非表示トグル（削除せずに検討するため。再生・PNG/GIF書き出しから外れる）
       const eye = document.createElement("button");
       eye.type = "button";
       eye.className = "frame-eye" + (frame.hidden === true ? " is-off" : "");
@@ -335,8 +346,7 @@ export function initTimeline(store, toast) {
       eye.title = frame.hidden === true
         ? "非表示（再生とPNG/GIF書き出しから外れています）。クリックで表示に戻す"
         : "クリックで非表示にする（削除せず、再生とPNG/GIF書き出しから外す）";
-      eye.addEventListener("click", (ev) => {
-        ev.stopPropagation();
+      eye.addEventListener("click", () => {
         const pr = project();
         const visible = pr.frames.filter((f) => f.hidden !== true).length;
         if (frame.hidden !== true && visible <= 1) {
@@ -347,12 +357,7 @@ export function initTimeline(store, toast) {
         if (frame.hidden === true) delete frame.hidden; else frame.hidden = true;
         store.notify();
       });
-      thumb.appendChild(eye);
-      thumb.addEventListener("click", () => {
-        store.state.currentFrame = i;
-        store.notify();
-      });
-      cell.appendChild(thumb);
+      foot.appendChild(eye);
 
       // 逸脱メーター（§13.2-4）: ベースフレームとの差分率
       const dev = document.createElement("span");
@@ -363,7 +368,8 @@ export function initTimeline(store, toast) {
         dev.title = "ベースフレームとの差分率";
         if (pct > 40) dev.classList.add("is-warn");
       }
-      cell.appendChild(dev);
+      foot.appendChild(dev);
+      cell.appendChild(foot);
 
       frameList.appendChild(cell);
     });
