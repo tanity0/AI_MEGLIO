@@ -818,6 +818,7 @@ class Store {
     this.undoStack = [];
     this.redoStack = [];
     this.listeners = new Set();
+    this.playbackListeners = new Set(); // §112
   }
   subscribe(fn) {
     this.listeners.add(fn);
@@ -825,6 +826,17 @@ class Store {
   }
   notify() {
     for (const fn of this.listeners) fn();
+  }
+  // §112: 再生専用の軽い通知。再生で変わるのは currentFrame だけなので、
+  // キャンバスの再描画とタイムラインの選択枠だけを更新する購読者をここに登録する。
+  // 全購読者を回す notify() は1コマごとに全サムネイルを作り直すため、
+  // メインスレッドが埋まって停止ボタンのタップが入らなくなっていた。
+  subscribePlayback(fn) {
+    this.playbackListeners.add(fn);
+    return () => this.playbackListeners.delete(fn);
+  }
+  notifyPlayback() {
+    for (const fn of this.playbackListeners) fn();
   }
   // §76: plain を渡すと「事前に取ったスナップショット」を履歴へ積む（遅延pushUndo用）
   pushUndo(snap = null) {

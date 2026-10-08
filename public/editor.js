@@ -7,8 +7,7 @@ import {
   frameActiveLayer,
   frameActiveLayerPixels,
   recompositeFrame,
-  makeLayer,
-} from "./app.js";
+  makeLayer, drawFrameScaled } from "./app.js";
 import { extractMainPalette } from "./convert.js";
 
 const MIN_ZOOM = 1; // §105: ドット等倍（1ドット=1px）まで縮小できるように（旧2）
@@ -2718,10 +2717,16 @@ export function initEditor(store, toast) {
       });
     }
     const cellSize = store.state.zoom;
-    canvas.width = p.width * cellSize;
-    canvas.height = p.height * cellSize;
-    canvas.style.width = canvas.width + "px";
-    canvas.style.height = canvas.height + "px";
+    // §112: canvas.width への代入はサイズが同じでもバッキングストアを作り直す
+    // （128×128・×5で約1.6MB）。再生中は毎コマ走るので、変わったときだけ設定する。
+    // 中身の消去は下の drawFrameToContext / clearRect が行うので、暗黙のクリアには依存しない。
+    const cw = p.width * cellSize, ch = p.height * cellSize;
+    if (canvas.width !== cw || canvas.height !== ch) {
+      canvas.width = cw;
+      canvas.height = ch;
+      canvas.style.width = cw + "px";
+      canvas.style.height = ch + "px";
+    }
 
     // §35: レイヤー表示。単一の不透明可視レイヤーは従来経路（合成キャッシュ描画）。
     // それ以外はレイヤーを下から順に opacity 付きで重ね描き（opacityは表示専用＝
@@ -2730,7 +2735,9 @@ export function initEditor(store, toast) {
     syncFrameLayers(curFrame);
     const simpleDraw = curFrame.layers.length === 1 && curFrame.layers[0].visible !== false && curFrame.layers[0].opacity === 1;
     if (simpleDraw) {
-      drawFrameToContext(ctx, p, store.state.currentFrame, cellSize);
+      // §112: 1画素ずつ fillRect する代わりに ImageData+drawImage で一括描画する。
+      // 整数ズームでは出力がバイト単位で一致することを確認済み（§97 の経路を流用）。
+      drawFrameScaled(ctx, p, store.state.currentFrame, cw, ch);
     } else {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       for (const l of curFrame.layers) {
@@ -2998,4 +3005,5 @@ export function initEditor(store, toast) {
   });
 
   store.subscribe(render);
+  store.subscribePlayback(render); // §112: 再生中はキャンバスだけ描き直す
 }

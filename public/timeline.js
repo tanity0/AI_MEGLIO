@@ -219,10 +219,11 @@ export function initTimeline(store, toast) {
     return t ? t.fps : project().fps;
   }
   function stopPlay() {
-    if (playTimer) clearInterval(playTimer);
+    if (playTimer) clearTimeout(playTimer); // §112: setTimeout の自己スケジュールへ変更
     playTimer = null;
     store.state.timelinePlaying = false;
     playBtn.textContent = "▶ 再生";
+    store.notify(); // §112: 再生中は軽い通知だけだったので、停止時に全体を同期し直す
   }
   function startPlay() {
     const p = project();
@@ -256,9 +257,22 @@ export function initTimeline(store, toast) {
         }
       }
       store.state.currentFrame = next;
-      store.notify();
+      // §112: 再生中は全購読者を回さず、キャンバスと選択枠だけ更新する
+      store.notifyPlayback();
     };
-    playTimer = setInterval(tick, Math.max(1000 / Math.max(1, playFps()), 16));
+    // §112: setInterval だと tick が間隔より重いときに隙間なく積まれ、
+    // 入力イベントを処理する余地が無くなる（停止ボタンが効かない）。
+    // 処理時間を差し引いて次を予約し、最低16msの隙間を必ず空ける。
+    const MIN_GAP_MS = 16;
+    const loop = () => {
+      if (!store.state.timelinePlaying) return;
+      const t0 = performance.now();
+      tick();
+      const interval = Math.max(1000 / Math.max(1, playFps()), MIN_GAP_MS);
+      const wait = Math.max(MIN_GAP_MS, interval - (performance.now() - t0));
+      playTimer = setTimeout(loop, wait);
+    };
+    playTimer = setTimeout(loop, 0);
   }
   // §25.9-4: 再生モード（プロジェクト単位で保存・GIFピンポンチェックにも同期）
   const playModeSelect = document.getElementById("playModeSelect");
@@ -380,5 +394,11 @@ export function initTimeline(store, toast) {
   }
 
   store.subscribe(render);
+  // §112: 再生中はサムネイルを作り直さず、選択枠だけ動かす
+  store.subscribePlayback(() => {
+    const cur = store.state.currentFrame;
+    const cells = frameList.querySelectorAll(".frame-thumb");
+    for (let i = 0; i < cells.length; i++) cells[i].classList.toggle("is-active", i === cur);
+  });
   render();
 }
