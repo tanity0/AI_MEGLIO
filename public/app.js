@@ -446,6 +446,19 @@ export function setFramePixels(frame, pixels) {
 }
 
 // フレームのディープコピー（レイヤー構造ごと複製）
+// §111: コマのメタ情報（非表示・元画像での何番目か）をコピーする
+function copyFrameMeta(src, dst) {
+  if (src.hidden === true) dst.hidden = true;
+  if (Number.isInteger(src.srcIndex)) dst.srcIndex = src.srcIndex;
+  return dst;
+}
+
+// §111: 書き出し・再生で使う「表示されているコマ」。全部非表示なら全コマを返す（保険）
+export function visibleFrames(frames) {
+  const vis = frames.filter((f) => f && f.hidden !== true);
+  return vis.length ? vis : frames;
+}
+
 export function cloneFrame(frame) {
   if (Array.isArray(frame.layers) && frame.layers.length > 0) {
     const layers = frame.layers.map((l) => {
@@ -456,9 +469,9 @@ export function cloneFrame(frame) {
     });
     const nf = { layers, activeLayer: Number.isInteger(frame.activeLayer) ? frame.activeLayer : layers.length - 1, pixels: null };
     recompositeFrame(nf);
-    return nf;
+    return copyFrameMeta(frame, nf); // §111
   }
-  return { pixels: Uint8Array.from(frame.pixels) };
+  return copyFrameMeta(frame, { pixels: Uint8Array.from(frame.pixels) }); // §111
 }
 
 // 直列化: 既定の単一レイヤー（名前/表示/不透明度が初期値）は旧形式（配列）のまま
@@ -471,8 +484,18 @@ function frameToPlain(frame) {
       layers[0].visible !== false &&
       (!Number.isFinite(layers[0].opacity) || layers[0].opacity === 1) &&
       layers[0].name === "レイヤー1");
-  if (isDefaultSingle) return Array.from(frame.pixels);
+  // §111: 非表示・srcIndex を持たない既定単一レイヤーは従来どおり配列のまま
+  const hasMeta = frame.hidden === true || Number.isInteger(frame.srcIndex);
+  if (isDefaultSingle && !hasMeta) return Array.from(frame.pixels);
+  const meta = {};
+  if (frame.hidden === true) meta.hidden = true;
+  if (Number.isInteger(frame.srcIndex)) meta.srcIndex = frame.srcIndex;
+  if (isDefaultSingle) {
+    // レイヤー構成は既定のまま＝ピクセル配列だけを持つ軽い形で出す
+    return { pixels: Array.from(frame.pixels), ...meta };
+  }
   return {
+    ...meta,
     layers: layers.map((l) => ({
       name: typeof l.name === "string" ? l.name : "レイヤー",
       visible: l.visible !== false,
@@ -484,6 +507,15 @@ function frameToPlain(frame) {
 }
 
 function frameFromPlain(raw, width, height) {
+  // §111: { pixels, hidden?, srcIndex? } 形式（既定単一レイヤー＋メタ）
+  if (raw && typeof raw === "object" && !Array.isArray(raw) && Array.isArray(raw.pixels)) {
+    const pixels = Uint8Array.from(raw.pixels);
+    if (pixels.length !== width * height) throw new Error("frame のピクセル数が width*height と一致しません");
+    const f = { pixels };
+    if (raw.hidden === true) f.hidden = true;
+    if (Number.isInteger(raw.srcIndex) && raw.srcIndex >= 0) f.srcIndex = raw.srcIndex;
+    return f;
+  }
   if (Array.isArray(raw)) {
     // 旧形式（pixels配列のみ）→ そのままロード（レイヤーは初回アクセス時に単一レイヤー化）
     const pixels = Uint8Array.from(raw);
@@ -502,6 +534,8 @@ function frameFromPlain(raw, width, height) {
     });
     const frame = { layers, activeLayer: Number.isInteger(raw.activeLayer) ? raw.activeLayer : layers.length - 1, pixels: null };
     recompositeFrame(frame); // pixels キャッシュは読込時に再合成
+    if (raw.hidden === true) frame.hidden = true;            // §111
+    if (Number.isInteger(raw.srcIndex) && raw.srcIndex >= 0) frame.srcIndex = raw.srcIndex;
     return frame;
   }
   throw new Error("frame の形式が不正です");
@@ -1077,14 +1111,17 @@ function initHeader() {
   function buildSpritesheetBlob() {
     const { project } = store.state;
     const scale = exportScale();
+    // §111: 非表示コマは書き出さない
+    const idx = project.frames.map((_, i) => i).filter((i) => project.frames[i].hidden !== true);
+    const use = idx.length ? idx : project.frames.map((_, i) => i);
     const canvas = document.createElement("canvas");
-    canvas.width = project.width * scale * project.frames.length;
+    canvas.width = project.width * scale * use.length;
     canvas.height = project.height * scale;
     const ctx = canvas.getContext("2d");
-    for (let i = 0; i < project.frames.length; i++) {
+    for (let k = 0; k < use.length; k++) {
       ctx.save();
-      ctx.translate(i * project.width * scale, 0);
-      drawFrameToContext(ctx, project, i, scale);
+      ctx.translate(k * project.width * scale, 0);
+      drawFrameToContext(ctx, project, use[k], scale);
       ctx.restore();
     }
     return new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
@@ -1093,6 +1130,7 @@ function initHeader() {
     const project = store.state.project;
     const tag = store.state.activeTagIndex >= 0 ? project.tags[store.state.activeTagIndex] : null;
     let frames = tag ? project.frames.slice(tag.start, tag.end + 1) : project.frames;
+    frames = visibleFrames(frames); // §111: 非表示コマは書き出さない
     // §25.9-4: ピンポン書き出し（フレーム列を往復展開。端重複なし = 2N-2 枚）
     const pingpong = document.getElementById("gifPingpongChk")?.checked;
     if (pingpong) frames = pingpongFrames(frames);

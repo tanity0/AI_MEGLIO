@@ -245,6 +245,16 @@ export function initTimeline(store, toast) {
         next = store.state.currentFrame + 1;
         if (next > end || next < start) next = start;
       }
+      // §111: 非表示コマはスキップ（範囲内に表示コマが無ければそのまま）
+      const span = end - start + 1;
+      if (span > 0 && pp.frames.some((f, i) => i >= start && i <= end && f.hidden !== true)) {
+        let guard = 0;
+        while (pp.frames[next] && pp.frames[next].hidden === true && guard++ < span) {
+          next += dir;
+          if (next > end) next = (pp.playMode === "pingpong" && end > start) ? end - 1 : start;
+          else if (next < start) next = (pp.playMode === "pingpong" && end > start) ? start + 1 : end;
+        }
+      }
       store.state.currentFrame = next;
       store.notify();
     };
@@ -316,6 +326,28 @@ export function initTimeline(store, toast) {
         badge.textContent = "基準";
         thumb.appendChild(badge);
       }
+      // §111: 非表示トグル（削除せずに検討するため。再生・PNG/GIF書き出しから外れる）
+      if (frame.hidden === true) thumb.classList.add("is-hidden-frame");
+      const eye = document.createElement("button");
+      eye.type = "button";
+      eye.className = "frame-eye" + (frame.hidden === true ? " is-off" : "");
+      eye.textContent = frame.hidden === true ? "🚫" : "👁";
+      eye.title = frame.hidden === true
+        ? "非表示（再生とPNG/GIF書き出しから外れています）。クリックで表示に戻す"
+        : "クリックで非表示にする（削除せず、再生とPNG/GIF書き出しから外す）";
+      eye.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        const pr = project();
+        const visible = pr.frames.filter((f) => f.hidden !== true).length;
+        if (frame.hidden !== true && visible <= 1) {
+          toast("すべてのコマは非表示にできません", "error");
+          return;
+        }
+        store.pushUndo();
+        if (frame.hidden === true) delete frame.hidden; else frame.hidden = true;
+        store.notify();
+      });
+      thumb.appendChild(eye);
       thumb.addEventListener("click", () => {
         store.state.currentFrame = i;
         store.notify();

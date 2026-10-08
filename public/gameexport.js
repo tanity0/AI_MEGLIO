@@ -359,6 +359,12 @@ export function initGameExport(store, toast) {
   openExportBtn.addEventListener("click", () => {
     exportPanel.hidden = false;
     exportStatus.textContent = "";
+    // §111: ゲーム書き出しはタグの範囲がフレーム番号の算術で書かれているため、
+    // 非表示コマも含めて出力する。残っていることだけ知らせる。
+    const hiddenCount = project().frames.filter((f) => f.hidden === true).length;
+    if (hiddenCount > 0) {
+      toastRef(`非表示のコマが${hiddenCount}個あります。ゲーム書き出しには含まれます（PNG/GIFは除外）。外すならタイムラインで削除してください`);
+    }
     renderExportPanel();
   });
   exportCloseBtn.addEventListener("click", () => { exportPanel.hidden = true; });

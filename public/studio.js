@@ -27,6 +27,7 @@ let activeFrame = 0;
 // §86: 確定時に含めないフレーム（0始まりindex）。変換自体は全コマで行い、共通パレット・
 // 共通セルサイズを保つ（除外の有無で残すコマの見た目が変わらないように）。
 let excludedFrames = new Set();
+let pendingAlive = null; // §111: 再変換時に「プロジェクトに残っているコマ」の srcIndex
 // §44.1: 候補モード — ギャラリー候補の「調整」でスタジオを流用する。
 // { onApply(convResult, paramsSnapshot), autoTune()?: Promise<{params,score,defaultScore,evals}> } | null
 let candidateMode = null;
@@ -144,6 +145,12 @@ function detectSplit() {
   }
   row.hidden = !(comps.length >= 2 || split.mode === "grid");
   $("studioSplitCount").textContent = String(comps.length);
+  // §111: 編集中に削除/非表示にしたコマをチェックオフとして反映（1回だけ）
+  if (pendingAlive) {
+    const total = currentBoxes() ? currentBoxes().length : comps.length;
+    if (total > 1) for (let i = 0; i < total; i++) if (!pendingAlive.has(i)) excludedFrames.add(i);
+    pendingAlive = null;
+  }
   syncSplitUi();
 }
 
@@ -911,9 +918,10 @@ function confirmStudio() {
   }
 
   // §20.2/§30: 複数フレーム（シート分割）対応
+  // §111: 各コマに「元画像の何番目のコマ由来か」を記録する（再変換で引き継ぐ）
   const allFrames = res.framesPixels && res.framesPixels.length > 1
-    ? res.framesPixels.map((px) => ({ pixels: padPixels(px, res.width, res.height, W, H) }))
-    : [{ pixels }];
+    ? res.framesPixels.map((px, i) => ({ pixels: padPixels(px, res.width, res.height, W, H), srcIndex: i }))
+    : [{ pixels, srcIndex: 0 }];
   // §86: 切り捨て指定されたフレームを除外（共通パレット・共通スケールは全コマ基準のまま）
   let keptIdx = allFrames.map((_, i) => i);
   if (allFrames.length > 1 && excludedFrames.size) {
@@ -1009,6 +1017,7 @@ function applyCandidateUi(on) {
 
 export async function openStudio(dataUrl, savedParams = null, opts = {}) {
   excludedFrames = new Set(); // §86: 起動ごとにリセット
+  pendingAlive = null; // §111
   candidateMode = null; // §44.1: 通常モードへ復帰
   candidateAutoNote = "";
   await loadSource(dataUrl);
@@ -1021,6 +1030,7 @@ export async function openStudio(dataUrl, savedParams = null, opts = {}) {
     if (sp) {
       split = { ...split, ...sp, boxes: Array.isArray(sp.boxes) ? sp.boxes : [], userChose: true };
     }
+    if (Array.isArray(rest.excludedFrames)) excludedFrames = new Set(rest.excludedFrames.filter(Number.isInteger)); // §86
     // §30: フレーム別つまみの復元。アクティブフレームの値は作業セット knobs にも反映。
     if (Array.isArray(fp) && fp.length) {
       frameParams = fp.map((pf) => {
@@ -1036,6 +1046,8 @@ export async function openStudio(dataUrl, savedParams = null, opts = {}) {
       for (const k of PER_FRAME_KEYS) if (frameParams[activeFrame][k] !== undefined) knobs[k] = frameParams[activeFrame][k];
     }
   }
+  // §111: 編集中に削除/非表示にしたコマの引き継ぎ。コマ数が確定する detectSplit で適用する
+  pendingAlive = Array.isArray(opts.aliveSrcIndex) && opts.aliveSrcIndex.length ? new Set(opts.aliveSrcIndex) : null;
   $("studioPanel").hidden = false;
   $("studioGallery").innerHTML = "";
   $("studioGridInfo").textContent = "";
@@ -1184,7 +1196,10 @@ export function initStudio(storeRef, toastRef) {
       return;
     }
     // §47.2: 現在選択中のフレームに対応するコマのタブを初期アクティブで開く
-    openStudio(p.sourceImage, p.conversionParams || paramsFromCurrentProject(), { initialFrame: store.state.currentFrame });
+    // §111: いまプロジェクトに残っていて、かつ非表示でないコマの srcIndex を渡す
+    const alive = p.frames.filter((f) => f.hidden !== true && Number.isInteger(f.srcIndex)).map((f) => f.srcIndex);
+    openStudio(p.sourceImage, p.conversionParams || paramsFromCurrentProject(),
+      { initialFrame: store.state.currentFrame, aliveSrcIndex: alive.length ? alive : null });
   });
 
   // E2E テスト用フック（UIには影響しない）

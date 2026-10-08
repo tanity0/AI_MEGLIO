@@ -1992,3 +1992,21 @@ canvas, img {
   .float-layers { width: min(300px, calc(100vw - 24px)); }
   .float-layers .layer-actions .btn { min-height: 40px; }
 }
+
+/* §111: コマの非表示トグル */
+.frame-thumb { position: relative; }
+.frame-thumb.is-hidden-frame canvas { opacity: 0.25; }
+.frame-thumb.is-hidden-frame::after {
+  content: ""; position: absolute; inset: 0;
+  background: repeating-linear-gradient(135deg, transparent 0 5px, rgba(255,255,255,0.10) 5px 10px);
+  pointer-events: none;
+}
+.frame-eye {
+  position: absolute; top: 1px; left: 1px; z-index: 2;
+  width: 18px; height: 18px; line-height: 1; padding: 0;
+  font-size: 11px; border: none; border-radius: 4px; cursor: pointer;
+  background: rgba(0,0,0,0.55); color: #fff; opacity: 0.55;
+}
+.frame-eye:hover { opacity: 1; }
+.frame-eye.is-off { opacity: 1; background: rgba(220,70,70,0.85); }
+@media (max-width: 820px) { .frame-eye { width: 24px; height: 24px; font-size: 14px; opacity: 0.9; } }
