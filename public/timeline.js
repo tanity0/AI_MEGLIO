@@ -348,7 +348,19 @@ export function initTimeline(store, toast) {
       });
       cell.appendChild(thumb);
 
-      // サムネイルの下の段: 非表示トグル（§111）＋ 逸脱メーター（§13.2-4）
+      // 逸脱メーター（§13.2-4）。§113: 下の段は 👁 に幅を全部渡すため、
+      // フレーム番号と同じくサムネイルの中（左下）へ置く。
+      const dev = document.createElement("span");
+      dev.className = "deviation";
+      const pct = deviationPercent(p, i);
+      if (pct !== null) {
+        dev.textContent = `${pct}%`;
+        dev.title = "ベースフレームとの差分率";
+        if (pct > 40) dev.classList.add("is-warn");
+        thumb.appendChild(dev);
+      }
+
+      // サムネイルの下の段: 非表示トグル（§111）
       const foot = document.createElement("div");
       foot.className = "frame-foot";
 
@@ -372,17 +384,6 @@ export function initTimeline(store, toast) {
         store.notify();
       });
       foot.appendChild(eye);
-
-      // 逸脱メーター（§13.2-4）: ベースフレームとの差分率
-      const dev = document.createElement("span");
-      dev.className = "deviation";
-      const pct = deviationPercent(p, i);
-      if (pct !== null) {
-        dev.textContent = `${pct}%`;
-        dev.title = "ベースフレームとの差分率";
-        if (pct > 40) dev.classList.add("is-warn");
-      }
-      foot.appendChild(dev);
       cell.appendChild(foot);
 
       frameList.appendChild(cell);
