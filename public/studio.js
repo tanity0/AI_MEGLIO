@@ -1,6 +1,7 @@
 // studio.js — §18.2 変換スタジオ（インポートウィザードv2）UI
 // 候補ギャラリー → つまみでリアルタイム再変換 → 元画像との同期ズーム比較 → 確定
-import { removeBackground, estimateGrid, convertImage, convertSheetImage, convertFramesShared, detectComponents, detectComponentsDetailed, extractMainPalette, detectExactPixelArt, convertFramesExact, applyFlatten, ALPHA_VISIBLE } from "./convert.js";
+import { detectComponentsDetailed, extractMainPalette } from "./convert.js";
+import * as cw from "./convertclient.js"; // §114: 重い変換はワーカーで
 import { hexToRgba, defaultTags, drawFrameToContext } from "./app.js";
 
 // §30: フレーム別に持つつまみ（サイズ・共有パレット以外＝サンプリング/背景除去系）
@@ -10,9 +11,10 @@ let store = null;
 let toast = null;
 
 // スタジオ状態
-let srcData = null; // {data, w, h} 元画像（フル解像度）
+let srcData = null; // {w, h} 元画像のサイズ（データ本体は §114 でワーカーが持つ）
 let srcDataUrl = "";
-let bgCache = null; // 背景除去済み Uint8ClampedArray
+let bgReady = false; // §114: ワーカー側に背景除去済み配列があるか
+let srcSentGen = 0; // §114: 元画像を渡したときのワーカー世代（0 = 未送信）
 let grid = null; // {s, ox, oy, confidence}
 let exactInfo = null; // §59.2: 真ドット絵検出（{ok, block, ox, oy, colors}。bgCache 更新時に再検出）
 let result = null; // convertImage の結果
@@ -20,7 +22,7 @@ let view = { zoom: 1, panX: 0, panY: 0 };
 let convertGen = 0;
 let knobs = null;
 // §20: マルチポーズ分割
-let split = { mode: "single", boxes: [], align: "bottom", gridCols: 3, gridRows: 1 };
+let split = { mode: "single", boxes: [], align: "bottom", gridCols: 3, gridRows: 1, gridBoxes: null };
 // §30: フレーム別つまみの配列（多フレーム時のみ使用）+ アクティブフレーム
 let frameParams = []; // [{ ...PER_FRAME_KEYS }]
 let activeFrame = 0;
@@ -38,7 +40,8 @@ const $ = (id) => document.getElementById(id);
 // §30: 現在の分割ボックス（doConvertWith と同じ条件）。多フレームなら配列、単一なら null。
 function currentBoxes() {
   if (split.mode !== "single" && split.boxes.length >= 2) {
-    const boxes = split.mode === "grid" ? gridBoxes(split.gridCols, split.gridRows) : split.boxes;
+    // §114: grid の box 計算はワーカー側なので、直前に更新したキャッシュを読む
+    const boxes = split.mode === "grid" ? (split.gridBoxes || []) : split.boxes;
     if (boxes.length >= 2) return boxes;
   }
   return null;
@@ -109,25 +112,44 @@ function knobsToParams() {
 // ---------------------------------------------------------------------------
 // 変換実行（キャッシュ付き・世代カウンタで陳腐化キャンセル）
 // ---------------------------------------------------------------------------
+// §114: 元画像をワーカーへ渡す。ワーカーが落ちて作り直したときも
+// 元キャンバスから取り直して渡せるようにしてある。
+async function ensureSourceSent() {
+  const gen = cw.sessionGeneration();
+  if (srcSentGen === gen) return;
+  if (!srcBitmapCanvas) throw new Error("元画像がありません");
+  const ctx = srcBitmapCanvas.getContext("2d", { willReadFrequently: true });
+  const im = ctx.getImageData(0, 0, srcBitmapCanvas.width, srcBitmapCanvas.height);
+  await cw.call("setSource", { data: im.data, w: im.width, h: im.height }, { transfer: [im.data.buffer] });
+  srcSentGen = gen;
+  bgReady = false;
+}
+
 async function ensureBg() {
-  if (!bgCache) {
-    bgCache = removeBackground(srcData.data, srcData.w, srcData.h, {
+  await ensureSourceSent();
+  if (!bgReady) {
+    const out = await cw.call("prepare", {
       threshold: knobs.bgThreshold,
       glowWidth: knobs.glowWidth,
     });
+    bgReady = true;
+    split.gridBoxes = null; // §114: 背景が変われば区画内bboxも変わる
     grid = null; // 背景が変わればグリッドも再推定
-    exactInfo = detectExactPixelArt(bgCache, srcData.w, srcData.h); // §59.2
+    exactInfo = out.exactInfo; // §59.2
     const row = $("studioExactRow");
     if (row) row.hidden = !exactInfo.ok;
     syncTargetHNote(); // §103
-    detectSplit(); // §20.1: 連結成分の再検出
+    applySplit(out.comps); // §20.1: 連結成分の再検出
   }
-  return bgCache;
 }
 
 // §20.1: 連結成分検出 → 2体以上なら分割UIを表示
-function detectSplit() {
-  const comps = detectComponents(bgCache, srcData.w, srcData.h);
+async function detectSplit() {
+  const { comps } = await cw.call("components");
+  applySplit(comps);
+}
+
+function applySplit(comps) {
   const row = $("studioSplitRow");
   // §44.1: 候補モードは常に1コマとして変換（分割UIは出さない）
   if (candidateMode) {
@@ -162,36 +184,13 @@ function syncSplitUi() {
   $("studioGridRows").value = String(split.gridRows);
 }
 
-// 手動「横N×縦M均等分割」のbox生成（§20.1）
-function gridBoxes(cols, rows) {
-  const out = [];
-  const cw = srcData.w / cols, ch = srcData.h / rows;
-  for (let ry = 0; ry < rows; ry++) {
-    for (let rx = 0; rx < cols; rx++) {
-      const x0 = Math.round(rx * cw), x1 = Math.round((rx + 1) * cw) - 1;
-      const y0 = Math.round(ry * ch), y1 = Math.round((ry + 1) * ch) - 1;
-      // 各区画内の不透明bboxに詰める（下端アラインを正確に）
-      let bx0 = x1 + 1, by0 = y1 + 1, bx1 = -1, by1 = -1;
-      for (let y = y0; y <= y1; y++) {
-        for (let x = x0; x <= x1; x++) {
-          if (bgCache[(y * srcData.w + x) * 4 + 3] >= ALPHA_VISIBLE) { // §109
-            if (x < bx0) bx0 = x; if (x > bx1) bx1 = x;
-            if (y < by0) by0 = y; if (y > by1) by1 = y;
-          }
-        }
-      }
-      if (bx1 >= 0) out.push({ x0: bx0, y0: by0, x1: bx1, y1: by1, area: 0 });
-    }
-  }
-  return out;
-}
 
 async function ensureGrid() {
   await ensureBg();
   if (!grid) {
     $("studioStatus").textContent = "グリッド推定中…";
-    grid = await estimateGrid(bgCache, srcData.w, srcData.h, (msg) => {
-      $("studioStatus").textContent = msg;
+    grid = await cw.call("estimateGrid", {}, {
+      onProgress: (msg) => { $("studioStatus").textContent = msg; },
     });
     $("studioGridInfo").textContent =
       `グリッド推定: セル ${grid.s.toFixed(2)}px / 位相 (${grid.ox.toFixed(2)}, ${grid.oy.toFixed(2)}) / 信頼度 ${(grid.confidence * 100).toFixed(0)}%` +
@@ -206,13 +205,24 @@ function scheduleConvert() {
   convertTimer = setTimeout(runConvert, 150);
 }
 
-// §20: 分割モードに応じて単体/シート変換を実行
-function doConvertWith(params) {
+// §114: 手動N×M分割の box をワーカーで計算してキャッシュする。
+// currentBoxes() が同期なので、変換の直前にここで更新しておく。
+async function refreshGridBoxes() {
+  if (split.mode !== "grid") return;
+  const { boxes } = await cw.call("gridBoxes", { cols: split.gridCols, rows: split.gridRows });
+  split.gridBoxes = boxes;
+}
+
+// §20: 分割モードに応じて単体/シート変換を実行（§114: ワーカーで）
+async function doConvertWith(params) {
   if (split.mode !== "single" && split.boxes.length >= 2) {
-    const boxes = split.mode === "grid" ? gridBoxes(split.gridCols, split.gridRows) : split.boxes;
-    if (boxes.length >= 2) return convertSheetImage(bgCache, srcData.w, srcData.h, params, boxes, split.align);
+    await refreshGridBoxes();
+    const boxes = split.mode === "grid" ? (split.gridBoxes || []) : split.boxes;
+    if (boxes.length >= 2) {
+      return await cw.call("convert", { kind: "sheet", params, boxes, align: split.align, flatten: knobs.flatten });
+    }
   }
-  return convertImage(bgCache, srcData.w, srcData.h, params);
+  return await cw.call("convert", { kind: "single", params, flatten: knobs.flatten });
 }
 
 async function runConvert() {
@@ -221,7 +231,8 @@ async function runConvert() {
     await ensureGrid();
     if (gen !== convertGen) return;
     $("studioStatus").textContent = "変換中…";
-    await new Promise((r) => setTimeout(r, 0));
+    await refreshGridBoxes(); // §114
+    if (gen !== convertGen) return;
     const boxes = currentBoxes();
     let res;
     // §59.2: 真ドット絵の無劣化1:1（検出済み＋チェックON）— 推定・減色をバイパス
@@ -229,20 +240,14 @@ async function runConvert() {
       let exactBoxes = boxes;
       if (!exactBoxes) {
         // 単体: 不透明bbox 1個
-        let x0 = srcData.w, y0 = srcData.h, x1 = -1, y1 = -1;
-        for (let y = 0; y < srcData.h; y++) {
-          for (let x = 0; x < srcData.w; x++) {
-            if (bgCache[(y * srcData.w + x) * 4 + 3] >= 8) {
-              if (x < x0) x0 = x; if (x > x1) x1 = x;
-              if (y < y0) y0 = y; if (y > y1) y1 = y;
-            }
-          }
-        }
-        if (x1 < 0) throw new Error("不透明ピクセルがありません");
-        exactBoxes = [{ x0, y0, x1, y1 }];
+        const { box } = await cw.call("bbox", { alphaMin: 8 });
+        if (!box) throw new Error("不透明ピクセルがありません");
+        exactBoxes = [box];
       }
-      res = convertFramesExact(bgCache, srcData.w, srcData.h, exactBoxes, split.align, exactInfo);
-      applyFlatten(res, knobs.flatten); // §99
+      res = await cw.call("convert", {
+        kind: "exact", boxes: exactBoxes, align: split.align, exactInfo, flatten: knobs.flatten,
+      });
+      if (gen !== convertGen) return;
       if (res.framesPixels && res.framesPixels[activeFrame]) {
         res.pixels = res.framesPixels[activeFrame];
         // §59.7: アクティブフレームの元画像座標に重ねて表示（1コマ目の位置に固定されるズレを修正）
@@ -264,8 +269,9 @@ async function runConvert() {
       saveActiveFrameParams();
       ensureFrameParams(boxes.length);
       const global = { targetH: knobs.oneToOne ? 0 : knobs.targetH, colors: knobs.colors, oneToOne: knobs.oneToOne, s: grid.s + knobs.sizeDelta, blockSnap: exactInfo && exactInfo.ok ? exactInfo.block : 0 }; // §110
-      res = convertFramesShared(srcData.data, srcData.w, srcData.h, global, boxes, frameParams, split.align);
-      applyFlatten(res, knobs.flatten); // §99
+      res = await cw.call("convert", {
+        kind: "shared", global, boxes, frameParams, align: split.align, flatten: knobs.flatten,
+      });
       // プレビューはアクティブフレーム
       if (res.framesPixels && res.framesPixels[activeFrame]) {
         res.pixels = res.framesPixels[activeFrame];
@@ -273,8 +279,7 @@ async function runConvert() {
         if (bb) { res.originX = bb.x0; res.originY = bb.y0; }
       }
     } else {
-      res = doConvertWith(knobsToParams());
-      applyFlatten(res, knobs.flatten); // §99
+      res = await doConvertWith(knobsToParams());
     }
     if (gen !== convertGen) return;
     result = res;
@@ -510,12 +515,11 @@ async function generateCandidates() {
   const gallery = $("studioGallery");
   gallery.innerHTML = "";
   // 背景除去が全ピクセルを消していないか事前確認（消えていたら除去なしで自動リトライ）
-  let hasOpaque = false;
-  for (let i = 3; i < bgCache.length; i += 4) { if (bgCache[i] >= 128) { hasOpaque = true; break; } }
+  const { has: hasOpaque } = await cw.call("hasOpaque", { alphaMin: 128 });
   if (!hasOpaque) {
     knobs.bgThreshold = 0;
     knobs.glowWidth = 0;
-    bgCache = null;
+    bgReady = false;
     await ensureBg();
     syncKnobUi();
     const note = document.createElement("div");
@@ -548,7 +552,7 @@ async function generateCandidates() {
       let conv = null;
       let convErr = null;
       try {
-        conv = doConvertWith(params);
+        conv = await doConvertWith(params);
       } catch (e) {
         convErr = e;
         console.error("候補の変換に失敗:", row.label, style.label, e);
@@ -753,7 +757,7 @@ function attachKnobs() {
       // §30: 多フレームでは背景除去はフレーム別に convertFramesShared 内で行うため
       // bgCache/ボックス検出は無効化しない（フレーム分割を安定させる）。単一時は従来どおり。
       if ((key === "bgThreshold" || key === "glowWidth") && !isMulti()) {
-        bgCache = null; // 背景キャッシュ破棄 → グリッド再推定
+        bgReady = false; // 背景キャッシュ破棄 → グリッド再推定
       }
       // §30: 多フレームの per-frame つまみはアクティブフレームへ即時反映
       if (isMulti() && PER_FRAME_KEYS.includes(key) && frameParams[activeFrame]) {
@@ -789,10 +793,11 @@ function attachKnobs() {
 
   // §20: 分割UI
   document.querySelectorAll('input[name="studioSplit"]').forEach((r) => {
-    r.addEventListener("change", () => {
+    r.addEventListener("change", async () => {
       split.mode = r.value;
       split.userChose = true;
-      if (split.mode !== "grid") detectSplit();
+      split.gridBoxes = null; // §114
+      if (split.mode !== "grid") await detectSplit();
       scheduleConvert();
     });
   });
@@ -803,6 +808,7 @@ function attachKnobs() {
   const gridChange = () => {
     split.gridCols = Math.max(1, Math.min(12, Number($("studioGridCols").value) || 1));
     split.gridRows = Math.max(1, Math.min(12, Number($("studioGridRows").value) || 1));
+    split.gridBoxes = null; // §114: 区画が変わったのでキャッシュを捨てる
     if (split.mode === "grid") scheduleConvert();
   };
   $("studioGridCols").addEventListener("input", gridChange);
@@ -995,9 +1001,11 @@ async function loadSource(dataUrl) {
   const ctx = c.getContext("2d", { willReadFrequently: true });
   ctx.drawImage(img, 0, 0);
   srcBitmapCanvas = c;
-  const imgData = ctx.getImageData(0, 0, c.width, c.height);
-  srcData = { data: imgData.data, w: c.width, h: c.height };
-  bgCache = null;
+  // §114: 画素データ本体はワーカーが持つ。ここでは大きさだけ覚えておき、
+  // 実際の受け渡しは ensureSourceSent() が srcBitmapCanvas から行う。
+  srcData = { w: c.width, h: c.height };
+  srcSentGen = 0;
+  bgReady = false;
   grid = null;
   result = null;
   frameParams = [];
@@ -1021,7 +1029,7 @@ export async function openStudio(dataUrl, savedParams = null, opts = {}) {
   candidateMode = null; // §44.1: 通常モードへ復帰
   candidateAutoNote = "";
   await loadSource(dataUrl);
-  split = { mode: "single", boxes: [], align: "bottom", gridCols: 3, gridRows: 1, userChose: false };
+  split = { mode: "single", boxes: [], align: "bottom", gridCols: 3, gridRows: 1, gridBoxes: null, userChose: false };
   knobs = defaultKnobs();
   if (savedParams) {
     const { grid: g, split: sp, frameParams: fp, ...rest } = savedParams;
@@ -1070,7 +1078,7 @@ export async function openStudioForCandidate(dataUrl, opts) {
   candidateAutoNote = "";
   await loadSource(dataUrl);
   const p = store.state.project;
-  split = { mode: "single", boxes: [], align: "bottom", gridCols: 3, gridRows: 1, userChose: true };
+  split = { mode: "single", boxes: [], align: "bottom", gridCols: 3, gridRows: 1, gridBoxes: null, userChose: true };
   knobs = defaultKnobs();
   knobs.oneToOne = false;
   knobs.targetH = p.height; // 解像度はプロジェクト固定（§44.1）
@@ -1145,7 +1153,7 @@ export function initStudio(storeRef, toastRef) {
       knobs.glowWidth = res.params.glowWidth;
       knobs.edgeProtect = res.params.edgeProtect;
       knobs.satProtect = res.params.satProtect;
-      bgCache = null; // 背景つまみが変わったので再除去
+      bgReady = false; // 背景つまみが変わったので再除去
       candidateAutoNote = `自動調整: スコア ${res.defaultScore.toFixed(3)} → ${res.score.toFixed(3)}（低いほど元絵に近い・${res.evals}回変換）`;
       syncKnobUi();
       scheduleConvert();
