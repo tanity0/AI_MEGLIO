@@ -17,6 +17,8 @@ const CACHE_PREFIX = "ai-meglio-static-";
 const ASSET_PATHS = [
   "", "index.html", "style.css",
   "app.js", "editor.js", "ai.js", "api.js", "convert.js",
+  // §114: 変換ワーカー一式（worker 本体もオフラインで必要）
+  "convertops.js", "convertclient.js", "convert.worker.js",
   "backdrop.js", "canvasresize.js", "gameexport.js", "gif.js",
   "help.js", "import.js", "livesync.js", "mobile.js", "motionstudio.js",
   "rig.js", "sendgpt.js", "studio.js", "styleref.js", "timeline.js", "autosave.js",
