@@ -1073,6 +1073,10 @@ export function initEditor(store, toast) {
       ev.preventDefault();
       return;
     }
+    // §115: 再生中に描くと、1本描くたびに再生位置が動いて別のコマへ入ってしまう
+    // （実測で3コマに散った）。描き始めで再生を止める。
+    // ✋移動（パン）は絵を変えないので、上の return より後に置いて対象外にする。
+    store.stopPlayback?.();
     const { x, y } = cellFromEvent(ev);
     // §50.3: 拡大鏡/指先オフセットマーカー用のホバー状態を、タッチはpointermoveが来る前に
     // ここで先行更新しておく（静止した長押しではpointermoveが発生しないため）。

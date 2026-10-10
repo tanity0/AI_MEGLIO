@@ -37,6 +37,7 @@ export function initTimeline(store, toast) {
   // フレーム操作（タグ範囲の自動補正付き・§16.1）
   // ---------------------------------------------------------------------
   addBtn.addEventListener("click", () => {
+    stopPlay(); // §115: 再生位置のコマに当たってしまうので先に止める
     const p = project();
     store.pushUndo();
     const pixels = new Uint8Array(p.width * p.height);
@@ -48,6 +49,7 @@ export function initTimeline(store, toast) {
   });
 
   dupBtn.addEventListener("click", () => {
+    stopPlay(); // §115: 再生位置のコマに当たってしまうので先に止める
     const p = project();
     store.pushUndo();
     const src = p.frames[store.state.currentFrame];
@@ -59,6 +61,14 @@ export function initTimeline(store, toast) {
   });
 
   delBtn.addEventListener("click", () => {
+    // §115: 削除は取り返しがつきにくいので、再生中の1回目は「止めるだけ」にする。
+    // 再生中はタップが届くまでの間もコマが流れ続けるため、どのコマに当たるかを
+    // 事前に狙えない（実測: コマ0を選んだ状態で押したらコマ5が消えた）。
+    if (store.state.timelinePlaying) {
+      stopPlay();
+      toast("再生を止めました。削除するコマを確かめて、もう一度押してください");
+      return;
+    }
     const p = project();
     if (p.frames.length <= 1) {
       toast("最後の1フレームは削除できません", "error");
@@ -75,6 +85,7 @@ export function initTimeline(store, toast) {
   });
 
   moveLeftBtn.addEventListener("click", () => {
+    stopPlay(); // §115: 再生位置のコマに当たってしまうので先に止める
     const p = project();
     const i = store.state.currentFrame;
     if (i <= 0) return;
@@ -85,6 +96,7 @@ export function initTimeline(store, toast) {
   });
 
   moveRightBtn.addEventListener("click", () => {
+    stopPlay(); // §115: 再生位置のコマに当たってしまうので先に止める
     const p = project();
     const i = store.state.currentFrame;
     if (i >= p.frames.length - 1) return;
@@ -218,13 +230,21 @@ export function initTimeline(store, toast) {
     const t = activeTag();
     return t ? t.fps : project().fps;
   }
+  // §115: 再生中は1tickごとに currentFrame が書き換わるため、コマに触る操作
+  // （サムネ選択・描き始め・コマ操作）は先にここを通して再生を止める。
+  // 再生していなければ何もしない（notify も走らせない）。
   function stopPlay() {
+    if (!store.state.timelinePlaying && !playTimer) return; // §115
     if (playTimer) clearTimeout(playTimer); // §112: setTimeout の自己スケジュールへ変更
     playTimer = null;
     store.state.timelinePlaying = false;
     playBtn.textContent = "▶ 再生";
     store.notify(); // §112: 再生中は軽い通知だけだったので、停止時に全体を同期し直す
   }
+  // §115: editor.js など timeline.js を import していないモジュールからも
+  // 止められるようにする（import の循環を作らないため store 経由にする）。
+  store.stopPlayback = stopPlay;
+
   function startPlay() {
     const p = project();
     store.state.timelinePlaying = true;
@@ -343,6 +363,7 @@ export function initTimeline(store, toast) {
       // §111: 非表示コマの見た目（トグル本体はサムネイルの下に置く）
       if (frame.hidden === true) thumb.classList.add("is-hidden-frame");
       thumb.addEventListener("click", () => {
+        stopPlay(); // §115: 止めないと次のtickで再生位置へ戻される
         store.state.currentFrame = i;
         store.notify();
       });
