@@ -1,5 +1,6 @@
 // timeline.js — フレーム一覧・タグバー（§16.1）・再生（タイムラインバー）
 import { drawFrameScaled, deviationPercent, adjustTagsOnInsert, adjustTagsOnDelete, uniqueTagName, cloneFrame } from "./app.js";
+import { onPressToggle } from "./taptoggle.js"; // §117
 
 const THUMB_SIZE = 48;
 
@@ -314,37 +315,10 @@ export function initTimeline(store, toast) {
     store.notify();
   });
 
-  // §116: 再生/停止は pointerdown で切り替える。
-  //
-  // ボタンの touch-action:manipulation はパン（スクロール）を許可するため、
-  // 押してから離すまでに指が十数px動くとブラウザがスクロール開始と解釈し、
-  // click が発火しない（実測: 14px以上のズレで止まらなかった）。
-  // pointerdown は指が動く前に発火するので、ズレても確実に効く。
-  //
-  // pointerdown で処理したら、対になって飛んでくる click は必ず捨てる。
-  // 「押してから400ms以内の click を捨てる」のような時間での判定にすると、
-  // 混んでいるときに click がそれより遅れて届いて二度切り替わる（実測で再発した）。
-  let swallowNextClick = false;
-  let swallowTimer = null;
-  function togglePlay() {
+  // §116/§117: 再生/停止は「押した瞬間」に切り替える（理由は taptoggle.js のコメント）
+  onPressToggle(playBtn, () => {
     if (store.state.timelinePlaying) stopPlay();
     else startPlay();
-  }
-  playBtn.addEventListener("pointerdown", () => {
-    swallowNextClick = true;
-    // スクロールと判定されて click が来ないまま終わることもあるので、
-    // 取りこぼした印を一定時間で捨てる（次の操作を飲み込まないように）。
-    if (swallowTimer) clearTimeout(swallowTimer);
-    swallowTimer = setTimeout(() => { swallowNextClick = false; }, 1000);
-    togglePlay();
-  });
-  playBtn.addEventListener("click", () => {
-    if (swallowNextClick) { // pointerdown で処理済み
-      swallowNextClick = false;
-      if (swallowTimer) { clearTimeout(swallowTimer); swallowTimer = null; }
-      return;
-    }
-    togglePlay(); // pointerdown が来ない経路（キーボード操作・プログラムからの click）
   });
 
   // fps/タグ変更時は再生タイマーを再設定

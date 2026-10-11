@@ -17,6 +17,7 @@ import {
   recompositeFrame,
 } from "./app.js";
 import { streamEdit } from "./api.js";
+import { onPressToggle } from "./taptoggle.js"; // §117
 
 const PRESET_DEFAULT_FRAMES = { walk: 4, run: 6, attack: 3, idle: 2, jump: 4 };
 const PRESET_LABELS = { walk: "歩き", run: "走り", attack: "攻撃", idle: "待機", jump: "ジャンプ", custom: "カスタム" };
@@ -34,12 +35,20 @@ export function initAi(store, toast) {
   const previewCanvas = document.getElementById("previewCanvas");
   const previewPlayBtn = document.getElementById("previewPlayBtn");
   let previewPlaying = true;
-  if (previewPlayBtn) {
-    previewPlayBtn.addEventListener("click", () => {
-      previewPlaying = !previewPlaying;
-      previewPlayBtn.textContent = previewPlaying ? "■ 停止" : "▶ 再生";
-    });
-  }
+  // §117: 停止ボタンも「押した瞬間」に効かせる。click だけだと指が十数px動いた時点で
+  // ブラウザがスクロール開始と解釈して発火しない（§116 で計測）。
+  let previewLastStop = 0;
+  onPressToggle(previewPlayBtn, () => {
+    if (previewPlaying) {
+      previewPlaying = false;
+      previewLastStop = performance.now();
+    } else {
+      // 待ちきれず2度押ししたときに再生へ戻ってしまうのを防ぐ（§116 と同じ猶予）
+      if (performance.now() - previewLastStop < 300) return;
+      previewPlaying = true;
+    }
+    previewPlayBtn.textContent = previewPlaying ? "■ 停止" : "▶ 再生";
+  });
 
   // タブ・モーション生成UI
   const tabPatchBtn = document.getElementById("tabPatchBtn");

@@ -6,6 +6,7 @@
 import { streamEdit } from "./api.js";
 import { removeBackground, convertImage, convertSheetImage, detectComponents, detectComponentsDetailed } from "./convert.js";
 import { encodeGif } from "./gif.js";
+import { onPressToggle } from "./taptoggle.js"; // §117
 
 // ---------------------------------------------------------------------------
 // グリッド文字ヘルパ（server.js と同一規則・app.js から複製）
@@ -1448,7 +1449,8 @@ function renderResults(moves) {
     ctl.className = "playerCtl";
     const playBtn = document.createElement("button");
     playBtn.textContent = "⏸";
-    playBtn.addEventListener("click", () => {
+    // §117: 指が十数px動くと click が発火しないので、押した瞬間に切り替える
+    onPressToggle(playBtn, () => {
       const p = players.get(m.key);
       p.playing = !p.playing;
       playBtn.textContent = p.playing ? "⏸" : "▶";
