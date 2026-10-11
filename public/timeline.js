@@ -235,6 +235,7 @@ export function initTimeline(store, toast) {
   // 再生していなければ何もしない（notify も走らせない）。
   function stopPlay() {
     if (!store.state.timelinePlaying && !playTimer) return; // §115
+    lastStopAt = performance.now(); // §116: この直後の「再生」を無視する
     if (playTimer) clearTimeout(playTimer); // §112: setTimeout の自己スケジュールへ変更
     playTimer = null;
     store.state.timelinePlaying = false;
@@ -245,7 +246,17 @@ export function initTimeline(store, toast) {
   // 止められるようにする（import の循環を作らないため store 経由にする）。
   store.stopPlayback = stopPlay;
 
+  // §116: 停止してから再生を再開しない猶予。待ちきれず2回押したとき、
+  // 2回目が「再生」として効いて再生に戻ってしまうのを防ぐ（実測では
+  // 100〜600ms のどの間隔でも戻っていた）。判定は pointerdown 同士の間隔なので、
+  // click の遅れには影響されない。
+  // 反射的な2度押し（実機で概ね120〜250ms）は吸収しつつ、
+  // 「止めてすぐ見直す」操作を妨げない長さにする。
+  const RESTART_GUARD_MS = 300;
+  let lastStopAt = 0;
+
   function startPlay() {
+    if (performance.now() - lastStopAt < RESTART_GUARD_MS) return; // §116
     const p = project();
     store.state.timelinePlaying = true;
     playBtn.textContent = "■ 停止";
@@ -303,9 +314,37 @@ export function initTimeline(store, toast) {
     store.notify();
   });
 
-  playBtn.addEventListener("click", () => {
+  // §116: 再生/停止は pointerdown で切り替える。
+  //
+  // ボタンの touch-action:manipulation はパン（スクロール）を許可するため、
+  // 押してから離すまでに指が十数px動くとブラウザがスクロール開始と解釈し、
+  // click が発火しない（実測: 14px以上のズレで止まらなかった）。
+  // pointerdown は指が動く前に発火するので、ズレても確実に効く。
+  //
+  // pointerdown で処理したら、対になって飛んでくる click は必ず捨てる。
+  // 「押してから400ms以内の click を捨てる」のような時間での判定にすると、
+  // 混んでいるときに click がそれより遅れて届いて二度切り替わる（実測で再発した）。
+  let swallowNextClick = false;
+  let swallowTimer = null;
+  function togglePlay() {
     if (store.state.timelinePlaying) stopPlay();
     else startPlay();
+  }
+  playBtn.addEventListener("pointerdown", () => {
+    swallowNextClick = true;
+    // スクロールと判定されて click が来ないまま終わることもあるので、
+    // 取りこぼした印を一定時間で捨てる（次の操作を飲み込まないように）。
+    if (swallowTimer) clearTimeout(swallowTimer);
+    swallowTimer = setTimeout(() => { swallowNextClick = false; }, 1000);
+    togglePlay();
+  });
+  playBtn.addEventListener("click", () => {
+    if (swallowNextClick) { // pointerdown で処理済み
+      swallowNextClick = false;
+      if (swallowTimer) { clearTimeout(swallowTimer); swallowTimer = null; }
+      return;
+    }
+    togglePlay(); // pointerdown が来ない経路（キーボード操作・プログラムからの click）
   });
 
   // fps/タグ変更時は再生タイマーを再設定
