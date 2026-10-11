@@ -470,6 +470,7 @@ export function initEditor(store, toast) {
 
   // §100: 最後に自動フィットを掛けたプロジェクト世代
   let lastFitEpoch = store.state.projectEpoch;
+  let lastDrawnFrame = -1; // §119: 表示中のコマ（変わったら canvas を作り直して再描画を確実にする）
 
   function computeAutoZoom() {
     const p = project();
@@ -2724,13 +2725,23 @@ export function initEditor(store, toast) {
     // §112: canvas.width への代入はサイズが同じでもバッキングストアを作り直す
     // （128×128・×5で約1.6MB）。再生中は毎コマ走るので、変わったときだけ設定する。
     // 中身の消去は下の drawFrameToContext / clearRect が行うので、暗黙のクリアには依存しない。
+    //
+    // §119: ただし iOS Safari では、描いても画面に反映されないことがある
+    // （実機の録画で、停止中にコマを選んでも約7.3秒間まったく絵が変わらなかった。
+    //  再生中は毎秒8回描くので反映される）。canvas.width への代入は同じ値でも
+    //  キャンバスを作り直して確実に再描画を起こすので、§112 以前はこれに救われていた。
+    //  表示するコマが変わったときだけ代入し直す。再生中は §112 のまま触らない。
     const cw = p.width * cellSize, ch = p.height * cellSize;
+    const frameChanged = store.state.currentFrame !== lastDrawnFrame && !store.state.timelinePlaying;
     if (canvas.width !== cw || canvas.height !== ch) {
       canvas.width = cw;
       canvas.height = ch;
       canvas.style.width = cw + "px";
       canvas.style.height = ch + "px";
+    } else if (frameChanged) {
+      canvas.width = cw; // 同じ値でも作り直され、確実に再描画される
     }
+    lastDrawnFrame = store.state.currentFrame;
 
     // §35: レイヤー表示。単一の不透明可視レイヤーは従来経路（合成キャッシュ描画）。
     // それ以外はレイヤーを下から順に opacity 付きで重ね描き（opacityは表示専用＝
@@ -2937,7 +2948,8 @@ export function initEditor(store, toast) {
     }
 
     renderPalette();
-    canvasSizeLabel.textContent = `${p.width} x ${p.height}`;
+    // §119: 今どのコマを表示しているかを出す（状態と描画の切り分けにも使える）
+    canvasSizeLabel.textContent = `${p.width} x ${p.height}・コマ ${store.state.currentFrame + 1}/${p.frames.length}`;
     lockCountEl.textContent = String((p.lockedRects || []).length);
     diffToggle.checked = store.state.diffView;
     onionModeSelect.value = store.state.onionMode;
