@@ -160,31 +160,46 @@ export function drawPixels(ctx, pixels, width, height, palette, cellSize) {
 // §97: サムネイルのように「縮小して一度に描く」用途向けの高速パス。
 // 等倍のImageDataを組み立ててから drawImage で拡縮する（1画素ずつ fillRect すると
 // 128×128で16384回の描画呼び出しになり、コマ数ぶん繰り返すと数百msに達する）。
-let thumbScratch = null;
-let thumbScratchCtx = null;
+//
+// §121: 作業用canvasは【描画先ごとに分ける】。1枚を共有すると、
+// エディタ本体が drawImage で読もうとしている最中に、同じ notify() の中で
+// 続けて走るタイムラインのサムネイル描画が同じ作業用canvasを16回上書きしてしまう。
+// WebKit は描画をためてから流すので、読み元が上書き後の中身になり、
+// エディタに別のコマが出たままになる（実機で発生）。
+// 同期処理の中で動く2つの描画経路が、書き換え可能な中間バッファを共有してはいけない。
+const scratchByCtx = new WeakMap();
+function scratchFor(ctx, width, height) {
+  let s = scratchByCtx.get(ctx);
+  if (!s) {
+    const canvas = document.createElement("canvas");
+    s = { canvas, ctx: null, w: -1, h: -1 };
+    scratchByCtx.set(ctx, s);
+  }
+  if (s.w !== width || s.h !== height) {
+    s.canvas.width = width;
+    s.canvas.height = height;
+    s.ctx = s.canvas.getContext("2d");
+    s.w = width; s.h = height;
+  }
+  return s;
+}
 export function drawFrameScaled(ctx, project, frameIndex, destW, destH) {
   const { width, height, frames, palette } = project;
   const frame = frames[frameIndex];
   if (!frame) return;
-  if (!thumbScratch) thumbScratch = document.createElement("canvas");
-  if (thumbScratch.width !== width || thumbScratch.height !== height) {
-    thumbScratch.width = width;
-    thumbScratch.height = height;
-    thumbScratchCtx = thumbScratch.getContext("2d");
-  }
-  if (!thumbScratchCtx) thumbScratchCtx = thumbScratch.getContext("2d");
+  const s = scratchFor(ctx, width, height);
   const rgba = paletteRgbaLUT(palette);
-  const img = thumbScratchCtx.createImageData(width, height);
+  const img = s.ctx.createImageData(width, height);
   const d = img.data, px = frame.pixels;
   for (let i = 0; i < px.length; i++) {
     const o = px[i] * 4, q = i * 4;
     d[q] = rgba[o]; d[q + 1] = rgba[o + 1]; d[q + 2] = rgba[o + 2]; d[q + 3] = rgba[o + 3];
   }
-  thumbScratchCtx.putImageData(img, 0, 0);
+  s.ctx.putImageData(img, 0, 0);
   ctx.clearRect(0, 0, destW, destH);
   const smooth = ctx.imageSmoothingEnabled;
   ctx.imageSmoothingEnabled = false; // ドット絵なので最近傍で縮小する
-  ctx.drawImage(thumbScratch, 0, 0, width, height, 0, 0, destW, destH);
+  ctx.drawImage(s.canvas, 0, 0, width, height, 0, 0, destW, destH);
   ctx.imageSmoothingEnabled = smooth;
 }
 
