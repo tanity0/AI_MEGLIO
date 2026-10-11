@@ -1,6 +1,6 @@
 // timeline.js — フレーム一覧・タグバー（§16.1）・再生（タイムラインバー）
 import { drawFrameScaled, deviationPercent, adjustTagsOnInsert, adjustTagsOnDelete, uniqueTagName, cloneFrame } from "./app.js";
-import { onPressToggle } from "./taptoggle.js"; // §117
+import { onPressToggle, onItemTap } from "./taptoggle.js"; // §117/§118
 
 const THUMB_SIZE = 48;
 
@@ -315,6 +315,30 @@ export function initTimeline(store, toast) {
     store.notify();
   });
 
+  // §118: コマの選択と 👁 は frameList への委譲で受ける。
+  // 個別の click だと、指が20px動いただけでブラウザが click を発火させず選択が落ちる。
+  onItemTap(frameList, ".frame-thumb", (thumb) => {
+    const i = Number(thumb.dataset.frameIndex);
+    if (!Number.isInteger(i) || i < 0 || i >= project().frames.length) return;
+    stopPlay(); // §115: 止めないと次のtickで再生位置へ戻される
+    store.state.currentFrame = i;
+    store.notify();
+  });
+  onItemTap(frameList, ".frame-eye", (eye) => {
+    const pr = project();
+    const i = Number(eye.dataset.frameIndex);
+    const frame = pr.frames[i];
+    if (!frame) return;
+    const visible = pr.frames.filter((f) => f.hidden !== true).length;
+    if (frame.hidden !== true && visible <= 1) {
+      toast("すべてのコマは非表示にできません", "error");
+      return;
+    }
+    store.pushUndo();
+    if (frame.hidden === true) delete frame.hidden; else frame.hidden = true;
+    store.notify();
+  });
+
   // §116/§117: 再生/停止は「押した瞬間」に切り替える（理由は taptoggle.js のコメント）
   onPressToggle(playBtn, () => {
     if (store.state.timelinePlaying) stopPlay();
@@ -375,11 +399,8 @@ export function initTimeline(store, toast) {
       }
       // §111: 非表示コマの見た目（トグル本体はサムネイルの下に置く）
       if (frame.hidden === true) thumb.classList.add("is-hidden-frame");
-      thumb.addEventListener("click", () => {
-        stopPlay(); // §115: 止めないと次のtickで再生位置へ戻される
-        store.state.currentFrame = i;
-        store.notify();
-      });
+      // §118: 選択は frameList への委譲で受ける（指が少しズレても拾うため）
+      thumb.dataset.frameIndex = String(i);
       cell.appendChild(thumb);
 
       // 逸脱メーター（§13.2-4）。§113: 下の段は 👁 に幅を全部渡すため、
@@ -406,17 +427,7 @@ export function initTimeline(store, toast) {
       eye.title = frame.hidden === true
         ? "非表示（再生とPNG/GIF書き出しから外れています）。クリックで表示に戻す"
         : "クリックで非表示にする（削除せず、再生とPNG/GIF書き出しから外す）";
-      eye.addEventListener("click", () => {
-        const pr = project();
-        const visible = pr.frames.filter((f) => f.hidden !== true).length;
-        if (frame.hidden !== true && visible <= 1) {
-          toast("すべてのコマは非表示にできません", "error");
-          return;
-        }
-        store.pushUndo();
-        if (frame.hidden === true) delete frame.hidden; else frame.hidden = true;
-        store.notify();
-      });
+      eye.dataset.frameIndex = String(i); // §118: 委譲で受ける
       foot.appendChild(eye);
       cell.appendChild(foot);
 
