@@ -1,0 +1,478 @@
+// timeline.js — フレーム一覧・タグバー（§16.1）・再生（タイムラインバー）
+import { drawFrameScaled, deviationPercent, adjustTagsOnInsert, adjustTagsOnDelete, uniqueTagName, cloneFrame } from "./app.js";
+import { onPressToggle, onItemTap } from "./taptoggle.js"; // §117/§118
+
+const THUMB_SIZE = 48;
+
+export function initTimeline(store, toast) {
+  const frameList = document.getElementById("frameList");
+  const addBtn = document.getElementById("frameAddBtn");
+  const dupBtn = document.getElementById("frameDupBtn");
+  const delBtn = document.getElementById("frameDelBtn");
+  const moveLeftBtn = document.getElementById("frameMoveLeftBtn");
+  const moveRightBtn = document.getElementById("frameMoveRightBtn");
+  const fpsInput = document.getElementById("fpsInput");
+  const playBtn = document.getElementById("playBtn");
+  const tagList = document.getElementById("tagList");
+  const tagAddBtn = document.getElementById("tagAddBtn");
+  const tagForm = document.getElementById("tagForm");
+  const tagNameInput = document.getElementById("tagNameInput");
+  const tagStartInput = document.getElementById("tagStartInput");
+  const tagEndInput = document.getElementById("tagEndInput");
+  const tagFpsInput = document.getElementById("tagFpsInput");
+  const tagLoopInput = document.getElementById("tagLoopInput");
+  const tagSaveBtn = document.getElementById("tagSaveBtn");
+  const tagDeleteBtn = document.getElementById("tagDeleteBtn");
+  const tagCancelBtn = document.getElementById("tagCancelBtn");
+
+  let editingTagIndex = null; // null = 非表示, -1 = 新規作成, >=0 = 既存タグ編集
+
+  function project() { return store.state.project; }
+  function activeTag() {
+    const p = project();
+    const i = store.state.activeTagIndex;
+    return i >= 0 && p.tags && p.tags[i] ? p.tags[i] : null;
+  }
+
+  // ---------------------------------------------------------------------
+  // フレーム操作（タグ範囲の自動補正付き・§16.1）
+  // ---------------------------------------------------------------------
+  addBtn.addEventListener("click", () => {
+    stopPlay(); // §115: 再生位置のコマに当たってしまうので先に止める
+    const p = project();
+    store.pushUndo();
+    const pixels = new Uint8Array(p.width * p.height);
+    const at = store.state.currentFrame + 1;
+    p.frames.splice(at, 0, { pixels });
+    adjustTagsOnInsert(p, at, 1);
+    store.state.currentFrame += 1;
+    store.notify();
+  });
+
+  dupBtn.addEventListener("click", () => {
+    stopPlay(); // §115: 再生位置のコマに当たってしまうので先に止める
+    const p = project();
+    store.pushUndo();
+    const src = p.frames[store.state.currentFrame];
+    const at = store.state.currentFrame + 1;
+    p.frames.splice(at, 0, cloneFrame(src)); // §35: レイヤー構造ごと複製
+    adjustTagsOnInsert(p, at, 1);
+    store.state.currentFrame += 1;
+    store.notify();
+  });
+
+  delBtn.addEventListener("click", () => {
+    // §115: 削除は取り返しがつきにくいので、再生中の1回目は「止めるだけ」にする。
+    // 再生中はタップが届くまでの間もコマが流れ続けるため、どのコマに当たるかを
+    // 事前に狙えない（実測: コマ0を選んだ状態で押したらコマ5が消えた）。
+    if (store.state.timelinePlaying) {
+      stopPlay();
+      toast("再生を止めました。削除するコマを確かめて、もう一度押してください");
+      return;
+    }
+    const p = project();
+    if (p.frames.length <= 1) {
+      toast("最後の1フレームは削除できません", "error");
+      return;
+    }
+    store.pushUndo();
+    const at = store.state.currentFrame;
+    p.frames.splice(at, 1);
+    adjustTagsOnDelete(p, at);
+    if (store.state.currentFrame >= p.frames.length) store.state.currentFrame = p.frames.length - 1;
+    if (store.state.selection && store.state.selection.frameIndex >= p.frames.length) store.state.selection = null;
+    store.clampAfterProjectChange();
+    store.notify();
+  });
+
+  moveLeftBtn.addEventListener("click", () => {
+    stopPlay(); // §115: 再生位置のコマに当たってしまうので先に止める
+    const p = project();
+    const i = store.state.currentFrame;
+    if (i <= 0) return;
+    store.pushUndo();
+    [p.frames[i - 1], p.frames[i]] = [p.frames[i], p.frames[i - 1]];
+    store.state.currentFrame = i - 1;
+    store.notify();
+  });
+
+  moveRightBtn.addEventListener("click", () => {
+    stopPlay(); // §115: 再生位置のコマに当たってしまうので先に止める
+    const p = project();
+    const i = store.state.currentFrame;
+    if (i >= p.frames.length - 1) return;
+    store.pushUndo();
+    [p.frames[i + 1], p.frames[i]] = [p.frames[i], p.frames[i + 1]];
+    store.state.currentFrame = i + 1;
+    store.notify();
+  });
+
+  fpsInput.addEventListener("change", () => {
+    const p = project();
+    let v = Number(fpsInput.value);
+    if (!Number.isInteger(v) || v < 1) v = 1;
+    if (v > 24) v = 24;
+    p.fps = v;
+    fpsInput.value = String(v);
+    store.notify();
+  });
+
+  // ---------------------------------------------------------------------
+  // タグバー（§16.1）
+  // ---------------------------------------------------------------------
+  function openTagForm(index) {
+    const p = project();
+    editingTagIndex = index;
+    if (index >= 0) {
+      const t = p.tags[index];
+      tagNameInput.value = t.name;
+      tagStartInput.value = String(t.start);
+      tagEndInput.value = String(t.end);
+      tagFpsInput.value = String(t.fps);
+      tagLoopInput.checked = t.loop;
+      tagDeleteBtn.hidden = false;
+    } else {
+      tagNameInput.value = uniqueTagName(p, "tag");
+      tagStartInput.value = String(store.state.currentFrame);
+      tagEndInput.value = String(store.state.currentFrame);
+      tagFpsInput.value = String(p.fps);
+      tagLoopInput.checked = true;
+      tagDeleteBtn.hidden = true;
+    }
+    tagForm.hidden = false;
+    tagNameInput.focus();
+  }
+  function closeTagForm() {
+    editingTagIndex = null;
+    tagForm.hidden = true;
+  }
+
+  tagAddBtn.addEventListener("click", () => openTagForm(-1));
+  tagCancelBtn.addEventListener("click", closeTagForm);
+
+  tagSaveBtn.addEventListener("click", () => {
+    const p = project();
+    const name = tagNameInput.value.trim();
+    const start = Number(tagStartInput.value);
+    const end = Number(tagEndInput.value);
+    let fps = Number(tagFpsInput.value);
+    if (!name) { toast("タグ名を入力してください", "error"); return; }
+    if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end >= p.frames.length || start > end) {
+      toast(`範囲が不正です（0〜${p.frames.length - 1}、start ≦ end）`, "error");
+      return;
+    }
+    if (!Number.isInteger(fps) || fps < 1) fps = 1;
+    if (fps > 24) fps = 24;
+    const dup = p.tags.findIndex((t, i) => t.name === name && i !== editingTagIndex);
+    if (dup !== -1) { toast(`タグ名「${name}」は既に存在します`, "error"); return; }
+
+    store.pushUndo();
+    const tag = { name, start, end, fps, loop: tagLoopInput.checked };
+    if (editingTagIndex >= 0) {
+      p.tags[editingTagIndex] = tag;
+      store.state.activeTagIndex = editingTagIndex;
+    } else {
+      p.tags.push(tag);
+      store.state.activeTagIndex = p.tags.length - 1;
+    }
+    closeTagForm();
+    store.notify();
+  });
+
+  tagDeleteBtn.addEventListener("click", () => {
+    const p = project();
+    if (editingTagIndex === null || editingTagIndex < 0) return;
+    store.pushUndo();
+    p.tags.splice(editingTagIndex, 1); // フレームは消さない
+    if (store.state.activeTagIndex === editingTagIndex) store.state.activeTagIndex = -1;
+    else if (store.state.activeTagIndex > editingTagIndex) store.state.activeTagIndex--;
+    closeTagForm();
+    store.notify();
+  });
+
+  function renderTags() {
+    const p = project();
+    tagList.innerHTML = "";
+
+    const allChip = document.createElement("button");
+    allChip.className = "tag-chip" + (store.state.activeTagIndex === -1 ? " is-active" : "");
+    allChip.textContent = "全体";
+    allChip.title = "タグ選択を解除（全フレームを再生・書き出し対象に）";
+    allChip.addEventListener("click", () => {
+      store.state.activeTagIndex = -1;
+      closeTagForm();
+      store.notify();
+    });
+    tagList.appendChild(allChip);
+
+    (p.tags || []).forEach((t, i) => {
+      const chip = document.createElement("button");
+      chip.className = "tag-chip" + (i === store.state.activeTagIndex ? " is-active" : "");
+      chip.innerHTML = "";
+      chip.textContent = `${t.name} [${t.start}-${t.end}]`;
+      chip.title = `fps:${t.fps} loop:${t.loop ? "on" : "off"}（クリックで選択、ダブルクリックで編集）`;
+      chip.addEventListener("click", () => {
+        store.state.activeTagIndex = i;
+        if (store.state.currentFrame < t.start || store.state.currentFrame > t.end) {
+          store.state.currentFrame = t.start;
+        }
+        store.notify();
+      });
+      chip.addEventListener("dblclick", () => openTagForm(i));
+      tagList.appendChild(chip);
+    });
+  }
+
+  // ---------------------------------------------------------------------
+  // タイムライン再生（選択タグがあればその範囲・そのfpsでループ）
+  // ---------------------------------------------------------------------
+  let playTimer = null;
+  function playFps() {
+    const t = activeTag();
+    return t ? t.fps : project().fps;
+  }
+  // §115: 再生中は1tickごとに currentFrame が書き換わるため、コマに触る操作
+  // （サムネ選択・描き始め・コマ操作）は先にここを通して再生を止める。
+  // 再生していなければ何もしない（notify も走らせない）。
+  function stopPlay() {
+    if (!store.state.timelinePlaying && !playTimer) return; // §115
+    lastStopAt = performance.now(); // §116: この直後の「再生」を無視する
+    if (playTimer) clearTimeout(playTimer); // §112: setTimeout の自己スケジュールへ変更
+    playTimer = null;
+    store.state.timelinePlaying = false;
+    playBtn.textContent = "▶ 再生";
+    store.notify(); // §112: 再生中は軽い通知だけだったので、停止時に全体を同期し直す
+  }
+  // §115: editor.js など timeline.js を import していないモジュールからも
+  // 止められるようにする（import の循環を作らないため store 経由にする）。
+  store.stopPlayback = stopPlay;
+
+  // §116: 停止してから再生を再開しない猶予。待ちきれず2回押したとき、
+  // 2回目が「再生」として効いて再生に戻ってしまうのを防ぐ（実測では
+  // 100〜600ms のどの間隔でも戻っていた）。判定は pointerdown 同士の間隔なので、
+  // click の遅れには影響されない。
+  // 反射的な2度押し（実機で概ね120〜250ms）は吸収しつつ、
+  // 「止めてすぐ見直す」操作を妨げない長さにする。
+  const RESTART_GUARD_MS = 300;
+  let lastStopAt = 0;
+
+  function startPlay() {
+    if (performance.now() - lastStopAt < RESTART_GUARD_MS) return; // §116
+    const p = project();
+    store.state.timelinePlaying = true;
+    playBtn.textContent = "■ 停止";
+    let dir = 1; // §25.9-4: ピンポン用の進行方向
+    const tick = () => {
+      const pp = project();
+      const t = activeTag();
+      const start = t ? t.start : 0;
+      const end = t ? Math.min(t.end, pp.frames.length - 1) : pp.frames.length - 1;
+      let next;
+      if ((pp.playMode || "loop") === "pingpong" && end > start) {
+        // 端フレームを重複させない往復（start..end..start+1..）
+        next = store.state.currentFrame + dir;
+        if (next > end) { dir = -1; next = end - 1; }
+        else if (next < start) { dir = 1; next = start + 1; }
+      } else {
+        dir = 1;
+        next = store.state.currentFrame + 1;
+        if (next > end || next < start) next = start;
+      }
+      // §111: 非表示コマはスキップ（範囲内に表示コマが無ければそのまま）
+      const span = end - start + 1;
+      if (span > 0 && pp.frames.some((f, i) => i >= start && i <= end && f.hidden !== true)) {
+        let guard = 0;
+        while (pp.frames[next] && pp.frames[next].hidden === true && guard++ < span) {
+          next += dir;
+          if (next > end) next = (pp.playMode === "pingpong" && end > start) ? end - 1 : start;
+          else if (next < start) next = (pp.playMode === "pingpong" && end > start) ? start + 1 : end;
+        }
+      }
+      store.state.currentFrame = next;
+      // §112: 再生中は全購読者を回さず、キャンバスと選択枠だけ更新する
+      store.notifyPlayback();
+    };
+    // §112: setInterval だと tick が間隔より重いときに隙間なく積まれ、
+    // 入力イベントを処理する余地が無くなる（停止ボタンが効かない）。
+    // 処理時間を差し引いて次を予約し、最低16msの隙間を必ず空ける。
+    const MIN_GAP_MS = 16;
+    const loop = () => {
+      if (!store.state.timelinePlaying) return;
+      const t0 = performance.now();
+      tick();
+      const interval = Math.max(1000 / Math.max(1, playFps()), MIN_GAP_MS);
+      const wait = Math.max(MIN_GAP_MS, interval - (performance.now() - t0));
+      playTimer = setTimeout(loop, wait);
+    };
+    playTimer = setTimeout(loop, 0);
+  }
+  // §25.9-4: 再生モード（プロジェクト単位で保存・GIFピンポンチェックにも同期）
+  const playModeSelect = document.getElementById("playModeSelect");
+  playModeSelect.addEventListener("change", () => {
+    project().playMode = playModeSelect.value === "pingpong" ? "pingpong" : "loop";
+    const chk = document.getElementById("gifPingpongChk");
+    if (chk) chk.checked = project().playMode === "pingpong";
+    store.notify();
+  });
+
+  // §118: コマの選択と 👁 は frameList への委譲で受ける。
+  // 個別の click だと、指が20px動いただけでブラウザが click を発火させず選択が落ちる。
+  onItemTap(frameList, ".frame-thumb", (thumb) => {
+    const i = Number(thumb.dataset.frameIndex);
+    if (!Number.isInteger(i) || i < 0 || i >= project().frames.length) return;
+    stopPlay(); // §115: 止めないと次のtickで再生位置へ戻される
+    store.state.currentFrame = i;
+    store.notify();
+  });
+  onItemTap(frameList, ".frame-eye", (eye) => {
+    const pr = project();
+    const i = Number(eye.dataset.frameIndex);
+    const frame = pr.frames[i];
+    if (!frame) return;
+    const visible = pr.frames.filter((f) => f.hidden !== true).length;
+    if (frame.hidden !== true && visible <= 1) {
+      toast("すべてのコマは非表示にできません", "error");
+      return;
+    }
+    store.pushUndo();
+    if (frame.hidden === true) delete frame.hidden; else frame.hidden = true;
+    store.notify();
+  });
+
+  // §116/§117: 再生/停止は「押した瞬間」に切り替える（理由は taptoggle.js のコメント）
+  onPressToggle(playBtn, () => {
+    if (store.state.timelinePlaying) stopPlay();
+    else startPlay();
+  });
+
+  // fps/タグ変更時は再生タイマーを再設定
+  let lastPlayFps = playFps();
+  let lastActiveTagIndex = store.state.activeTagIndex;
+
+  // §120: コマ1枚ぶんの入れ物を作る（中身は render() が毎回書き換える）
+  function makeFrameCell() {
+    const cell = document.createElement("div");
+    cell.className = "frame-cell";
+
+    const thumb = document.createElement("div");
+    thumb.className = "frame-thumb";
+    thumb.appendChild(document.createElement("canvas"));
+
+    const label = document.createElement("span");
+    label.className = "frame-index";
+    thumb.appendChild(label);
+
+    const badge = document.createElement("span");
+    badge.className = "base-badge";
+    badge.textContent = "基準";
+    badge.hidden = true;
+    thumb.appendChild(badge);
+
+    const dev = document.createElement("span");
+    dev.className = "deviation";
+    dev.hidden = true;
+    thumb.appendChild(dev);
+
+    cell.appendChild(thumb);
+
+    const foot = document.createElement("div");
+    foot.className = "frame-foot";
+    const eye = document.createElement("button");
+    eye.type = "button";
+    eye.className = "frame-eye";
+    foot.appendChild(eye);
+    cell.appendChild(foot);
+    return cell;
+  }
+
+  function renderThumb(canvas, frameIndex) {
+    const p = project();
+    const scale = THUMB_SIZE / Math.max(p.width, p.height);
+    const w = Math.max(1, Math.round(p.width * scale));
+    const h = Math.max(1, Math.round(p.height * scale));
+    // §120: canvas.width への代入はバッキングストアの作り直しになる。
+    // 毎回やると notify() ごとに16枚ぶん再確保され、iOS の canvas メモリ上限に当たる。
+    // 中身の消去は drawFrameScaled の clearRect が行うので、サイズが変わるときだけでよい。
+    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+    const ctx = canvas.getContext("2d");
+    // §97: 1画素ずつ fillRect せず ImageData+drawImage で一括描画
+    drawFrameScaled(ctx, p, frameIndex, canvas.width, canvas.height);
+  }
+
+  function render() {
+    const p = project();
+
+    if (playFps() !== lastPlayFps || store.state.activeTagIndex !== lastActiveTagIndex) {
+      lastPlayFps = playFps();
+      lastActiveTagIndex = store.state.activeTagIndex;
+      if (store.state.timelinePlaying) { stopPlay(); startPlay(); }
+    }
+    fpsInput.value = String(p.fps);
+    playModeSelect.value = p.playMode === "pingpong" ? "pingpong" : "loop"; // §25.9-4
+
+    renderTags();
+
+    const tag = activeTag();
+
+    // §120: innerHTML="" で作り直すと notify() のたびに canvas を16枚作り直すことになり、
+    // iOS の canvas メモリ上限に当たって画面が更新されなくなる。要素は使い回し、
+    // 足りない/余った分だけ作る・消す。
+    while (frameList.children.length > p.frames.length) frameList.lastElementChild.remove();
+    while (frameList.children.length < p.frames.length) frameList.appendChild(makeFrameCell());
+
+    p.frames.forEach((frame, i) => {
+      const cell = frameList.children[i];
+      const thumb = cell.firstElementChild;
+      const canvas = thumb.querySelector("canvas");
+      const label = thumb.querySelector(".frame-index");
+      const badge = thumb.querySelector(".base-badge");
+      const dev = thumb.querySelector(".deviation");
+      const eye = cell.querySelector(".frame-eye");
+
+      thumb.className =
+        "frame-thumb" +
+        (i === store.state.currentFrame ? " is-active" : "") +
+        (tag && i >= tag.start && i <= tag.end ? " in-tag" : "") +
+        (frame.hidden === true ? " is-hidden-frame" : ""); // §111
+      thumb.dataset.frameIndex = String(i); // §118: 選択は frameList への委譲で受ける
+      renderThumb(canvas, i);
+      label.textContent = String(i);
+
+      // ベースフレームバッジ（§13.1-4）
+      badge.hidden = !(p.baseFrame && i === 0);
+
+      // 逸脱メーター（§13.2-4）。§113: サムネイルの中（左下）へ置く
+      const pct = deviationPercent(p, i);
+      if (pct === null) {
+        dev.hidden = true;
+        dev.textContent = "";
+      } else {
+        dev.hidden = false;
+        dev.textContent = `${pct}%`;
+        dev.title = "ベースフレームとの差分率";
+        dev.classList.toggle("is-warn", pct > 40);
+      }
+
+      // §111: 非表示トグル（削除せずに検討するため。再生・PNG/GIF書き出しから外れる）
+      eye.className = "frame-eye" + (frame.hidden === true ? " is-off" : "");
+      eye.textContent = frame.hidden === true ? "🚫" : "👁";
+      eye.title = frame.hidden === true
+        ? "非表示（再生とPNG/GIF書き出しから外れています）。クリックで表示に戻す"
+        : "クリックで非表示にする（削除せず、再生とPNG/GIF書き出しから外す）";
+      eye.dataset.frameIndex = String(i); // §118: 委譲で受ける
+    });
+
+    delBtn.disabled = p.frames.length <= 1;
+    moveLeftBtn.disabled = store.state.currentFrame <= 0;
+    moveRightBtn.disabled = store.state.currentFrame >= p.frames.length - 1;
+  }
+
+  store.subscribe(render);
+  // §112: 再生中はサムネイルを作り直さず、選択枠だけ動かす
+  store.subscribePlayback(() => {
+    const cur = store.state.currentFrame;
+    const cells = frameList.querySelectorAll(".frame-thumb");
+    for (let i = 0; i < cells.length; i++) cells[i].classList.toggle("is-active", i === cur);
+  });
+  render();
+}
