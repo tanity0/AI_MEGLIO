@@ -349,11 +349,51 @@ export function initTimeline(store, toast) {
   let lastPlayFps = playFps();
   let lastActiveTagIndex = store.state.activeTagIndex;
 
+  // §120: コマ1枚ぶんの入れ物を作る（中身は render() が毎回書き換える）
+  function makeFrameCell() {
+    const cell = document.createElement("div");
+    cell.className = "frame-cell";
+
+    const thumb = document.createElement("div");
+    thumb.className = "frame-thumb";
+    thumb.appendChild(document.createElement("canvas"));
+
+    const label = document.createElement("span");
+    label.className = "frame-index";
+    thumb.appendChild(label);
+
+    const badge = document.createElement("span");
+    badge.className = "base-badge";
+    badge.textContent = "基準";
+    badge.hidden = true;
+    thumb.appendChild(badge);
+
+    const dev = document.createElement("span");
+    dev.className = "deviation";
+    dev.hidden = true;
+    thumb.appendChild(dev);
+
+    cell.appendChild(thumb);
+
+    const foot = document.createElement("div");
+    foot.className = "frame-foot";
+    const eye = document.createElement("button");
+    eye.type = "button";
+    eye.className = "frame-eye";
+    foot.appendChild(eye);
+    cell.appendChild(foot);
+    return cell;
+  }
+
   function renderThumb(canvas, frameIndex) {
     const p = project();
     const scale = THUMB_SIZE / Math.max(p.width, p.height);
-    canvas.width = Math.max(1, Math.round(p.width * scale));
-    canvas.height = Math.max(1, Math.round(p.height * scale));
+    const w = Math.max(1, Math.round(p.width * scale));
+    const h = Math.max(1, Math.round(p.height * scale));
+    // §120: canvas.width への代入はバッキングストアの作り直しになる。
+    // 毎回やると notify() ごとに16枚ぶん再確保され、iOS の canvas メモリ上限に当たる。
+    // 中身の消去は drawFrameScaled の clearRect が行うので、サイズが変わるときだけでよい。
+    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
     const ctx = canvas.getContext("2d");
     // §97: 1画素ずつ fillRect せず ImageData+drawImage で一括描画
     drawFrameScaled(ctx, p, frameIndex, canvas.width, canvas.height);
@@ -373,65 +413,53 @@ export function initTimeline(store, toast) {
     renderTags();
 
     const tag = activeTag();
-    frameList.innerHTML = "";
-    p.frames.forEach((frame, i) => {
-      const cell = document.createElement("div");
-      cell.className = "frame-cell";
 
-      const thumb = document.createElement("div");
+    // §120: innerHTML="" で作り直すと notify() のたびに canvas を16枚作り直すことになり、
+    // iOS の canvas メモリ上限に当たって画面が更新されなくなる。要素は使い回し、
+    // 足りない/余った分だけ作る・消す。
+    while (frameList.children.length > p.frames.length) frameList.lastElementChild.remove();
+    while (frameList.children.length < p.frames.length) frameList.appendChild(makeFrameCell());
+
+    p.frames.forEach((frame, i) => {
+      const cell = frameList.children[i];
+      const thumb = cell.firstElementChild;
+      const canvas = thumb.querySelector("canvas");
+      const label = thumb.querySelector(".frame-index");
+      const badge = thumb.querySelector(".base-badge");
+      const dev = thumb.querySelector(".deviation");
+      const eye = cell.querySelector(".frame-eye");
+
       thumb.className =
         "frame-thumb" +
         (i === store.state.currentFrame ? " is-active" : "") +
-        (tag && i >= tag.start && i <= tag.end ? " in-tag" : "");
-      const canvas = document.createElement("canvas");
+        (tag && i >= tag.start && i <= tag.end ? " in-tag" : "") +
+        (frame.hidden === true ? " is-hidden-frame" : ""); // §111
+      thumb.dataset.frameIndex = String(i); // §118: 選択は frameList への委譲で受ける
       renderThumb(canvas, i);
-      thumb.appendChild(canvas);
-      const label = document.createElement("span");
-      label.className = "frame-index";
       label.textContent = String(i);
-      thumb.appendChild(label);
-      // ベースフレームバッジ（§13.1-4）
-      if (p.baseFrame && i === 0) {
-        const badge = document.createElement("span");
-        badge.className = "base-badge";
-        badge.textContent = "基準";
-        thumb.appendChild(badge);
-      }
-      // §111: 非表示コマの見た目（トグル本体はサムネイルの下に置く）
-      if (frame.hidden === true) thumb.classList.add("is-hidden-frame");
-      // §118: 選択は frameList への委譲で受ける（指が少しズレても拾うため）
-      thumb.dataset.frameIndex = String(i);
-      cell.appendChild(thumb);
 
-      // 逸脱メーター（§13.2-4）。§113: 下の段は 👁 に幅を全部渡すため、
-      // フレーム番号と同じくサムネイルの中（左下）へ置く。
-      const dev = document.createElement("span");
-      dev.className = "deviation";
+      // ベースフレームバッジ（§13.1-4）
+      badge.hidden = !(p.baseFrame && i === 0);
+
+      // 逸脱メーター（§13.2-4）。§113: サムネイルの中（左下）へ置く
       const pct = deviationPercent(p, i);
-      if (pct !== null) {
+      if (pct === null) {
+        dev.hidden = true;
+        dev.textContent = "";
+      } else {
+        dev.hidden = false;
         dev.textContent = `${pct}%`;
         dev.title = "ベースフレームとの差分率";
-        if (pct > 40) dev.classList.add("is-warn");
-        thumb.appendChild(dev);
+        dev.classList.toggle("is-warn", pct > 40);
       }
 
-      // サムネイルの下の段: 非表示トグル（§111）
-      const foot = document.createElement("div");
-      foot.className = "frame-foot";
-
       // §111: 非表示トグル（削除せずに検討するため。再生・PNG/GIF書き出しから外れる）
-      const eye = document.createElement("button");
-      eye.type = "button";
       eye.className = "frame-eye" + (frame.hidden === true ? " is-off" : "");
       eye.textContent = frame.hidden === true ? "🚫" : "👁";
       eye.title = frame.hidden === true
         ? "非表示（再生とPNG/GIF書き出しから外れています）。クリックで表示に戻す"
         : "クリックで非表示にする（削除せず、再生とPNG/GIF書き出しから外す）";
       eye.dataset.frameIndex = String(i); // §118: 委譲で受ける
-      foot.appendChild(eye);
-      cell.appendChild(foot);
-
-      frameList.appendChild(cell);
     });
 
     delBtn.disabled = p.frames.length <= 1;
