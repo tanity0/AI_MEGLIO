@@ -4,6 +4,7 @@
 import { streamEdit } from "./api.js";
 import { openStudioForCandidate, cancelCandidateStudio } from "./studio.js"; // §44.1: 候補調整=スタジオ流用 / §46: 差し替え時クローズ
 import { removeBackground, detectComponents, convertImage } from "./convert.js";
+import { prepScoreRegion, scoreRecon as scoreReconCore, searchTune, defaultTuneParams } from "./autotune.js"; // §52.2: 自動調整エンジンは studio.js と共通実装
 import {
   frameToGridString,
   pixelsToGridString,
@@ -442,6 +443,10 @@ export function initMotionStudio(store, toast) {
       colors: Math.min(64, Math.max(2, p.palette.length - 1)),
       edgeProtect: params.edgeProtect,
       satProtect: params.satProtect,
+      // §52.2: 整列軸（解像度指定モードで効く・§49.12）
+      offsetDX: params.offsetDX || 0,
+      offsetDY: params.offsetDY || 0,
+      sizeDelta: params.sizeDelta || 0,
     });
   }
 
@@ -457,122 +462,13 @@ export function initMotionStudio(store, toast) {
   // srcRegion→変換→srcRegionサイズへ最近傍拡大→元クロップと比較のスコアで
   // つまみ（bgThreshold/glowWidth/edgeProtect/satProtect）を二段階全探索する。
   // ---------------------------------------------------------------------
-  // §43.1 スコアの重み（低いほど良い）。gunman 実素材（白背景+紫グロー縁・480x700）と
-  // 人工素材（純色キャラ+ノイズ背景）でチューニングした根拠:
-  //  - COLOR(1.0): 再構成が前景と主張する画素の平均色距離。パレット近似の粗さに加え、
-  //    背景の取り込みすぎ（背景色がキャラ色へ強制スナップされ大距離になる）を検出する主項。
-  //  - EDGE(0.6): 簡易エッジ（隣接輝度差）の Dice 一致率。グロー縁の余計な輪郭や
-  //    輪郭の欠けに反応する。色項より弱く（エッジはセル境界の量子化で常に部分一致のため）。
-  //  - MISS(2.0): 「明らかにキャラ」（背景色から色距離90超）の画素が透明化された率。
-  //    背景除去のしすぎ＝欠けは見た目に最も致命的なので最大の重み。
-  //  - RESIDUE(1.0): 「明らかに背景」（背景色から色距離20以下 or 元から透明）の画素が
-  //    前景として残った率。残りは欠けより修正しやすいので MISS の半分。
-  const TUNE_W = { COLOR: 1.0, EDGE: 0.6, MISS: 2.0, RESIDUE: 1.0 };
-  const TUNE_BG_STEPS = [16, 32, 48, 64, 88, 112]; // 粗探索6点（§43.2）
-  const TUNE_GLOW_STEPS = [0, 1, 2];
-  const TUNE_EDGE_STEPS = [0, 0.3, 0.6];
-  const TUNE_SAT_STEPS = [0.2, 0.5, 0.8];
-  const TUNE_MAX_EVALS = 40; // 1コマあたりの変換回数上限（§43.2）
+  // §43.1/§52: スコア関数・探索ステップ・上限は public/autotune.js（studio.js と共通）。
   let tuneDelayMs = 0; // テスト用: 1変換ごとの遅延（キャンセル検証を決定的にする）
 
-  // 元クロップの前処理（1コマにつき1回）: 背景色推定・強前景/強背景マスク・簡易エッジ
-  function prepScoreRegion(region) {
-    const { data, width: w, height: h } = region;
-    // 背景色 = 外周の不透明画素の最頻色（removeBackground と同じ発想の16段量子化）
-    const counts = new Map();
-    const consider = (x, y) => {
-      const o = (y * w + x) * 4;
-      if (data[o + 3] < 32) return;
-      const key = `${data[o] >> 4},${data[o + 1] >> 4},${data[o + 2] >> 4}`;
-      const e = counts.get(key) || { n: 0, r: 0, g: 0, b: 0 };
-      e.n++; e.r += data[o]; e.g += data[o + 1]; e.b += data[o + 2];
-      counts.set(key, e);
-    };
-    for (let x = 0; x < w; x++) { consider(x, 0); consider(x, h - 1); }
-    for (let y = 0; y < h; y++) { consider(0, y); consider(w - 1, y); }
-    let bgEntry = null;
-    for (const e of counts.values()) if (!bgEntry || e.n > bgEntry.n) bgEntry = e;
-    const bg = bgEntry ? [bgEntry.r / bgEntry.n, bgEntry.g / bgEntry.n, bgEntry.b / bgEntry.n] : null;
-
-    const strongFg = new Uint8Array(w * h);
-    const strongBg = new Uint8Array(w * h);
-    const lum = new Float32Array(w * h);
-    let strongFgN = 0, strongBgN = 0;
-    for (let i = 0; i < w * h; i++) {
-      const o = i * 4;
-      const a = data[o + 3];
-      if (a < 32) {
-        strongBg[i] = 1; strongBgN++;
-        lum[i] = -1000; // 透明は輝度の番兵（不透明との境界を必ずエッジにする）
-        continue;
-      }
-      lum[i] = 0.299 * data[o] + 0.587 * data[o + 1] + 0.114 * data[o + 2];
-      if (!bg) {
-        if (a >= 128) { strongFg[i] = 1; strongFgN++; }
-        continue;
-      }
-      const d = Math.hypot(data[o] - bg[0], data[o + 1] - bg[1], data[o + 2] - bg[2]);
-      if (d > 90) { strongFg[i] = 1; strongFgN++; }
-      else if (d <= 20) { strongBg[i] = 1; strongBgN++; }
-    }
-    // 簡易エッジ: 右/下隣との輝度差 > 40
-    const edges = new Uint8Array(w * h);
-    let edgeN = 0;
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        const i = y * w + x;
-        if ((x + 1 < w && Math.abs(lum[i] - lum[i + 1]) > 40)
-          || (y + 1 < h && Math.abs(lum[i] - lum[i + w]) > 40)) { edges[i] = 1; edgeN++; }
-      }
-    }
-    return { bg, strongFg, strongFgN, strongBg, strongBgN, edges, edgeN };
-  }
-
-  // §43.1: 変換結果を最近傍で srcRegion サイズへ拡大し、元クロップと比較（低いほど良い）
+  // プロジェクトパレットへスナップした再構成でスコアリング
   function scoreRecon(region, prep, conv) {
     const p = project();
-    const { data, width: w, height: h } = region;
-    const rgbLUT = p.palette.map((hex) => hexToRgba(hex));
-    const map = projectSnapMap(conv.palette);
-    const cs = conv.srcCellSize, gx0 = conv.originX, gy0 = conv.originY;
-    // 再構成: 各元画素 → conv セル → プロジェクトパレットindex（0=透明）
-    const recon = new Int16Array(w * h);
-    for (let y = 0; y < h; y++) {
-      const cy = Math.floor((y - gy0) / cs);
-      for (let x = 0; x < w; x++) {
-        const cx = Math.floor((x - gx0) / cs);
-        let idx = 0;
-        if (cx >= 0 && cy >= 0 && cx < conv.width && cy < conv.height) idx = map[conv.pixels[cy * conv.width + cx]];
-        recon[y * w + x] = idx;
-      }
-    }
-    let colorSum = 0, colorN = 0, missN = 0, resN = 0;
-    for (let i = 0; i < w * h; i++) {
-      const idx = recon[i];
-      if (idx > 0) {
-        const c = rgbLUT[idx];
-        const o = i * 4;
-        colorSum += Math.hypot(data[o] - c[0], data[o + 1] - c[1], data[o + 2] - c[2]);
-        colorN++;
-        if (prep.strongBg[i]) resN++;
-      } else if (prep.strongFg[i]) {
-        missN++;
-      }
-    }
-    // 再構成エッジ: 右/下隣とセル値が変わる位置。元エッジとの Dice 一致率
-    let reconEdgeN = 0, inter = 0;
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        const i = y * w + x;
-        const e = (x + 1 < w && recon[i] !== recon[i + 1]) || (y + 1 < h && recon[i] !== recon[i + w]);
-        if (e) { reconEdgeN++; if (prep.edges[i]) inter++; }
-      }
-    }
-    const dice = (prep.edgeN + reconEdgeN) > 0 ? (2 * inter) / (prep.edgeN + reconEdgeN) : 1;
-    const colorTerm = colorN ? colorSum / colorN / 441.7 : 1; // 最大RGB距離√(3·255²)で正規化
-    const missTerm = prep.strongFgN ? missN / prep.strongFgN : 0;
-    const resTerm = prep.strongBgN ? resN / prep.strongBgN : 0;
-    return TUNE_W.COLOR * colorTerm + TUNE_W.EDGE * (1 - dice) + TUNE_W.MISS * missTerm + TUNE_W.RESIDUE * resTerm;
+    return scoreReconCore(region, prep, conv, p.palette.map((hex) => hexToRgba(hex)), projectSnapMap(conv.palette));
   }
 
   // §43.2 キャッシュ: srcRegion（+パレット）→ paramKey → score。直近8リージョンのみ保持
@@ -586,66 +482,25 @@ export function initMotionStudio(store, toast) {
     return tuneCache.get(key);
   }
 
-  // §43.2: 二段階全探索。戻り値 { params, score, defaultScore, evals }
-  // flag.aborted=true で中断（その時点のベストを返す）
+  // §43.2/§52.2: 二段階探索（共通エンジン searchTune）。戻り値 { params, score, defaultScore, evals }
+  // flag.aborted=true で中断（その時点のベストを返す）。params は整列軸（offsetDX/DY・sizeDelta）を含む。
   async function autoTuneRegion(srcRegionUrl, opts = {}) {
     const region = await dataUrlToImageData(srcRegionUrl);
     const prep = prepScoreRegion(region);
-    const cache = tuneCacheFor(srcRegionUrl);
     const cellDelta = opts.cellDelta || 0;
-    let evals = 0;
-    const evalParams = async (bgT, glow, edge, sat) => {
-      const key = `${bgT}|${glow}|${edge}|${sat}|${cellDelta}`;
-      if (cache.has(key)) return cache.get(key);
-      if (evals >= TUNE_MAX_EVALS) return null; // 上限ガード（§43.2）
-      evals++;
-      let score = Infinity;
-      try {
-        const conv = convertRegion(region, { bgThreshold: bgT, glowWidth: glow, edgeProtect: edge, satProtect: sat, cellDelta });
-        score = scoreRecon(region, prep, conv);
-      } catch { /* 不透明画素なし等 → そのパラメータは不採用 */ }
-      const entry = { params: { bgThreshold: bgT, glowWidth: glow, edgeProtect: edge, satProtect: sat, cellDelta }, score };
-      cache.set(key, entry);
-      if (tuneDelayMs > 0) await new Promise((r) => setTimeout(r, tuneDelayMs));
-      else await new Promise((r) => setTimeout(r, 0)); // UIへ譲る（非同期・§43.2）
-      return entry;
-    };
-    const d = defaultConvParams();
-    const results = [];
-    // 一段目: bgThreshold × glowWidth（edge/sat は既定値）
-    for (const bgT of TUNE_BG_STEPS) {
-      for (const glow of TUNE_GLOW_STEPS) {
-        if (opts.flag?.aborted) break;
-        const r = await evalParams(bgT, glow, d.edgeProtect, d.satProtect);
-        if (r) results.push(r);
-      }
-      if (opts.flag?.aborted) break;
-    }
-    // 既定値のスコア（レポート用・一段目に含まれる）
-    const defEntry = cache.get(`${d.bgThreshold}|${d.glowWidth}|${d.edgeProtect}|${d.satProtect}|${cellDelta}`);
-    // 二段目: 上位2つに対し edgeProtect × satProtect を粗く
-    const top = [...results].sort((a, b) => a.score - b.score).slice(0, 2);
-    for (const t of top) {
-      for (const edge of TUNE_EDGE_STEPS) {
-        for (const sat of TUNE_SAT_STEPS) {
-          if (opts.flag?.aborted) break;
-          const r = await evalParams(t.params.bgThreshold, t.params.glowWidth, edge, sat);
-          if (r) results.push(r);
-        }
-        if (opts.flag?.aborted) break;
-      }
-      if (opts.flag?.aborted) break;
-    }
-    let best = null;
-    for (const r of results) if (r.score !== Infinity && (!best || r.score < best.score)) best = r;
-    if (!best) best = { params: { ...d, cellDelta }, score: Infinity };
-    return {
-      params: { ...best.params },
-      score: best.score,
-      defaultScore: defEntry ? defEntry.score : Infinity,
-      evals,
-      aborted: !!opts.flag?.aborted,
-    };
+    const res = await searchTune({
+      evalFn: (p) => {
+        const conv = convertRegion(region, { ...p, cellDelta });
+        return { score: scoreRecon(region, prep, conv), cs: conv.srcCellSize };
+      },
+      cache: tuneCacheFor(srcRegionUrl),
+      cacheTag: String(cellDelta),
+      start: defaultTuneParams(),
+      flag: opts.flag,
+      delayMs: tuneDelayMs,
+    });
+    res.params = { ...res.params, cellDelta };
+    return res;
   }
 
   // 候補1つを自動調整: 最良パラメータで再変換し、ナッジ差分を維持して反映（§41 と同じ規約）

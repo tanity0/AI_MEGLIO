@@ -696,11 +696,14 @@
     <div class="modal-head">
       <h2>変換スタジオ（ドット絵風 → 本物ドット絵）</h2>
       <div>
-        <button id="studioAutoTuneBtn" class="btn btn-small" hidden data-help="motion.candidateAdjust" title="このコマの変換つまみ（背景除去閾値・フチ光彩・輪郭/彩度保護）を元絵に一番近い見栄えになる値へ自動探索します（1コマ最大40変換・§43/§44）">自動調整</button>
+        <button id="studioAutoTuneBtn" class="btn btn-small" data-help="motion.candidateAdjust" title="全フレームを自動探索し直します（手動で動かしたフレームも対象・1フレーム最大60変換・§52）">全フレーム再探索</button>
         <button id="studioGalleryBtn" class="btn btn-small">候補を生成（3×3）</button>
         <button id="studioFitBtn" class="btn btn-small">全体表示</button>
         <button id="studioCancelBtn" class="btn btn-small">キャンセル</button>
       </div>
+    </div>
+    <div id="studioAutoTuneWrap" class="studio-split">
+      <label class="check-row inline" data-help="studio.autoTune" title="画像を開いた/再変換した直後に、全フレームを元絵に最も近い設定へ自動で最適化します（手動で動かしたフレームは上書きしません・§52）"><input type="checkbox" id="studioAutoTuneCheck" checked> 自動調整（開いたとき全フレームを最適化）</label>
     </div>
     <div id="studioSplitRow" class="studio-split" hidden>
       <span class="hint"><span id="studioSplitCount">0</span>体を検出:</span>

@@ -571,7 +571,7 @@ export function convertSheetImage(data, w, h, params, boxes, align = "bottom") {
 // ---------------------------------------------------------------------------
 // 各ボックスを margin だけ広げる。隣接ボックス（垂直/水平で射影が重なるもの）とは
 // 半間隔でクランプして他ポーズ領域に食い込まないようにする。
-function expandBoxesForPerFrame(boxes, w, h) {
+export function expandBoxesForPerFrame(boxes, w, h) {
   const maxDim = Math.max(...boxes.map((b) => Math.max(b.x1 - b.x0 + 1, b.y1 - b.y0 + 1)));
   const M = Math.max(4, Math.round(maxDim * 0.2));
   return boxes.map((b, i) => {
@@ -650,7 +650,7 @@ export function convertFramesShared(rawData, w, h, global, boxes, perFrameParams
       centerWeight: pf.centerWeight ?? 0.5,
       edgeProtect: pf.edgeProtect ?? 0.3,
     });
-    poseCells.push({ cells, cols, rows, bbox });
+    poseCells.push({ cells, cols, rows, bbox, gx0, gy0 });
   }
 
   // 共有パレット: 全フレームのセル色を結合して1回だけ k-means（→ 全フレーム同一パレット）
@@ -665,11 +665,13 @@ export function convertFramesShared(rawData, w, h, global, boxes, perFrameParams
 
   // pass2: 各フレームを共有パレットへ最近色マッピング → 共通キャンバスへ配置
   const framesPixels = [];
+  const frameGrids = []; // §52.2: 各フレームのサンプリング格子（自動調整のスコア用）{gx0,gy0,cols,rows,offX,offY}
   for (const p of poseCells) {
     const pixels = new Uint8Array(outW * outH);
     if (p) {
       const offX = Math.floor((outW - p.cols) / 2);
       const offY = align === "center" ? Math.floor((outH - p.rows) / 2) : outH - PAD_BOTTOM - p.rows;
+      frameGrids.push({ gx0: p.gx0, gy0: p.gy0, cols: p.cols, rows: p.rows, offX, offY });
       for (let y = 0; y < p.rows; y++) {
         for (let x = 0; x < p.cols; x++) {
           const c = p.cells[y * p.cols + x];
@@ -682,6 +684,7 @@ export function convertFramesShared(rawData, w, h, global, boxes, perFrameParams
         }
       }
     }
+    if (!p) frameGrids.push(null);
     framesPixels.push(pixels);
   }
 
@@ -693,6 +696,7 @@ export function convertFramesShared(rawData, w, h, global, boxes, perFrameParams
     originX: firstValid.x0, originY: firstValid.y0,
     srcCellSize: cs,
     frameBBoxes: bboxes,
+    frameGrids,
   };
 }
 

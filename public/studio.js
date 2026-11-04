@@ -1,6 +1,7 @@
 // studio.js — §18.2 変換スタジオ（インポートウィザードv2）UI
 // 候補ギャラリー → つまみでリアルタイム再変換 → 元画像との同期ズーム比較 → 確定
-import { removeBackground, estimateGrid, convertImage, convertSheetImage, convertFramesShared, detectComponents, extractMainPalette } from "./convert.js";
+import { removeBackground, estimateGrid, convertImage, convertSheetImage, convertFramesShared, detectComponents, extractMainPalette, expandBoxesForPerFrame } from "./convert.js";
+import { prepScoreRegion, scoreRecon, searchTune, defaultTuneParams } from "./autotune.js"; // §52: §43 エンジンの共通実装
 import { hexToRgba, defaultTags } from "./app.js";
 
 // §30: フレーム別に持つつまみ（サイズ・共有パレット以外＝サンプリング/背景除去系）
@@ -27,6 +28,15 @@ let activeFrame = 0;
 // { onApply(convResult, paramsSnapshot), autoTune()?: Promise<{params,score,defaultScore,evals}> } | null
 let candidateMode = null;
 let candidateAutoNote = ""; // §43 自動調整の結果表示（変換のたびステータスに併記）
+// §52: 変換スタジオ本体の全フレーム自動調整
+const AUTO_KEY = "studioAutoTune";
+let autoTuneEnabled = true; // 「自動調整」チェック（既定ON・localStorage）
+let singleTouched = false; // 単一画像時の touched（多フレームは frameParams[i].touched）
+let autoGen = 0; // 世代カウンタ（新しい実行/閉じる/読み込みで古い実行を無効化）
+let autoRun = null; // { gen, flags:[{aborted}], total } 実行中のみ
+let autoProgressNote = ""; // 実行中の進捗（変換のたびステータスに併記）
+let autoStats = null; // 直近の自動調整結果（検証/表示用）
+let tuneDelayMs = 0; // テスト用: 1変換ごとの遅延
 
 const $ = (id) => document.getElementById(id);
 
@@ -56,6 +66,7 @@ function ensureFrameParams(n) {
     const src = frameParams[i] || base;
     const pf = {};
     for (const k of PER_FRAME_KEYS) pf[k] = src[k];
+    pf.touched = !!src.touched; // §52.1: 手動で動かしたフレーム（自動調整で上書きしない）
     out.push(pf);
   }
   frameParams = out;
@@ -227,6 +238,7 @@ async function runConvert() {
     $("studioStatus").textContent =
       `出力: ${res.width}×${res.height}・${res.palette.length - 1}色（+透明）` +
       (nf > 1 ? `・${nf}フレーム（プレビュー: フレーム${activeFrame + 1}）・共有パレット` : "") +
+      (autoProgressNote ? ` ｜ ${autoProgressNote}` : "") + // §52: 自動調整の進捗
       (candidateAutoNote ? ` ｜ ${candidateAutoNote}` : ""); // §43/§44: 自動調整の結果を併記
     renderFrameBar();
     renderCompare();
@@ -575,11 +587,13 @@ function syncKnobUi() {
 function attachKnobs() {
   $("studioOneToOne").addEventListener("change", () => {
     knobs.oneToOne = $("studioOneToOne").checked;
+    autoAbortAll();
     scheduleConvert();
   });
   for (const [id, key, cast] of KNOB_BINDINGS) {
     $(id).addEventListener("input", () => {
       knobs[key] = cast($(id).value);
+      userEdit(key); // §52.1: 手動優先（該当フレームを touched にして自動調整を中断）
       candidateAutoNote = ""; // §43: 手動操作で自動調整の表示を解除
       if (key === "colors") $("studioColorsLabel").textContent = String(knobs.colors);
       // §30: 多フレームでは背景除去はフレーム別に convertFramesShared 内で行うため
@@ -602,6 +616,7 @@ function attachKnobs() {
   const nudge = (key, dir, labelId, fmt) => {
     const step = key === "sizeDelta" ? sizeNudgeStep() : offsetNudgeStep();
     knobs[key] = Math.round((knobs[key] + dir * step) * 100) / 100;
+    userEdit(key);
     $(labelId).textContent = fmt ? knobs[key].toFixed(2) : String(knobs[key]);
     scheduleConvert();
   };
@@ -613,6 +628,7 @@ function attachKnobs() {
   $("studioOyPlus").addEventListener("click", () => nudge("offsetDY", 1, "studioOffsetDY"));
   $("studioRegridBtn").addEventListener("click", () => {
     grid = null;
+    autoAbortAll();
     knobs.sizeDelta = 0; knobs.offsetDX = 0; knobs.offsetDY = 0;
     syncKnobUi();
     scheduleConvert();
@@ -624,17 +640,20 @@ function attachKnobs() {
     r.addEventListener("change", () => {
       split.mode = r.value;
       split.userChose = true;
+      autoAbortAll();
       if (split.mode !== "grid") detectSplit();
       scheduleConvert();
     });
   });
   $("studioAlignCenter").addEventListener("change", () => {
     split.align = $("studioAlignCenter").checked ? "center" : "bottom";
+    autoAbortAll();
     scheduleConvert();
   });
   const gridChange = () => {
     split.gridCols = Math.max(1, Math.min(12, Number($("studioGridCols").value) || 1));
     split.gridRows = Math.max(1, Math.min(12, Number($("studioGridRows").value) || 1));
+    autoAbortAll();
     if (split.mode === "grid") scheduleConvert();
   };
   $("studioGridCols").addEventListener("input", gridChange);
@@ -648,8 +667,10 @@ function attachKnobs() {
     for (let i = 0; i < frameParams.length; i++) {
       const pf = {};
       for (const k of PER_FRAME_KEYS) pf[k] = src[k];
+      pf.touched = true;
       frameParams[i] = pf;
     }
+    autoAbortAll();
     toast(`フレーム${activeFrame + 1}の設定を全${frameParams.length}フレームに適用しました`);
     scheduleConvert();
   });
@@ -732,7 +753,7 @@ function confirmStudio() {
     sourceImage, // §40: 原本 dataURL（12MB超のみ縮小済み）
     conversionParams: {
       ...knobs,
-      grid: { ...grid },
+      ...(grid ? { grid: { ...grid } } : {}),
       split: { mode: split.mode, align: split.align, gridCols: split.gridCols, gridRows: split.gridRows, boxes: split.boxes.map((b) => ({ ...b })) },
       // §30: フレーム別つまみの配列（多フレーム時のみ。再変換で復元）
       ...(multi ? { frameParams: frameParams.map((pf) => ({ ...pf })) } : {}),
@@ -749,6 +770,175 @@ function confirmStudio() {
   $("studioPanel").hidden = true;
   const nFrames = project.frames.length;
   toast(`変換を確定しました（${W}×${H}・${res.palette.length - 1}色${nFrames > 1 ? `・${nFrames}フレーム` : ""}）。ペン/消しゴム/スポイトでそのまま仕上げられます`);
+}
+
+// ---------------------------------------------------------------------------
+// §52: 変換スタジオ本体の全フレーム自動調整（§43 探索エンジン autotune.js の共通実装）
+// ---------------------------------------------------------------------------
+function autoAbortAll() {
+  autoGen++;
+  if (autoRun) for (const f of autoRun.flags) f.aborted = true;
+  autoRun = null;
+  autoProgressNote = "";
+}
+function autoAbortFrame(i) {
+  if (autoRun && autoRun.flags[i]) autoRun.flags[i].aborted = true;
+}
+// ユーザーがつまみを操作した: フレーム別つまみ（単一時はサイズ±含む）→ 該当フレームを touched + 中断。
+// それ以外（サイズ・色数・分割など全体に効く操作）→ 実行全体を中断。
+function userEdit(key) {
+  const perFrame = PER_FRAME_KEYS.includes(key) || (key === "sizeDelta" && !isMulti());
+  if (!perFrame) { autoAbortAll(); return; }
+  if (isMulti()) {
+    if (frameParams[activeFrame]) frameParams[activeFrame].touched = true;
+    autoAbortFrame(activeFrame);
+  } else {
+    singleTouched = true;
+    autoAbortFrame(0);
+  }
+}
+function isFrameTouched(i, multi) {
+  return multi ? !!(frameParams[i] && frameParams[i].touched) : singleTouched;
+}
+
+// 多フレームの1コマ分: 元画像の該当領域だけを切り出し、そのフレームの変換を単体で再現してスコアを返す。
+function makeMultiEvaluator(i, boxes) {
+  const reg = expandBoxesForPerFrame(boxes, srcData.w, srcData.h)[i];
+  const cw = reg.x1 - reg.x0 + 1, ch = reg.y1 - reg.y0 + 1;
+  const crop = new Uint8ClampedArray(cw * ch * 4);
+  for (let y = 0; y < ch; y++) {
+    const so = ((reg.y0 + y) * srcData.w + reg.x0) * 4;
+    crop.set(srcData.data.subarray(so, so + cw * 4), y * cw * 4);
+  }
+  const region = { data: crop, width: cw, height: ch };
+  const b = boxes[i];
+  const relBox = { x0: b.x0 - reg.x0, y0: b.y0 - reg.y0, x1: b.x1 - reg.x0, y1: b.y1 - reg.y0, area: b.area || 0 };
+  const sharedCs = result && result.srcCellSize ? result.srcCellSize : 8;
+  const base = { ...frameParams[i] };
+  const prep = prepScoreRegion(region);
+  const evalFn = (p) => {
+    const pf = { ...base, bgThreshold: p.bgThreshold, glowWidth: p.glowWidth, edgeProtect: p.edgeProtect, satProtect: p.satProtect, offsetDX: p.offsetDX, offsetDY: p.offsetDY };
+    // 共有セルサイズ固定（oneToOne）で当該フレームだけを変換 → 格子を元座標系へ戻して採点
+    const out = convertFramesShared(crop, cw, ch, { oneToOne: true, s: sharedCs, colors: knobs.colors }, [relBox], [pf], split.align);
+    const g = out.frameGrids[0];
+    if (!g) throw new Error("empty");
+    const pixels = new Uint8Array(g.cols * g.rows);
+    for (let y = 0; y < g.rows; y++) {
+      for (let x = 0; x < g.cols; x++) pixels[y * g.cols + x] = out.framesPixels[0][(g.offY + y) * out.width + g.offX + x];
+    }
+    const conv = { width: g.cols, height: g.rows, pixels, palette: out.palette, srcCellSize: out.srcCellSize, originX: g.gx0, originY: g.gy0 };
+    return { score: scoreRecon(region, prep, conv), cs: out.srcCellSize };
+  };
+  return { evalFn, align: true, size: false, start: pickPF(base) };
+}
+
+// 単一画像: 画像全体を従来の経路（removeBackground → convertImage）で変換してスコアを返す。
+function makeSingleEvaluator() {
+  const region = { data: srcData.data, width: srcData.w, height: srcData.h };
+  const prep = prepScoreRegion(region);
+  const bgMemo = new Map(); // (bg,glow) → 背景除去済み（整列探索中は再利用）
+  const getBg = (t, g) => {
+    const key = `${t}|${g}`;
+    if (!bgMemo.has(key)) {
+      if (bgMemo.size >= 4) bgMemo.delete(bgMemo.keys().next().value);
+      bgMemo.set(key, removeBackground(srcData.data, srcData.w, srcData.h, { threshold: t, glowWidth: g }));
+    }
+    return bgMemo.get(key);
+  };
+  const evalFn = (p) => {
+    const bg = getBg(p.bgThreshold, p.glowWidth);
+    const conv = convertImage(bg, srcData.w, srcData.h, {
+      s: grid.s + p.sizeDelta, ox: grid.ox + p.offsetDX, oy: grid.oy + p.offsetDY,
+      offsetDX: p.offsetDX, offsetDY: p.offsetDY, sizeDelta: p.sizeDelta,
+      targetH: knobs.oneToOne ? 0 : knobs.targetH, colors: knobs.colors,
+      domBlend: knobs.domBlend, centerWeight: knobs.centerWeight,
+      edgeProtect: p.edgeProtect, satProtect: p.satProtect,
+    });
+    return { score: scoreRecon(region, prep, conv), cs: conv.srcCellSize };
+  };
+  return { evalFn, align: true, size: true, start: pickPF(knobs, true) };
+}
+function pickPF(src, withSize = false) {
+  const d = defaultTuneParams();
+  const o = {
+    bgThreshold: src.bgThreshold ?? d.bgThreshold, glowWidth: src.glowWidth ?? d.glowWidth,
+    edgeProtect: src.edgeProtect ?? d.edgeProtect, satProtect: src.satProtect ?? d.satProtect,
+    offsetDX: src.offsetDX || 0, offsetDY: src.offsetDY || 0, sizeDelta: withSize ? (src.sizeDelta || 0) : 0,
+  };
+  return o;
+}
+
+// 全フレーム（単一画像は1件）を自動調整する。opts.includeTouched: 手動で動かしたフレームも対象
+// （明示ボタン）。既定では touched を上書きしない。変換は await で譲りながら進め（UIを塞がない）、
+// 世代カウンタで陳腐化をキャンセル。戻り値は直近の統計（autoStats）。
+async function autoTuneAll(opts = {}) {
+  if (candidateMode || !srcData) return null;
+  if (autoRun) for (const f of autoRun.flags) f.aborted = true;
+  const myGen = ++autoGen;
+  autoRun = { gen: myGen, flags: [], total: 0 }; // ensureGrid 待ちの間も「実行中」を示す
+  try {
+    await ensureGrid();
+    if (myGen !== autoGen) return null;
+    const boxes = currentBoxes();
+    const multi = !!boxes;
+    const n = multi ? boxes.length : 1;
+    if (multi) { saveActiveFrameParams(); ensureFrameParams(n); }
+    const run = { gen: myGen, flags: Array.from({ length: n }, () => ({ aborted: false })), total: n };
+    autoRun = run;
+    const stats = { frames: [], total: n, multi };
+    autoStats = stats;
+    let applied = 0;
+    for (let i = 0; i < n; i++) {
+      if (myGen !== autoGen) return null;
+      const entry = { index: i, skipped: null, evals: 0, score: null, defaultScore: null, params: null };
+      stats.frames.push(entry);
+      if (!opts.includeTouched && isFrameTouched(i, multi)) { entry.skipped = "touched"; continue; }
+      if (run.flags[i].aborted) { entry.skipped = "aborted"; continue; }
+      autoProgressNote = `自動調整中… フレーム ${i + 1}/${n}`;
+      $("studioStatus").textContent = autoProgressNote;
+      const ev = multi ? makeMultiEvaluator(i, boxes) : makeSingleEvaluator();
+      const res = await searchTune({
+        ...ev, flag: run.flags[i], delayMs: tuneDelayMs,
+        onProgress: (k) => { if (myGen === autoGen) $("studioStatus").textContent = `${autoProgressNote}（${k}回変換）`; },
+      });
+      if (myGen !== autoGen) return null;
+      entry.evals = res.evals; entry.score = res.score; entry.defaultScore = res.defaultScore; entry.params = { ...res.params };
+      if (run.flags[i].aborted) { entry.skipped = "aborted"; continue; } // 手動優先: 結果は適用しない
+      if (res.score === Infinity) { entry.skipped = "noresult"; continue; }
+      const p = res.params;
+      if (multi) {
+        const pf = frameParams[i];
+        pf.bgThreshold = p.bgThreshold; pf.glowWidth = p.glowWidth; pf.edgeProtect = p.edgeProtect; pf.satProtect = p.satProtect;
+        pf.offsetDX = p.offsetDX; pf.offsetDY = p.offsetDY;
+        pf.touched = false;
+        if (i === activeFrame) for (const k of PER_FRAME_KEYS) knobs[k] = pf[k];
+      } else {
+        if (p.bgThreshold !== knobs.bgThreshold || p.glowWidth !== knobs.glowWidth) bgCache = null;
+        knobs.bgThreshold = p.bgThreshold; knobs.glowWidth = p.glowWidth; knobs.edgeProtect = p.edgeProtect; knobs.satProtect = p.satProtect;
+        knobs.offsetDX = p.offsetDX; knobs.offsetDY = p.offsetDY; knobs.sizeDelta = p.sizeDelta;
+        singleTouched = false;
+      }
+      entry.applied = true;
+      applied++;
+    }
+    autoProgressNote = "";
+    const done = stats.frames.filter((f) => f.applied);
+    if (done.length) {
+      const avg = (k) => done.reduce((a, f) => a + f[k], 0) / done.length;
+      candidateAutoNote = `自動調整: ${done.length}/${n}フレーム・スコア ${avg("defaultScore").toFixed(3)} → ${avg("score").toFixed(3)}（低いほど元絵に近い・最大${Math.max(...done.map((f) => f.evals))}回変換/フレーム）`;
+    } else {
+      candidateAutoNote = "";
+    }
+    syncKnobUi();
+    if (applied) await runConvert(); // 適用値で再変換（つまみUI・サムネイル・プレビューへ反映）
+    if (myGen !== autoGen) return null;
+    autoRun = null;
+    stats.done = true;
+    return stats;
+  } catch (err) {
+    if (myGen === autoGen) { autoRun = null; autoProgressNote = ""; $("studioStatus").textContent = `自動調整に失敗: ${err.message}`; }
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -771,6 +961,9 @@ async function loadSource(dataUrl) {
   result = null;
   frameParams = [];
   activeFrame = 0;
+  singleTouched = false;
+  autoAbortAll(); // §52: 前の画像の自動調整は無効化
+  autoStats = null;
 }
 
 // §44.1: 候補モードのUI差分（解像度・色数はプロジェクト固定＝無効化・自動調整ボタン表示）
@@ -778,7 +971,14 @@ function applyCandidateUi(on) {
   $("studioTargetH").disabled = on;
   $("studioOneToOne").disabled = on;
   $("studioColors").disabled = on;
-  $("studioAutoTuneBtn").hidden = !on || !(candidateMode && candidateMode.autoTune);
+  // §52.1: 通常モードでは「全フレーム再探索（touched含む）」、候補モードでは従来の単一「自動調整」
+  const atb = $("studioAutoTuneBtn");
+  atb.hidden = on && !(candidateMode && candidateMode.autoTune);
+  atb.textContent = on ? "自動調整" : "全フレーム再探索";
+  atb.title = on
+    ? "このコマの変換つまみ（背景除去・フチ・保護系・オフセット/サイズ）を元絵に一番近い見栄えになる値へ自動探索します（最大60変換・§43/§44/§52）"
+    : "全フレームを自動探索し直します（手動で動かしたフレームも対象・1フレーム最大60変換・§52）";
+  $("studioAutoTuneWrap").hidden = on;
   $("studioConfirmBtn").textContent = on ? "確定（候補へ反映）" : "確定（プロジェクト化）";
   const h2 = document.querySelector("#studioPanel h2");
   if (h2) h2.textContent = on ? "候補の調整（変換スタジオ）" : "変換スタジオ（ドット絵風 → 本物ドット絵）";
@@ -793,7 +993,7 @@ export async function openStudio(dataUrl, savedParams = null, opts = {}) {
   if (savedParams) {
     const { grid: g, split: sp, frameParams: fp, ...rest } = savedParams;
     Object.assign(knobs, rest);
-    if (g) grid = { ...g };
+    if (g && typeof g.s === "number") grid = { ...g };
     if (sp) {
       split = { ...split, ...sp, boxes: Array.isArray(sp.boxes) ? sp.boxes : [], userChose: true };
     }
@@ -802,6 +1002,7 @@ export async function openStudio(dataUrl, savedParams = null, opts = {}) {
       frameParams = fp.map((pf) => {
         const o = {};
         for (const k of PER_FRAME_KEYS) o[k] = (pf && typeof pf[k] === "number") ? pf[k] : knobs[k];
+        o.touched = !!(pf && pf.touched);
         return o;
       });
       // §47.2: 「再変換」ではタイムラインで選択中のフレームのタブを初期アクティブにする。
@@ -823,6 +1024,9 @@ export async function openStudio(dataUrl, savedParams = null, opts = {}) {
   }
   await runConvert();
   renderCompare();
+  // §52.1: 初回変換の完了後に全フレームを自動調整（保存済み conversionParams で開いた場合は
+  // 保存設定を尊重して走らせない）。UIは塞がない（待たずに戻る）。
+  if (!savedParams && autoTuneEnabled && result) autoTuneAll();
 }
 
 // §44.1: 候補モードで開く — 入力 = cand.srcRegion（原寸）、初期つまみ = cand.convParams。
@@ -832,6 +1036,8 @@ export async function openStudioForCandidate(dataUrl, opts) {
   // §46: 開いた時点の世代を記録（差し替え後の確定を無効化するため）
   candidateMode = { onApply: opts.onApply, autoTune: opts.autoTune || null, epoch: store.state.projectEpoch };
   candidateAutoNote = "";
+  singleTouched = false;
+  autoAbortAll();
   await loadSource(dataUrl);
   const p = store.state.project;
   split = { mode: "single", boxes: [], align: "bottom", gridCols: 3, gridRows: 1, userChose: true };
@@ -875,8 +1081,16 @@ export function initStudio(storeRef, toastRef) {
   toast = toastRef;
   attachKnobs();
   attachViewControls();
-  $("studioConfirmBtn").addEventListener("click", confirmStudio);
+  // §52.1: 「自動調整」チェック（既定ON・localStorage）
+  try { autoTuneEnabled = localStorage.getItem(AUTO_KEY) !== "0"; } catch { autoTuneEnabled = true; }
+  $("studioAutoTuneCheck").checked = autoTuneEnabled;
+  $("studioAutoTuneCheck").addEventListener("change", () => {
+    autoTuneEnabled = $("studioAutoTuneCheck").checked;
+    try { localStorage.setItem(AUTO_KEY, autoTuneEnabled ? "1" : "0"); } catch { /* 保存不可でも動作 */ }
+  });
+  $("studioConfirmBtn").addEventListener("click", () => { autoAbortAll(); confirmStudio(); });
   $("studioCancelBtn").addEventListener("click", () => {
+    autoAbortAll();
     $("studioPanel").hidden = true;
     candidateMode = null; // §44.1: キャンセルで候補へは何も反映しない
     candidateAutoNote = "";
@@ -885,10 +1099,17 @@ export function initStudio(storeRef, toastRef) {
 
   // §43/§44: 自動調整（候補モードのみ表示）— 探索の最良値をスタジオつまみへセット
   $("studioAutoTuneBtn").addEventListener("click", async () => {
-    if (!candidateMode || !candidateMode.autoTune) return;
+    if (!candidateMode) {
+      // §52.1: 通常モード = 全フレーム再探索（touched 含む）
+      const btn0 = $("studioAutoTuneBtn");
+      btn0.disabled = true;
+      try { await autoTuneAll({ includeTouched: true }); } finally { btn0.disabled = false; }
+      return;
+    }
+    if (!candidateMode.autoTune) return;
     const btn = $("studioAutoTuneBtn");
     btn.disabled = true;
-    $("studioStatus").textContent = "自動調整中…（最大40変換）";
+    $("studioStatus").textContent = "自動調整中…（最大60変換）";
     try {
       const res = await candidateMode.autoTune();
       if (!candidateMode) return; // 探索中に閉じられた
@@ -900,6 +1121,10 @@ export function initStudio(storeRef, toastRef) {
       knobs.glowWidth = res.params.glowWidth;
       knobs.edgeProtect = res.params.edgeProtect;
       knobs.satProtect = res.params.satProtect;
+      // §52.2: 整列軸（オフセット/サイズ）も共通エンジンの結果を反映
+      knobs.offsetDX = res.params.offsetDX || 0;
+      knobs.offsetDY = res.params.offsetDY || 0;
+      knobs.sizeDelta = res.params.sizeDelta || 0;
       bgCache = null; // 背景つまみが変わったので再除去
       candidateAutoNote = `自動調整: スコア ${res.defaultScore.toFixed(3)} → ${res.score.toFixed(3)}（低いほど元絵に近い・${res.evals}回変換）`;
       syncKnobUi();
@@ -934,11 +1159,19 @@ export function initStudio(storeRef, toastRef) {
       srcH: srcData ? srcData.h : 0,
       frameCount: result && result.framesPixels ? result.framesPixels.length : (result ? 1 : 0),
       frameParams: frameParams.map((pf) => ({ ...pf })),
+      autoTuneEnabled,
+      autoTuning: !!autoRun, // §52: 自動調整の実行中
+      singleTouched,
+      autoStats: autoStats ? JSON.parse(JSON.stringify(autoStats)) : null,
+      status: $("studioStatus").textContent,
       palette: result ? result.palette.slice() : null,
       width: result ? result.width : 0,
       height: result ? result.height : 0,
       framesPixels: result && result.framesPixels ? result.framesPixels.map((px) => Array.from(px)) : (result ? [Array.from(result.pixels)] : []),
     }),
     switchFrame: (i) => switchFrame(i),
+    // §52 検証用: 自動調整の起動・遅延注入
+    runAutoTune: (o) => autoTuneAll(o || {}),
+    setTuneDelay: (ms) => { tuneDelayMs = ms; },
   };
 }
