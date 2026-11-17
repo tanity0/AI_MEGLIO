@@ -2380,6 +2380,45 @@ export function initEditor(store, toast) {
   document.querySelectorAll('[data-action="deselect"]').forEach((btn) => {
     btn.addEventListener("click", () => clearSelectionBtn.click());
   });
+  // §122: ツールバーのタップは click を待たずに「指を離した時点」で判定する。
+  // 指が20px動くとブラウザが click を発火させないため、ペンや消しゴムへの切替も
+  // ズレだけで落ちていた（§118 のコマ選択と同じ落ち方）。
+  // 押したボタンを覚えておき、バーの中で離したらそのボタンを実行する。
+  const mobileToolbarEl = document.getElementById("mobileToolbar");
+  if (mobileToolbarEl) {
+    let pressedBtn = null;      // 指を置いたボタン
+    let swallowNative = false;  // このあと来る本物の click を捨てる
+    let synthesizing = false;   // 自分で出した click は通す
+    mobileToolbarEl.addEventListener("pointerdown", (ev) => {
+      swallowNative = false;
+      const el = ev.target.closest("button");
+      pressedBtn = el && mobileToolbarEl.contains(el) ? el : null;
+    }, true);
+    const settleTap = (x, y) => {
+      const el = pressedBtn;
+      pressedBtn = null;
+      if (!el || !el.isConnected) return;
+      const r = mobileToolbarEl.getBoundingClientRect();
+      // バーの外まで指を抜いて離したときは実行しない（取り消しの余地を残す）
+      if (x < r.left || x > r.right || y < r.top || y > r.bottom) return;
+      swallowNative = true;
+      synthesizing = true;
+      el.click(); // 本来 click でやっていた処理をそのまま走らせる
+      synthesizing = false;
+    };
+    mobileToolbarEl.addEventListener("pointerup", (ev) => settleTap(ev.clientX, ev.clientY), true);
+    // パンと判定されると pointercancel が来て pointerup が来ないことがある。
+    // touchend はどの場合も来るので、取りこぼしをここで拾う（§118 と同じ）。
+    mobileToolbarEl.addEventListener("touchend", (ev) => {
+      const t = ev.changedTouches && ev.changedTouches[0];
+      if (t) settleTap(t.clientX, t.clientY);
+    }, true);
+    mobileToolbarEl.addEventListener("click", (ev) => {
+      if (synthesizing) return;      // 自分で出した click
+      if (swallowNative) { swallowNative = false; ev.stopPropagation(); ev.preventDefault(); }
+    }, true);
+  }
+
   // §61.2: モバイルの選択ツールは1ボタンに統合。タップ=現在の選択ツール、長押し(450ms)=矩形⇄マジック切替
   const mobileSelBtn = document.getElementById("mobileSelToolBtn");
   if (mobileSelBtn) {
@@ -2406,9 +2445,11 @@ export function initEditor(store, toast) {
         if (navigator.vibrate) navigator.vibrate(15);
       }, 450);
     });
-    for (const ev of ["pointerup", "pointerleave", "pointercancel"]) {
-      mobileSelBtn.addEventListener(ev, () => clearTimeout(selLpTimer));
-    }
+    // §122: pointercancel / pointerleave では消さない。指が十数px動くと
+    // ブラウザが「パン開始」と判断して pointercancel を送るため、
+    // それで消していると指のズレだけで長押しが成立しなくなる（実測で20px以上は不発）。
+    // 消すのは「指を離したとき」だけでよい。
+    mobileSelBtn.addEventListener("pointerup", () => clearTimeout(selLpTimer));
     // 長押し発火後のclickは既定のツール切替を実行させない（capture段で遮断）
     mobileSelBtn.addEventListener("click", (e) => {
       if (selLpFired) { e.stopImmediatePropagation(); e.preventDefault(); }

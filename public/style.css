@@ -1896,11 +1896,20 @@ canvas, img {
     font-size: 19px;
   }
   #mobileColorChipBtn { flex: 0 0 auto; width: 44px; height: 44px; border-radius: 10px; }
-  /* 選択解除・クリアは選択があるときだけ出す（幅の確保・§82） */
-  #mobileToolbar [data-action="deselect"],
-  #mobileToolbar [data-action="clearsel"] { display: none; }
-  body.has-selection #mobileToolbar [data-action="deselect"],
-  body.has-selection #mobileToolbar [data-action="clearsel"] { display: flex; }
+  /* §122: クリア・選択解除は常に出す。選択の有無でバーの中身が増減すると
+     ボタンの位置が動いて押し間違える。選択が無いときは薄く表示して押せなくする。
+     （§82/§81 では選択があるときだけ出していた） */
+  body:not(.has-selection) #mobileToolbar [data-action="deselect"],
+  body:not(.has-selection) #mobileToolbar [data-action="clearsel"] {
+    opacity: 0.3;
+    pointer-events: none;
+  }
+  /* §122: スポイトはバーから外す（ペンの長押し0.7秒でも使える・ツールパネルには残す） */
+  #mobileToolbar [data-tool="eyedropper"] { display: none; }
+  /* §122: 指が十数px動くとブラウザが「パン開始」と判断して pointercancel を送り、
+     長押しタイマーが取り消される。ツールバーは横スクロールしないので、
+     パンとして扱わせる必要がない。 */
+  #mobileToolbar button { touch-action: none; }
 
   /* ツールバー（と表示中のブラシ列）にステータスが重ならないよう下端に余白 */
   #canvasStatus { margin-bottom: calc(56px + env(safe-area-inset-bottom, 0px)); }
