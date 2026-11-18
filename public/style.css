@@ -1878,19 +1878,27 @@ canvas, img {
     right: 0;
     bottom: 0;
     transform: none;
-    justify-content: space-between;
+    /* §123: 全ツールを並べて横スクロールで出す。幅を分け合うのをやめ、44px固定にする。 */
+    justify-content: flex-start;
     gap: 2px;
     padding: 4px 6px calc(4px + env(safe-area-inset-bottom, 0px));
     background: rgba(20, 21, 28, 0.94);
     backdrop-filter: blur(8px);
     border-top: 1px solid var(--border);
+    overflow-x: auto;
+    overflow-y: hidden;
+    flex-wrap: nowrap;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    /* 端を薄くして「続きがある」ことを見せる */
+    -webkit-mask-image: linear-gradient(to right, transparent 0, #000 10px, #000 calc(100% - 14px), transparent 100%);
+    mask-image: linear-gradient(to right, transparent 0, #000 10px, #000 calc(100% - 14px), transparent 100%);
   }
+  #mobileToolbar::-webkit-scrollbar { display: none; }
   .mobile-tool-btn,
   #mobileToolbar .mobile-zoom-btn {
-    flex: 1 1 0;
-    min-width: 0;
-    max-width: 56px;
-    width: auto;
+    flex: 0 0 auto;
+    width: 44px;
     height: 44px;
     border-radius: 10px;
     font-size: 19px;
@@ -1900,16 +1908,17 @@ canvas, img {
      ボタンの位置が動いて押し間違える。選択が無いときは薄く表示して押せなくする。
      （§82/§81 では選択があるときだけ出していた） */
   body:not(.has-selection) #mobileToolbar [data-action="deselect"],
+  body:not(.has-selection) #mobileToolbar [data-action="invertsel"],
   body:not(.has-selection) #mobileToolbar [data-action="clearsel"] {
     opacity: 0.3;
     pointer-events: none;
   }
   /* §122: スポイトはバーから外す（ペンの長押し0.7秒でも使える・ツールパネルには残す） */
   #mobileToolbar [data-tool="eyedropper"] { display: none; }
-  /* §122: 指が十数px動くとブラウザが「パン開始」と判断して pointercancel を送り、
-     長押しタイマーが取り消される。ツールバーは横スクロールしないので、
-     パンとして扱わせる必要がない。 */
-  #mobileToolbar button { touch-action: none; }
+  /* §123: バーを横スクロールさせるので touch-action:none は外す（§122 で付けていた）。
+     指のズレでタップが落ちる件は、JS 側で「実際にスクロールしていなければタップ」
+     と判定して解決する（§118 のコマ一覧と同じ方式）。 */
+  #mobileToolbar { touch-action: pan-x; }
 
   /* ツールバー（と表示中のブラシ列）にステータスが重ならないよう下端に余白 */
   #canvasStatus { margin-bottom: calc(56px + env(safe-area-inset-bottom, 0px)); }

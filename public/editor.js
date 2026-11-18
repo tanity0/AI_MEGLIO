@@ -2387,17 +2387,21 @@ export function initEditor(store, toast) {
   const mobileToolbarEl = document.getElementById("mobileToolbar");
   if (mobileToolbarEl) {
     let pressedBtn = null;      // 指を置いたボタン
+    let pressedScroll = 0;      // §123: 押した時点のスクロール位置
     let swallowNative = false;  // このあと来る本物の click を捨てる
     let synthesizing = false;   // 自分で出した click は通す
     mobileToolbarEl.addEventListener("pointerdown", (ev) => {
       swallowNative = false;
       const el = ev.target.closest("button");
       pressedBtn = el && mobileToolbarEl.contains(el) ? el : null;
+      pressedScroll = mobileToolbarEl.scrollLeft;
     }, true);
     const settleTap = (x, y) => {
       const el = pressedBtn;
       pressedBtn = null;
       if (!el || !el.isConnected) return;
+      // §123: 実際にスクロールしたならスクロール操作。ツールは切り替えない
+      if (mobileToolbarEl.scrollLeft !== pressedScroll) return;
       const r = mobileToolbarEl.getBoundingClientRect();
       // バーの外まで指を抜いて離したときは実行しない（取り消しの余地を残す）
       if (x < r.left || x > r.right || y < r.top || y > r.bottom) return;
@@ -2419,52 +2423,9 @@ export function initEditor(store, toast) {
     }, true);
   }
 
-  // §61.2: モバイルの選択ツールは1ボタンに統合。タップ=現在の選択ツール、長押し(450ms)=矩形⇄マジック切替
-  const mobileSelBtn = document.getElementById("mobileSelToolBtn");
-  if (mobileSelBtn) {
-    const SEL_ICONS = { select: "▭", magic: "🪄" };
-    const SEL_KEY = "aiMeglio.mobileSelTool";
-    let selTool = "select";
-    try { if (localStorage.getItem(SEL_KEY) === "magic") selTool = "magic"; } catch {}
-    const applySelIcon = () => {
-      mobileSelBtn.textContent = SEL_ICONS[selTool];
-      mobileSelBtn.dataset.tool = selTool;
-    };
-    applySelIcon();
-    let selLpTimer = null;
-    let selLpFired = false;
-    mobileSelBtn.addEventListener("pointerdown", () => {
-      selLpFired = false;
-      clearTimeout(selLpTimer);
-      selLpTimer = setTimeout(() => {
-        selLpFired = true;
-        selTool = selTool === "select" ? "magic" : "select";
-        try { localStorage.setItem(SEL_KEY, selTool); } catch {}
-        applySelIcon();
-        switchTool(selTool);
-        if (navigator.vibrate) navigator.vibrate(15);
-      }, 450);
-    });
-    // §122: pointercancel / pointerleave では消さない。指が十数px動くと
-    // ブラウザが「パン開始」と判断して pointercancel を送るため、
-    // それで消していると指のズレだけで長押しが成立しなくなる（実測で20px以上は不発）。
-    // 消すのは「指を離したとき」だけでよい。
-    mobileSelBtn.addEventListener("pointerup", () => clearTimeout(selLpTimer));
-    // 長押し発火後のclickは既定のツール切替を実行させない（capture段で遮断）
-    mobileSelBtn.addEventListener("click", (e) => {
-      if (selLpFired) { e.stopImmediatePropagation(); e.preventDefault(); }
-    }, true);
-    mobileSelBtn.addEventListener("contextmenu", (e) => e.preventDefault());
-    // ツールがキーボード等で select/magic に切り替わったらアイコンも追従
-    store.subscribe(() => {
-      const t = store.state.tool;
-      if ((t === "select" || t === "magic") && t !== selTool) {
-        selTool = t;
-        try { localStorage.setItem(SEL_KEY, selTool); } catch {}
-        applySelIcon();
-      }
-    });
-  }
+  // §123: 矩形⇄マジックの長押し切替（§61.2）は廃止。ツールバーを横スクロールにして
+  // ▭ と 🪄 を別々のボタンにしたため、隠れた操作を覚える必要がなくなった。
+
   window.addEventListener("keydown", (ev) => {
     const tag = document.activeElement?.tagName;
     if (tag === "TEXTAREA" || tag === "INPUT") return;
