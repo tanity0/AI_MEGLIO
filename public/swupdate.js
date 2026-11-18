@@ -41,7 +41,7 @@ function askServiceWorkerVersion(controller) {
       const timer = setTimeout(() => resolve(null), 8000);
       mc.port1.onmessage = (ev) => {
         clearTimeout(timer);
-        resolve((ev.data && ev.data.cacheName) || null);
+        resolve(ev.data || null); // §124: { cacheName, updateReady }
       };
       controller.postMessage({ type: "AI_MEGLIO_CHECK_VERSION" }, [mc.port2]);
     } catch {
@@ -82,11 +82,15 @@ export function initSwUpdate() {
       // version.json を取得してしまい、切替わった後の新バージョンを「現在ロード中」と
       // 誤認して更新を見逃す（レース）。
       const loadedVersion = await getLoadedVersion();
-      const cacheName = await askServiceWorkerVersion(controller);
-      if (!loadedVersion || !cacheName) return;
+      const reply = await askServiceWorkerVersion(controller);
+      if (!reply) return;
 
-      const expected = CACHE_PREFIX + loadedVersion;
-      if (cacheName !== expected) showUpdateBanner();
+      // §124: SW が「新しい版を用意できた」と明示してくれるのでそれを使う。
+      // 版の比較だけに頼ると、SW が使用中のページの足元でキャッシュを入れ替えた場合に
+      // version.json も新しい値を返してしまい、更新を見逃していた（§124.2）。
+      if (reply.updateReady) { showUpdateBanner(); return; }
+      if (!loadedVersion || !reply.cacheName) return;
+      if (reply.cacheName !== CACHE_PREFIX + loadedVersion) showUpdateBanner();
     } finally {
       checking = false;
       lastCheckAt = Date.now();

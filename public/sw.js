@@ -29,6 +29,11 @@ const ASSET_PATHS = [
 ];
 
 let currentCacheName = null; // 現在有効なキャッシュ名（version.json の値から決定）
+// §124: 用意はできたが「まだ切り替えていない」新しい版。使用中のページの足元で
+// 入れ替えると、走っているJSは古いまま以降のファイルだけ新しくなって混在する。
+// 切り替えるのは次のページ読み込み（navigate）のときだけにする。
+let pendingCacheName = null;
+let precachedUrls = null; // プリキャッシュ対象のURL集合（ついでキャッシュの除外用）
 
 async function resolveCacheName() {
   try {
@@ -46,17 +51,20 @@ async function resolveCacheName() {
   }
 }
 
+// §124: 全部そろって初めて書き込む（原子的）。
+// 以前は1ファイルずつ失敗を握りつぶしていたため、一部だけ取得できた中途半端な
+// キャッシュがそのまま有効になり、新旧のファイルが混ざった状態で配信されていた。
+// 1つでも取れなければ例外にして、このキャッシュへは切り替えない（＝今の版を保つ）。
 async function precache(name) {
-  const cache = await caches.open(name);
-  await Promise.all(ASSET_PATHS.map(async (p) => {
-    try {
-      const url = new URL(p, self.registration.scope).href;
-      const res = await fetch(url, { cache: "no-store" });
-      if (res && res.ok) await cache.put(url, res.clone());
-    } catch {
-      // 個別資産の取得失敗は無視（オフライン初回インストール等）。
-    }
+  const urls = ASSET_PATHS.map((p) => new URL(p, self.registration.scope).href);
+  const responses = await Promise.all(urls.map(async (url) => {
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res || !res.ok) throw new Error(`precache failed: ${url}`);
+    return res;
   }));
+  const cache = await caches.open(name);
+  await Promise.all(responses.map((res, i) => cache.put(urls[i], res)));
+  precachedUrls = new Set(urls);
 }
 
 async function purgeOtherCaches(keepName) {
@@ -68,8 +76,9 @@ async function purgeOtherCaches(keepName) {
 
 self.addEventListener("install", (event) => {
   event.waitUntil((async () => {
-    currentCacheName = await resolveCacheName();
-    await precache(currentCacheName);
+    const name = await resolveCacheName();
+    await precache(name); // §124: 失敗したらインストールも失敗させる（古いSWが残る＝一貫した状態）
+    currentCacheName = name;
     await self.skipWaiting();
   })());
 });
@@ -87,15 +96,24 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("message", (event) => {
   if (!event.data || event.data.type !== "AI_MEGLIO_CHECK_VERSION") return;
   event.waitUntil((async () => {
-    const name = await resolveCacheName();
-    if (name !== currentCacheName) {
-      await precache(name);
-      const old = currentCacheName;
-      currentCacheName = name;
-      if (old) await caches.delete(old);
-      await purgeOtherCaches(name);
+    try {
+      const name = await resolveCacheName();
+      if (!currentCacheName) {
+        // まだ何も確定していない（SW再起動直後など）。ここで確定させる。
+        await precache(name);
+        currentCacheName = name;
+        await purgeOtherCaches(name);
+      } else if (name !== currentCacheName && name !== pendingCacheName) {
+        // §124: 用意だけして切り替えない。走っているページは最後まで今の版で動かす。
+        await precache(name);
+        pendingCacheName = name;
+      }
+    } catch {
+      // 取得に失敗したら今の版のまま（中途半端なキャッシュを作らない）
     }
-    if (event.ports && event.ports[0]) event.ports[0].postMessage({ cacheName: currentCacheName });
+    if (event.ports && event.ports[0]) {
+      event.ports[0].postMessage({ cacheName: currentCacheName, updateReady: !!pendingCacheName });
+    }
   })());
 });
 
@@ -112,6 +130,14 @@ self.addEventListener("fetch", (event) => {
   const isQuickGen = /\/autosprite\.(html|js)$/.test(url.pathname);
 
   event.respondWith((async () => {
+    // §124: 新しいページ読み込みのときだけ、用意済みの新しい版へ切り替える。
+    // ここで初めて古いキャッシュを消すので、走っているページが混ざることがない。
+    if (req.mode === "navigate" && pendingCacheName) {
+      currentCacheName = pendingCacheName;
+      pendingCacheName = null;
+      precachedUrls = new Set(ASSET_PATHS.map((p) => new URL(p, self.registration.scope).href));
+      await purgeOtherCaches(currentCacheName);
+    }
     const cache = currentCacheName ? await caches.open(currentCacheName) : null;
     if (!isQuickGen && cache) {
       const cached = await cache.match(req);
@@ -119,7 +145,9 @@ self.addEventListener("fetch", (event) => {
     }
     try {
       const res = await fetch(req, isQuickGen ? { cache: "no-store" } : undefined);
-      if (res && res.ok && cache) cache.put(req, res.clone()).catch(() => {});
+      // §124: プリキャッシュ対象は書き戻さない。別の版のファイルが紛れ込む経路になるため。
+      const isAsset = precachedUrls ? precachedUrls.has(url.href) : false;
+      if (res && res.ok && cache && !isAsset) cache.put(req, res.clone()).catch(() => {});
       return res;
     } catch (err) {
       if (cache) {
