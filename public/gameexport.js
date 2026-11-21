@@ -1,5 +1,6 @@
 // gameexport.js — §16.3 ゲームプロファイル / §16.4 書き出し / §16.5 ゲームビュープレビュー
 import { hexToRgba, maybeOpenServerFolder } from "./app.js";
+import { saveBlob } from "./saveblob.js"; // §127.8 保存（画像は保存方法を選ばせる）
 
 // ---------------------------------------------------------------------------
 // 描画: ピクセル配列 → canvas（整数拡大・左右反転対応）
@@ -170,36 +171,19 @@ export function buildExportFiles(project, opts) {
 }
 
 // §83: iPhone（特にPWA）で download 属性が無視されHTMLが保存される問題への対策。
-// ファイル共有が使えるならWeb Share API（「"ファイル"に保存」）を優先する。
+// §127.8: 保存は saveblob.js に寄せた（画像のときだけ保存方法を1タップ選ばせる）。
+// ここには §93 の消えるトーストがあったが、共有シートが画面を覆うので見落ちていた。
+// 注意はダイアログ本文へ移した。
 async function downloadDataUrl(dataUrl, filename) {
-  try {
-    const res = await fetch(dataUrl);
-    const blob = await res.blob();
-    const file = new File([blob], filename, { type: blob.type || "application/octet-stream" });
-    if (navigator.canShare && navigator.canShare({ files: [file] })) {
-      // §93: 「画像を保存」だと写真アプリで透過が落ちるため「"ファイル"に保存」を促す
-      if (/^image\//.test(file.type) && typeof toastRef === "function") {
-        toastRef('共有シートでは「"ファイル"に保存」を選んでください（「画像を保存」だと透過が失われます）');
-      }
-      await navigator.share({ files: [file], title: filename });
-      return;
-    }
-  } catch (err) {
-    if (err && err.name === "AbortError") return;
-  }
-  const a = document.createElement("a");
-  a.href = dataUrl;
-  a.download = filename;
-  document.body.appendChild(a);
-  if ("download" in a) a.click();
-  else window.open(dataUrl, "_blank");
-  a.remove();
+  const res = await fetch(dataUrl);
+  const blob = await res.blob();
+  return saveBlob(blob, filename);
 }
 
 // ---------------------------------------------------------------------------
 // UI 初期化
 // ---------------------------------------------------------------------------
-let toastRef = null; // §93: downloadDataUrl から案内を出すため保持
+let toastRef = null; // モジュール内から toast を呼ぶため保持（§127.8 で downloadDataUrl からは使わなくなった）
 
 export function initGameExport(store, toast) {
   toastRef = toast;
@@ -430,7 +414,8 @@ export function initGameExport(store, toast) {
         toast(err.message, "error");
       }
     } else {
-      for (const f of files) downloadDataUrl(f.dataUrl, f.path);
+      // §127.8: 1件ずつ待つ（保存方法のダイアログが重ならないように）
+      for (const f of files) await downloadDataUrl(f.dataUrl, f.path);
       exportStatus.textContent = `${files.length}ファイルをダウンロードしました${pixiNote}${warnText}`;
       toast(`${files.length}ファイルをダウンロードしました${pixiNote}`);
     }

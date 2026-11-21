@@ -108,7 +108,17 @@ function askSaveRoute(filename) {
   });
 }
 
-export async function saveBlob(blob, filename) {
+// §127.8: 同時に何件も呼ばれても1件ずつ処理する。
+// ゲーム書き出しは files をループで保存するため（連番PNG等）、直列化しないと
+// 共有ダイアログが重なって最後の1件しか効かない。
+let queue = Promise.resolve();
+export function saveBlob(blob, filename) {
+  const run = queue.then(() => saveBlobOne(blob, filename), () => saveBlobOne(blob, filename));
+  queue = run.catch(() => {});
+  return run;
+}
+
+async function saveBlobOne(blob, filename) {
   const type = blob.type || "application/octet-stream";
   let file = null;
   let canShare = false;
