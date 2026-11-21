@@ -29,8 +29,9 @@ export function defaultTuneParams() {
 
 // 元クロップの前処理（1コマにつき1回）: 背景色推定・強前景/強背景マスク・簡易エッジ
 // region: { data(RGBA), width, height }
-export function prepScoreRegion(region) {
+export function prepScoreRegion(region, opts = {}) {
   const { data, width: w, height: h } = region;
+  const noBg = opts.bgMode === "none"; // §53: 背景色推定を使わない（アルファのみで前景/背景を判定）
   // 背景色 = 外周の不透明画素の最頻色（removeBackground と同じ発想の16段量子化）
   const counts = new Map();
   const consider = (x, y) => {
@@ -41,8 +42,10 @@ export function prepScoreRegion(region) {
     e.n++; e.r += data[o]; e.g += data[o + 1]; e.b += data[o + 2];
     counts.set(key, e);
   };
-  for (let x = 0; x < w; x++) { consider(x, 0); consider(x, h - 1); }
-  for (let y = 0; y < h; y++) { consider(0, y); consider(w - 1, y); }
+  if (!noBg) {
+    for (let x = 0; x < w; x++) { consider(x, 0); consider(x, h - 1); }
+    for (let y = 0; y < h; y++) { consider(0, y); consider(w - 1, y); }
+  }
   let bgEntry = null;
   for (const e of counts.values()) if (!bgEntry || e.n > bgEntry.n) bgEntry = e;
   const bg = bgEntry ? [bgEntry.r / bgEntry.n, bgEntry.g / bgEntry.n, bgEntry.b / bgEntry.n] : null;
@@ -158,6 +161,7 @@ export async function searchTune(opts) {
   const { evalFn, cache = new Map(), cacheTag = "", flag = null, delayMs = 0, onProgress = null } = opts;
   const doAlign = opts.align !== false;
   const doSize = opts.size !== false;
+  const bgFixed = opts.bgMode === "none"; // §53: 背景透過「なし」→ bg/glow 軸は探索しない
   const d = { ...defaultTuneParams(), ...(opts.start || {}) };
   let evals1 = 0, evals2 = 0;
   const keyOf = (p) => `${p.bgThreshold}|${p.glowWidth}|${p.edgeProtect}|${p.satProtect}|${p.offsetDX}|${p.offsetDY}|${p.sizeDelta}|${cacheTag}`;
@@ -185,7 +189,7 @@ export async function searchTune(opts) {
   // 初期値（= ユーザーが今見ている設定）のスコア。レポート・改善判定の基準
   const defEntry = push(await evalP(d, 1));
   // 一段目: bgThreshold × glowWidth（edge/sat/整列は初期値）
-  outer1: for (const bgT of TUNE_BG_STEPS) {
+  outer1: for (const bgT of (bgFixed ? [] : TUNE_BG_STEPS)) {
     for (const glow of TUNE_GLOW_STEPS) {
       if (aborted()) break outer1;
       push(await evalP({ ...d, bgThreshold: bgT, glowWidth: glow }, 1));

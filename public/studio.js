@@ -1,6 +1,6 @@
 // studio.js — §18.2 変換スタジオ（インポートウィザードv2）UI
 // 候補ギャラリー → つまみでリアルタイム再変換 → 元画像との同期ズーム比較 → 確定
-import { removeBackground, estimateGrid, convertImage, convertSheetImage, convertFramesShared, detectComponents, extractMainPalette, expandBoxesForPerFrame } from "./convert.js";
+import { removeBackground, estimateGrid, convertImage, convertSheetImage, convertFramesShared, detectComponents, detectBgMode, extractMainPalette, expandBoxesForPerFrame } from "./convert.js";
 import { prepScoreRegion, scoreRecon, searchTune, defaultTuneParams } from "./autotune.js"; // §52: §43 エンジンの共通実装
 import { hexToRgba, defaultTags } from "./app.js";
 
@@ -36,6 +36,7 @@ let autoGen = 0; // 世代カウンタ（新しい実行/閉じる/読み込み�
 let autoRun = null; // { gen, flags:[{aborted}], total } 実行中のみ
 let autoProgressNote = ""; // 実行中の進捗（変換のたびステータスに併記）
 let autoStats = null; // 直近の自動調整結果（検証/表示用）
+let detectedBgMode = "auto"; // §53: 読み込み時の自動判定（完全透明画素≥2% → none）
 let tuneDelayMs = 0; // テスト用: 1変換ごとの遅延
 
 const $ = (id) => document.getElementById(id);
@@ -87,6 +88,7 @@ function defaultKnobs() {
     satProtect: 0.5,
     bgThreshold: 48,
     glowWidth: 0,
+    bgMode: "auto", // §53: 背景透過（auto=外周推定+閾値除去 / none=色ベース除去なし）
   };
 }
 
@@ -117,6 +119,7 @@ async function ensureBg() {
     bgCache = removeBackground(srcData.data, srcData.w, srcData.h, {
       threshold: knobs.bgThreshold,
       glowWidth: knobs.glowWidth,
+      bgMode: knobs.bgMode,
     });
     grid = null; // 背景が変わればグリッドも再推定
     detectSplit(); // §20.1: 連結成分の再検出
@@ -221,7 +224,7 @@ async function runConvert() {
       // §30: 多フレーム = フレーム別つまみ + 共有パレット（二段構え）
       saveActiveFrameParams();
       ensureFrameParams(boxes.length);
-      const global = { targetH: knobs.oneToOne ? 0 : knobs.targetH, colors: knobs.colors, oneToOne: knobs.oneToOne, s: grid.s + knobs.sizeDelta };
+      const global = { targetH: knobs.oneToOne ? 0 : knobs.targetH, colors: knobs.colors, oneToOne: knobs.oneToOne, s: grid.s + knobs.sizeDelta, bgMode: knobs.bgMode };
       res = convertFramesShared(srcData.data, srcData.w, srcData.h, global, boxes, frameParams, split.align);
       // プレビューはアクティブフレーム
       if (res.framesPixels && res.framesPixels[activeFrame]) {
@@ -578,6 +581,10 @@ const KNOB_BINDINGS = [
 function syncKnobUi() {
   $("studioOneToOne").checked = knobs.oneToOne;
   for (const [id, key] of KNOB_BINDINGS) $(id).value = String(knobs[key]);
+  // §53: 背景透過セレクタ。「なし」のとき背景除去閾値・フチ光彩除去は無効表示
+  $("studioBgMode").value = knobs.bgMode === "none" ? "none" : "auto";
+  $("studioBgThreshold").disabled = knobs.bgMode === "none";
+  $("studioGlowWidth").disabled = knobs.bgMode === "none";
   $("studioSizeDelta").textContent = knobs.sizeDelta.toFixed(2);
   $("studioOffsetDX").textContent = String(knobs.offsetDX);
   $("studioOffsetDY").textContent = String(knobs.offsetDY);
@@ -585,6 +592,15 @@ function syncKnobUi() {
 }
 
 function attachKnobs() {
+  // §53: 背景透過の切替 → 背景キャッシュ破棄して再変換（全体に効く操作なので自動調整は中断）
+  $("studioBgMode").addEventListener("change", () => {
+    knobs.bgMode = $("studioBgMode").value === "none" ? "none" : "auto";
+    autoAbortAll();
+    candidateAutoNote = "";
+    bgCache = null;
+    syncKnobUi();
+    scheduleConvert();
+  });
   $("studioOneToOne").addEventListener("change", () => {
     knobs.oneToOne = $("studioOneToOne").checked;
     autoAbortAll();
@@ -815,11 +831,11 @@ function makeMultiEvaluator(i, boxes) {
   const relBox = { x0: b.x0 - reg.x0, y0: b.y0 - reg.y0, x1: b.x1 - reg.x0, y1: b.y1 - reg.y0, area: b.area || 0 };
   const sharedCs = result && result.srcCellSize ? result.srcCellSize : 8;
   const base = { ...frameParams[i] };
-  const prep = prepScoreRegion(region);
+  const prep = prepScoreRegion(region, { bgMode: knobs.bgMode });
   const evalFn = (p) => {
     const pf = { ...base, bgThreshold: p.bgThreshold, glowWidth: p.glowWidth, edgeProtect: p.edgeProtect, satProtect: p.satProtect, offsetDX: p.offsetDX, offsetDY: p.offsetDY };
     // 共有セルサイズ固定（oneToOne）で当該フレームだけを変換 → 格子を元座標系へ戻して採点
-    const out = convertFramesShared(crop, cw, ch, { oneToOne: true, s: sharedCs, colors: knobs.colors }, [relBox], [pf], split.align);
+    const out = convertFramesShared(crop, cw, ch, { oneToOne: true, s: sharedCs, colors: knobs.colors, bgMode: knobs.bgMode }, [relBox], [pf], split.align);
     const g = out.frameGrids[0];
     if (!g) throw new Error("empty");
     const pixels = new Uint8Array(g.cols * g.rows);
@@ -829,19 +845,19 @@ function makeMultiEvaluator(i, boxes) {
     const conv = { width: g.cols, height: g.rows, pixels, palette: out.palette, srcCellSize: out.srcCellSize, originX: g.gx0, originY: g.gy0 };
     return { score: scoreRecon(region, prep, conv), cs: out.srcCellSize };
   };
-  return { evalFn, align: true, size: false, start: pickPF(base) };
+  return { evalFn, align: true, size: false, start: pickPF(base), bgMode: knobs.bgMode };
 }
 
 // 単一画像: 画像全体を従来の経路（removeBackground → convertImage）で変換してスコアを返す。
 function makeSingleEvaluator() {
   const region = { data: srcData.data, width: srcData.w, height: srcData.h };
-  const prep = prepScoreRegion(region);
+  const prep = prepScoreRegion(region, { bgMode: knobs.bgMode });
   const bgMemo = new Map(); // (bg,glow) → 背景除去済み（整列探索中は再利用）
   const getBg = (t, g) => {
     const key = `${t}|${g}`;
     if (!bgMemo.has(key)) {
       if (bgMemo.size >= 4) bgMemo.delete(bgMemo.keys().next().value);
-      bgMemo.set(key, removeBackground(srcData.data, srcData.w, srcData.h, { threshold: t, glowWidth: g }));
+      bgMemo.set(key, removeBackground(srcData.data, srcData.w, srcData.h, { threshold: t, glowWidth: g, bgMode: knobs.bgMode }));
     }
     return bgMemo.get(key);
   };
@@ -856,7 +872,7 @@ function makeSingleEvaluator() {
     });
     return { score: scoreRecon(region, prep, conv), cs: conv.srcCellSize };
   };
-  return { evalFn, align: true, size: true, start: pickPF(knobs, true) };
+  return { evalFn, align: true, size: true, start: pickPF(knobs, true), bgMode: knobs.bgMode };
 }
 function pickPF(src, withSize = false) {
   const d = defaultTuneParams();
@@ -885,7 +901,7 @@ async function autoTuneAll(opts = {}) {
     if (multi) { saveActiveFrameParams(); ensureFrameParams(n); }
     const run = { gen: myGen, flags: Array.from({ length: n }, () => ({ aborted: false })), total: n };
     autoRun = run;
-    const stats = { frames: [], total: n, multi };
+    const stats = { frames: [], total: n, multi, bgMode: knobs.bgMode };
     autoStats = stats;
     let applied = 0;
     for (let i = 0; i < n; i++) {
@@ -956,6 +972,7 @@ async function loadSource(dataUrl) {
   srcBitmapCanvas = c;
   const imgData = ctx.getImageData(0, 0, c.width, c.height);
   srcData = { data: imgData.data, w: c.width, h: c.height };
+  detectedBgMode = detectBgMode(srcData.data, srcData.w, srcData.h); // §53
   bgCache = null;
   grid = null;
   result = null;
@@ -990,9 +1007,11 @@ export async function openStudio(dataUrl, savedParams = null, opts = {}) {
   await loadSource(dataUrl);
   split = { mode: "single", boxes: [], align: "bottom", gridCols: 3, gridRows: 1, userChose: false };
   knobs = defaultKnobs();
+  knobs.bgMode = detectedBgMode; // §53: 初期値は自動判定（保存値があれば下で上書き）
   if (savedParams) {
     const { grid: g, split: sp, frameParams: fp, ...rest } = savedParams;
     Object.assign(knobs, rest);
+    if (rest.bgMode !== "none") knobs.bgMode = "auto"; // §53: 旧データ（bgMode 無し）は従来どおり自動
     if (g && typeof g.s === "number") grid = { ...g };
     if (sp) {
       split = { ...split, ...sp, boxes: Array.isArray(sp.boxes) ? sp.boxes : [], userChose: true };
@@ -1049,6 +1068,7 @@ export async function openStudioForCandidate(dataUrl, opts) {
   for (const k of ["bgThreshold", "glowWidth", "edgeProtect", "satProtect", "domBlend", "centerWeight", "sizeDelta", "offsetDX", "offsetDY"]) {
     if (typeof cp[k] === "number") knobs[k] = cp[k];
   }
+  knobs.bgMode = cp.bgMode === "none" || cp.bgMode === "auto" ? cp.bgMode : detectedBgMode; // §53
   if (cp.grid && typeof cp.grid.s === "number") grid = { ...cp.grid };
   $("studioPanel").hidden = false;
   $("studioGallery").innerHTML = "";
@@ -1111,7 +1131,7 @@ export function initStudio(storeRef, toastRef) {
     btn.disabled = true;
     $("studioStatus").textContent = "自動調整中…（最大60変換）";
     try {
-      const res = await candidateMode.autoTune();
+      const res = await candidateMode.autoTune({ bgMode: knobs.bgMode });
       if (!candidateMode) return; // 探索中に閉じられた
       if (!res || res.score === Infinity) {
         $("studioStatus").textContent = "自動調整: 有効なパラメータが見つかりませんでした";
@@ -1163,6 +1183,7 @@ export function initStudio(storeRef, toastRef) {
       autoTuning: !!autoRun, // §52: 自動調整の実行中
       singleTouched,
       autoStats: autoStats ? JSON.parse(JSON.stringify(autoStats)) : null,
+      bgOpaque: bgCache ? (() => { let n = 0; for (let i = 3; i < bgCache.length; i += 4) if (bgCache[i] >= 128) n++; return n; })() : -1, // §53: 背景除去後の不透明画素数
       status: $("studioStatus").textContent,
       palette: result ? result.palette.slice() : null,
       width: result ? result.width : 0,

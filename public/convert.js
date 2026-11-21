@@ -25,13 +25,27 @@ function hueDist(a, b) {
   return d > 180 ? 360 - d : d;
 }
 
+// §53: 背景透過の自動判定。完全透明画素（alpha=0）が全体の2%以上なら「none」、それ以外は「auto」
+export function detectBgMode(data, w, h) {
+  const n = w * h;
+  if (!n) return "auto";
+  let t = 0;
+  for (let i = 3; i < n * 4; i += 4) if (data[i] === 0) t++;
+  return t / n >= 0.02 ? "none" : "auto";
+}
+
 // ---------------------------------------------------------------------------
 // 背景除去（§18.2-1）: 外周フラッドフィル + フチ光彩除去
 // data は破壊せず、alpha を書き換えた新しい Uint8ClampedArray を返す
 // ---------------------------------------------------------------------------
 export function removeBackground(data, w, h, opts = {}) {
-  const { bgColor = null, threshold = 48, glowWidth = 0 } = opts;
+  const { bgColor = null, threshold = 48, glowWidth = 0, bgMode = "auto" } = opts;
   const out = new Uint8ClampedArray(data);
+  // §53: 「なし」= 色ベースの背景除去を完全スキップ。元アルファ<32 のみ透明扱い（それ以外は不変）
+  if (bgMode === "none") {
+    for (let i = 3; i < out.length; i += 4) if (out[i] < 32) out[i] = 0;
+    return out;
+  }
 
   // 自動背景色: 外周ピクセルの最頻色（16段量子化）
   let bg = bgColor;
@@ -592,7 +606,7 @@ export function expandBoxesForPerFrame(boxes, w, h) {
 }
 
 export function convertFramesShared(rawData, w, h, global, boxes, perFrameParams, align = "bottom") {
-  const { targetH = 64, colors = 64, oneToOne = false, s = 8 } = global || {};
+  const { targetH = 64, colors = 64, oneToOne = false, s = 8, bgMode = "auto" } = global || {};
   const N = boxes.length;
   if (N < 1) throw new Error("フレームがありません");
 
@@ -605,7 +619,7 @@ export function convertFramesShared(rawData, w, h, global, boxes, perFrameParams
   const bboxes = [];
   for (let i = 0; i < N; i++) {
     const pf = perFrameParams[i] || {};
-    const bg = removeBackground(rawData, w, h, { threshold: pf.bgThreshold ?? 48, glowWidth: pf.glowWidth ?? 0 });
+    const bg = removeBackground(rawData, w, h, { threshold: pf.bgThreshold ?? 48, glowWidth: pf.glowWidth ?? 0, bgMode: pf.bgMode ?? bgMode });
     frameBg.push(bg);
     const reg = regions[i];
     let x0 = reg.x1 + 1, y0 = reg.y1 + 1, x1 = reg.x0 - 1, y1 = reg.y0 - 1;

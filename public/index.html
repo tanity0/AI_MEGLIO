@@ -652,6 +652,7 @@
       <!-- §41-3: 取り込み前の簡易つまみ（全コマ共通）。個別の詰めは取り込み後の候補ごとの「調整」で -->
       <div class="mc-import-knobs">
         <span class="hint">この設定で変換し直す（全コマ共通・個別調整は取り込み後の「調整」で）:</span>
+        <label class="form-row inline" title="自動=外周から背景色を推定して除去 / なし=色ベースの背景除去をしない（透過済み画像向け・§53）">背景透過 <select id="mcImportBgMode"><option value="auto">自動</option><option value="none">なし</option></select></label>
         <label class="form-row inline">背景除去閾値 <input id="mcImportBg" type="range" min="8" max="120" step="1" value="48"></label>
         <label class="form-row inline">フチ光彩除去 <input id="mcImportGlow" type="range" min="0" max="3" step="1" value="0"></label>
         <button id="mcImportReconvertBtn" class="btn btn-small">この設定で変換し直す</button>
@@ -738,6 +739,7 @@
       <label class="form-row">セル中心重視 <input id="studioCenterWeight" type="range" min="0" max="1" step="0.05" value="0.5"></label>
       <label class="form-row">輪郭保護 <input id="studioEdgeProtect" type="range" min="0" max="1" step="0.05" value="0.3"></label>
       <label class="form-row">彩度保護 <input id="studioSatProtect" type="range" min="0" max="1" step="0.05" value="0.5"></label>
+      <label class="form-row" title="自動=外周から背景色を推定して除去 / なし=色ベースの背景除去をしない（元画像の透明部分だけ透明。透過済み画像向け・§53）">背景透過 <select id="studioBgMode"><option value="auto">自動</option><option value="none">なし</option></select></label>
       <label class="form-row">背景除去閾値 <input id="studioBgThreshold" type="range" min="8" max="120" step="1" value="48"></label>
       <label class="form-row">フチ光彩除去 <input id="studioGlowWidth" type="range" min="0" max="3" step="1" value="0"></label>
     </div>

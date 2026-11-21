@@ -3,7 +3,7 @@
 // 1つのプールに並べ、クリック選択の順番がそのままフレーム順。確定で選択順にタイムラインへ。
 import { streamEdit } from "./api.js";
 import { openStudioForCandidate, cancelCandidateStudio } from "./studio.js"; // §44.1: 候補調整=スタジオ流用 / §46: 差し替え時クローズ
-import { removeBackground, detectComponents, convertImage } from "./convert.js";
+import { removeBackground, detectComponents, convertImage, detectBgMode } from "./convert.js";
 import { prepScoreRegion, scoreRecon as scoreReconCore, searchTune, defaultTuneParams } from "./autotune.js"; // §52.2: 自動調整エンジンは studio.js と共通実装
 import {
   frameToGridString,
@@ -408,8 +408,9 @@ export function initMotionStudio(store, toast) {
   // srcRegion（元画像の該当コマ領域・原寸・背景除去前）を保持しておき、
   // つまみ変更のたびそこから再変換 → プロジェクトパレットへスナップ → 整列。
   // ---------------------------------------------------------------------
-  function defaultConvParams() {
-    return { bgThreshold: 48, glowWidth: 0, edgeProtect: 0.3, satProtect: 0.5, cellDelta: 0 };
+  function defaultConvParams(bgMode = "auto") {
+    // §53: bgMode = 背景透過（auto=従来 / none=色ベース除去なし）
+    return { bgThreshold: 48, glowWidth: 0, edgeProtect: 0.3, satProtect: 0.5, cellDelta: 0, bgMode: bgMode === "none" ? "none" : "auto" };
   }
 
   function rgbaCropToDataUrl(data, w, h) {
@@ -435,7 +436,7 @@ export function initMotionStudio(store, toast) {
   function convertRegion(region, params) {
     const p = project();
     const bg = removeBackground(region.data, region.width, region.height, {
-      threshold: params.bgThreshold, glowWidth: params.glowWidth,
+      threshold: params.bgThreshold, glowWidth: params.glowWidth, bgMode: params.bgMode === "none" ? "none" : "auto",
     });
     const targetH = Math.max(2, p.height + (params.cellDelta || 0));
     return convertImage(bg, region.width, region.height, {
@@ -486,27 +487,29 @@ export function initMotionStudio(store, toast) {
   // flag.aborted=true で中断（その時点のベストを返す）。params は整列軸（offsetDX/DY・sizeDelta）を含む。
   async function autoTuneRegion(srcRegionUrl, opts = {}) {
     const region = await dataUrlToImageData(srcRegionUrl);
-    const prep = prepScoreRegion(region);
+    const bgMode = opts.bgMode === "none" ? "none" : "auto"; // §53
+    const prep = prepScoreRegion(region, { bgMode });
     const cellDelta = opts.cellDelta || 0;
     const res = await searchTune({
       evalFn: (p) => {
-        const conv = convertRegion(region, { ...p, cellDelta });
+        const conv = convertRegion(region, { ...p, cellDelta, bgMode });
         return { score: scoreRecon(region, prep, conv), cs: conv.srcCellSize };
       },
       cache: tuneCacheFor(srcRegionUrl),
-      cacheTag: String(cellDelta),
+      cacheTag: `${cellDelta}|${bgMode}`,
       start: defaultTuneParams(),
+      bgMode,
       flag: opts.flag,
       delayMs: tuneDelayMs,
     });
-    res.params = { ...res.params, cellDelta };
+    res.params = { ...res.params, cellDelta, bgMode };
     return res;
   }
 
   // 候補1つを自動調整: 最良パラメータで再変換し、ナッジ差分を維持して反映（§41 と同じ規約）
   async function tuneCandidate(cand, opts = {}) {
     if (!cand.srcRegion) return null;
-    const res = await autoTuneRegion(cand.srcRegion, { ...opts, cellDelta: cand.convParams?.cellDelta || 0 });
+    const res = await autoTuneRegion(cand.srcRegion, { ...opts, cellDelta: cand.convParams?.cellDelta || 0, bgMode: cand.convParams?.bgMode });
     if (res.score === Infinity) return res; // 全滅（変換不能）→ 何もしない
     const { srcPixels, offset: autoOffset } = await reconvertFromRegion(cand.srcRegion, res.params);
     const nudgeDx = (cand.offset && cand.autoOffset) ? cand.offset.dx - cand.autoOffset.dx : 0;
@@ -530,7 +533,8 @@ export function initMotionStudio(store, toast) {
       toast("画像を読み込めませんでした", "error");
       return 0;
     }
-    const data = removeBackground(img.data, img.width, img.height);
+    const bgMode = detectBgMode(img.data, img.width, img.height); // §53: 透過済み画像は初期「なし」
+    const data = removeBackground(img.data, img.width, img.height, { bgMode });
     const comps = detectComponents(data, img.width, img.height);
     if (!comps.length) {
       toast("キャラクターを検出できませんでした（背景除去に失敗）", "error");
@@ -576,7 +580,7 @@ export function initMotionStudio(store, toast) {
         source: "image", snapped: true, aligned: true, srcPixels,
         offset: { ...offset }, autoOffset: { ...offset }, // autoOffset: ナッジ適用前の整列オフセット（再調整時の差分計算用）
         srcRegion: rgbaCropToDataUrl(rawCrop, rw, rh),
-        convParams: defaultConvParams(),
+        convParams: defaultConvParams(bgMode),
       };
       applyOffset(cand); // §25.9-1: pixels = srcPixels + offset（ナッジで再適用）
       prepared.push({ k, cand });
@@ -628,6 +632,7 @@ export function initMotionStudio(store, toast) {
   const importCancelBtn = document.getElementById("mcImportCancelBtn");
   const importBgInput = document.getElementById("mcImportBg");
   const importGlowInput = document.getElementById("mcImportGlow");
+  const importBgModeSel = document.getElementById("mcImportBgMode"); // §53
   const importReconvertBtn = document.getElementById("mcImportReconvertBtn");
   const autoTuneToggle = document.getElementById("mcAutoTuneToggle"); // §43-3: 既定ON・localStorage 保持
   autoTuneToggle.checked = localStorage.getItem("mcAutoTune") !== "0";
@@ -671,9 +676,17 @@ export function initMotionStudio(store, toast) {
       const firstParams = prepared[0]?.cand.convParams || defaultConvParams();
       importBgInput.value = String(firstParams.bgThreshold);
       importGlowInput.value = String(firstParams.glowWidth);
+      importBgModeSel.value = firstParams.bgMode === "none" ? "none" : "auto";
+      const syncBgModeUi = () => {
+        importBgInput.disabled = importGlowInput.disabled = importBgModeSel.value === "none";
+      };
+      syncBgModeUi();
+      const onBgModeChange = () => { syncBgModeUi(); onReconvert(); }; // §53: 切替で再変換
+      importBgModeSel.addEventListener("change", onBgModeChange);
       async function onReconvert() {
         const bgThreshold = Number(importBgInput.value);
         const glowWidth = Number(importGlowInput.value);
+        const bgMode = importBgModeSel.value === "none" ? "none" : "auto";
         importReconvertBtn.disabled = true;
         const origLabel = importReconvertBtn.textContent;
         importReconvertBtn.textContent = "変換中…";
@@ -681,7 +694,7 @@ export function initMotionStudio(store, toast) {
           const item = prepared[idx];
           if (!item.cand.srcRegion) continue;
           try {
-            const params = { ...(item.cand.convParams || defaultConvParams()), bgThreshold, glowWidth };
+            const params = { ...(item.cand.convParams || defaultConvParams()), bgThreshold, glowWidth, bgMode };
             const { srcPixels, offset: autoOffset } = await reconvertFromRegion(item.cand.srcRegion, params);
             const nudgeDx = item.cand.offset.dx - item.cand.autoOffset.dx;
             const nudgeDy = item.cand.offset.dy - item.cand.autoOffset.dy;
@@ -707,6 +720,7 @@ export function initMotionStudio(store, toast) {
         importOkBtn.removeEventListener("click", onOk);
         importCancelBtn.removeEventListener("click", onCancel);
         importReconvertBtn.removeEventListener("click", onReconvert);
+        importBgModeSel.removeEventListener("change", onBgModeChange);
       }
       // §43-3: 「自動調整」ON なら取り込み確定時に各コマをチューニングしてから候補化。
       // チューニング中の「自動調整を中断」は残りコマをスキップして取り込みを続行する。
@@ -1082,7 +1096,7 @@ export function initMotionStudio(store, toast) {
     }
     openStudioForCandidate(cand.srcRegion, {
       convParams: cand.convParams || defaultConvParams(),
-      autoTune: () => autoTuneRegion(cand.srcRegion, {}),
+      autoTune: (o) => autoTuneRegion(cand.srcRegion, { bgMode: o && o.bgMode ? o.bgMode : cand.convParams?.bgMode }),
       onApply: (conv, params) => {
         const { srcPixels, offset: autoOffset } = snapAndAlign(conv);
         const nudgeDx = (cand.offset && cand.autoOffset) ? cand.offset.dx - cand.autoOffset.dx : 0;
@@ -1582,7 +1596,7 @@ export function initMotionStudio(store, toast) {
     autoTuneRegion: (url, opts) => autoTuneRegion(url, opts || {}),
     async scoreRegionParams(url, params) {
       const region = await dataUrlToImageData(url);
-      const prep = prepScoreRegion(region);
+      const prep = prepScoreRegion(region, { bgMode: params && params.bgMode });
       const conv = convertRegion(region, { ...defaultConvParams(), ...params });
       return scoreRecon(region, prep, conv);
     },
