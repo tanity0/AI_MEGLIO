@@ -14,6 +14,7 @@ import { initCanvasResize } from "./canvasresize.js"; // §28 キャンバスの
 import { initLiveSync } from "./livesync.js"; // §29 ライブプロジェクト同期
 import { initSendGpt } from "./sendgpt.js"; // §36 「GPTへ送る」
 import { initBackdrop } from "./backdrop.js"; // §45 背景色の変更（表示専用）
+import { saveBlob } from "./saveblob.js"; // §127 保存（画像は保存方法を選ばせる）
 import { initMobile } from "./mobile.js"; // §49 スマホレイアウト（ドロワー化）
 import { initAutosave } from "./autosave.js"; // §50.1 自動保存＆復元（IndexedDB）
 import { initSwUpdate } from "./swupdate.js"; // §50.7 SW更新チェック（新バージョン案内バナー）
@@ -962,31 +963,11 @@ export function toast(message, kind = "info") {
 // §83: iPhone（特にPWA）は blob: の download 属性を無視してページ遷移になり、
 // 共有シートから保存すると"ページ"＝HTMLが保存されてしまう。ファイル共有が使える環境では
 // Web Share API（「"ファイル"に保存」）を優先し、それ以外は従来のダウンロードへ落とす。
-async function downloadBlob(blob, filename) {
-  try {
-    const file = new File([blob], filename, { type: blob.type || "application/octet-stream" });
-    if (navigator.canShare && navigator.canShare({ files: [file] })) {
-      // §93: iOSの共有シートで「画像を保存」を選ぶと写真アプリがアルファを落とす。
-      // 透過を保ったまま保存するには「"ファイル"に保存」を選ぶ必要があるため明示する。
-      if (/^image\//.test(file.type)) {
-        toast('共有シートでは「"ファイル"に保存」を選んでください（「画像を保存」だと透過が失われます）');
-      }
-      await navigator.share({ files: [file], title: filename });
-      return;
-    }
-  } catch (err) {
-    if (err && err.name === "AbortError") return; // 利用者がキャンセル
-    // 共有が使えない/失敗 → 通常のダウンロードへフォールバック
-  }
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a); // DOM外の <a> だと download 属性のファイル名が無視されることがある
-  if ("download" in a) a.click();
-  else window.open(url, "_blank"); // 最終手段（長押しで保存）
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 5000);
+// §127: 保存は saveblob.js に寄せた。画像のときだけ保存方法を1タップ選ばせる
+// （iOSの共有シートで「画像を保存」を選ぶと写真アプリがアルファを落とすため）。
+// §93 のトーストはダイアログ本文へ移したので、ここでは出さない。
+function downloadBlob(blob, filename) {
+  return saveBlob(blob, filename);
 }
 
 function fileToDataUrl(file) {

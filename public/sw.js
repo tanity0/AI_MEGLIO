@@ -23,6 +23,7 @@ const ASSET_PATHS = [
   "help.js", "import.js", "livesync.js", "mobile.js", "motionstudio.js",
   "rig.js", "sendgpt.js", "studio.js", "styleref.js", "timeline.js", "autosave.js",
   "taptoggle.js", // §117: 再生/停止トグルの共通処理
+  "saveblob.js", // §127: 保存（画像は保存方法を選ばせる）
   "swupdate.js", // §50.7: SW更新チェック（ページ側が AI_MEGLIO_CHECK_VERSION を呼ぶようになった）
   "autosprite.html", "autosprite.js", // §52: クイック生成ウィザード
   "version.json", "manifest.webmanifest", "icon-192.png", "icon-512.png",
