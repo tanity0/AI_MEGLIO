@@ -297,6 +297,7 @@ async function runConvert() {
   } catch (err) {
     if (gen !== convertGen) return;
     result = null;
+    dropResCanvasCache(); // §125
     $("studioStatus").textContent = `エラー: ${err.message}`;
     renderFrameBar();
     renderCompare();
@@ -320,14 +321,32 @@ function resultToCanvas(res) {
   return c;
 }
 
+// §125: 結果プレビュー用キャンバスのキャッシュ。
+// renderCompare() はピンチ/パンの pointermove ごとに走るため、毎回
+// resultToCanvas() を呼ぶと1フレームごとにキャンバスを1枚確保することになり、
+// iOS の canvas メモリ上限に当たってキャンバスの中身が捨てられる（透明になる）。
+// 鍵は result そのもの（同一性比較）。変換が走って新しい result になったときだけ作り直す。
+let resCanvasCache = { key: null, canvas: null };
+function resultCanvasFor(res) {
+  if (resCanvasCache.key === res) return resCanvasCache.canvas;
+  resCanvasCache = { key: res, canvas: resultToCanvas(res) };
+  return resCanvasCache.canvas;
+}
+function dropResCanvasCache() { resCanvasCache = { key: null, canvas: null }; }
+
 let srcBitmapCanvas = null;
 function renderCompare() {
   const sc = $("studioSrcCanvas");
   const rc = $("studioResCanvas");
   for (const c of [sc, rc]) {
+    // §125: width/height への代入はキャンバスの裏バッファを作り直すので、
+    // 変わっていないときは触らない。中身の消去は下の clearRect が行う。
+    // Math.floor は canvas.width への代入時の切り捨てと同じ値（＝従来と同じ大きさ）。
     const rect = c.parentElement.getBoundingClientRect();
-    c.width = Math.max(50, rect.width - 2);
-    c.height = Math.max(50, rect.height - 2);
+    const w = Math.max(50, Math.floor(rect.width - 2));
+    const h = Math.max(50, Math.floor(rect.height - 2));
+    if (c.width !== w) c.width = w;
+    if (c.height !== h) c.height = h;
   }
   const zoom = view.zoom;
   // ソース側（§59.5: 多フレーム時はアクティブフレームの領域だけを切り出して表示。
@@ -363,7 +382,7 @@ function renderCompare() {
     if (result) {
       const p = knobsToParams();
       const cs = p.targetH > 0 ? result.srcCellSize || guessCellSize() : p.s;
-      const resCanvas = resultToCanvas(result);
+      const resCanvas = resultCanvasFor(result); // §125
       const originX = result.originX ?? 0;
       const originY = result.originY ?? 0;
       ctx.drawImage(
@@ -1008,6 +1027,7 @@ async function loadSource(dataUrl) {
   bgReady = false;
   grid = null;
   result = null;
+  dropResCanvasCache(); // §125
   frameParams = [];
   activeFrame = 0;
 }
