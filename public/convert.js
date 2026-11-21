@@ -38,23 +38,52 @@ function hueDist(a, b) {
 // 背景除去（§18.2-1）: 外周フラッドフィル + フチ光彩除去
 // data は破壊せず、alpha を書き換えた新しい Uint8ClampedArray を返す
 // ---------------------------------------------------------------------------
+// §126: すでに切り抜き済み（透過済み）の画像かどうか。
+//
+// 色ベースの背景除去は「外周の最頻色に近い色を外側から食べ進む」処理なので、
+// すでに透明で切り抜かれている素材にかけると絵の中身まで食う。実測（§126.2）では
+// 暗い洞窟の背景画（1058×1487）で可視画素の 59.3% が消えた。
+//
+// §59.6 は同じ判断を「外周の60%以上が透明なら」で行っていたが、判定材料が
+// 外周だけだった。上記の素材は画像全体では 69.3% が透明なのに、左端と上端が
+// 絵に接しているため外周は 45% しか透明でなく、判定をすり抜けていた。
+// 全体の透明率も見る。
+//
+// 0.15 の根拠: 切り抜き済みの素材は普通3割以上が透明。一方、白地や単色背景の
+// 上に被写体がある画像・クイック生成のストリップは透明率 0% なので、
+// 誤って除去を止めることはない。
+export const PRE_TRANSPARENT_MIN = 0.15;
+export function isPreTransparent(data, w, h) {
+  const n = w * h;
+  let clear = 0;
+  for (let i = 0; i < n; i++) if (data[i * 4 + 3] < ALPHA_VISIBLE) clear++;
+  let border = 0, clearBorder = 0;
+  const look = (x, y) => { border++; if (data[(y * w + x) * 4 + 3] < ALPHA_VISIBLE) clearBorder++; };
+  for (let x = 0; x < w; x++) { look(x, 0); look(x, h - 1); }
+  for (let y = 0; y < h; y++) { look(0, y); look(w - 1, y); }
+  const clearFrac = n ? clear / n : 0;
+  const borderClearFrac = border ? clearBorder / border : 0;
+  return {
+    clearFrac,
+    borderClearFrac,
+    preTransparent: clearFrac >= PRE_TRANSPARENT_MIN || borderClearFrac >= 0.6, // 後半は §59.6
+  };
+}
+
 export function removeBackground(data, w, h, opts = {}) {
-  const { bgColor = null, threshold = 48, glowWidth = 0, multiBg = false } = opts;
+  const { bgColor = null, threshold = 48, glowWidth = 0, multiBg = false, bgMode = "auto" } = opts; // §126: bgMode
   const out = new Uint8ClampedArray(data);
 
   // 自動背景色: 外周ピクセルの最頻色（16段量子化）
-  // §59.6: 外周がほぼ透明（60%以上）なら背景色の自動検出をしない。端に接した
+  // §59.6/§126: すでに透過済みの画像には色ベースの除去をしない。端に接した
   // スプライトの輪郭色を「背景」と誤検出し、閾値ぶんの暗色（黒い輪郭・足元）を
-  // 外側から食い尽くす事故を防ぐ（透明背景の画像に色ベースの除去は不要）。
+  // 外側から食い尽くす事故を防ぐ。判定は isPreTransparent（§126: 外周だけでなく
+  // 画像全体の透明率も見る）。bgMode で明示的に上書きできる。
   let bg = bgColor;
   let skipAutoBg = false;
-  if (!bg) {
-    let border = 0, clearBorder = 0;
-    const look = (x, y) => { border++; if (out[(y * w + x) * 4 + 3] < 32) clearBorder++; };
-    for (let x = 0; x < w; x++) { look(x, 0); look(x, h - 1); }
-    for (let y = 0; y < h; y++) { look(0, y); look(w - 1, y); }
-    skipAutoBg = border > 0 && clearBorder / border >= 0.6;
-  }
+  if (bgMode === "off") skipAutoBg = true;          // §126: 色では消さない
+  else if (bgMode === "on") skipAutoBg = false;     // §126: 透過済みでも消す
+  else if (!bg) skipAutoBg = isPreTransparent(out, w, h).preTransparent;
   if (!bg && !skipAutoBg) {
     const counts = new Map();
     const consider = (x, y) => {
@@ -79,7 +108,8 @@ export function removeBackground(data, w, h, opts = {}) {
       }
     }
   }
-  const bgColors = !bg ? [] : Array.isArray(bg[0]) ? bg : [bg];
+  // §126: "off" は明示的に渡された bgColor も使わない（色では一切消さない）
+  const bgColors = bgMode === "off" || !bg ? [] : Array.isArray(bg[0]) ? bg : [bg];
 
   const isBgLike = (o) => {
     if (out[o + 3] < 32) return true; // 元から透明
@@ -767,9 +797,10 @@ export function convertFramesShared(rawData, w, h, global, boxes, perFrameParams
   for (let i = 0; i < N; i++) {
     const pf = perFrameParams[i] || {};
     const th = pf.bgThreshold ?? 48, gw = pf.glowWidth ?? 0;
-    const bgKey = `${th}|${gw}`;
+    const bm = pf.bgMode ?? "auto"; // §126
+    const bgKey = `${th}|${gw}|${bm}`;
     let bg = bgByKey.get(bgKey);
-    if (!bg) { bg = removeBackground(rawData, w, h, { threshold: th, glowWidth: gw }); bgByKey.set(bgKey, bg); }
+    if (!bg) { bg = removeBackground(rawData, w, h, { threshold: th, glowWidth: gw, bgMode: bm }); bgByKey.set(bgKey, bg); } // §126
     frameBg.push(bg);
     const reg = regions[i];
     let x0 = reg.x1 + 1, y0 = reg.y1 + 1, x1 = reg.x0 - 1, y1 = reg.y0 - 1;

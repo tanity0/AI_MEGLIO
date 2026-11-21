@@ -7,7 +7,7 @@
 import {
   removeBackground, estimateGrid, convertImage, convertSheetImage,
   convertFramesShared, convertFramesExact, detectComponents,
-  detectExactPixelArt, applyFlatten, ALPHA_VISIBLE,
+  detectExactPixelArt, applyFlatten, ALPHA_VISIBLE, isPreTransparent,
 } from "./convert.js";
 
 // 元画像と背景除去済み配列を保持する入れ物を作る。
@@ -35,12 +35,17 @@ export function createOps() {
 
     // 背景除去 → 真ドット絵検出 → 連結成分検出。
     // studio.js の ensureBg が3回に分けて呼んでいたものを1往復にまとめる。
-    prepare({ threshold, glowWidth }) {
+    prepare({ threshold, glowWidth, bgMode = "auto" }) {
       needSrc();
-      if (!bg) bg = removeBackground(src.data, src.w, src.h, { threshold, glowWidth });
+      // §126: 色ベースの背景除去を実際に行ったかを呼び出し側へ返す。
+      // つまみが効かない状態をユーザーへ見せるために使う。
+      const pre = isPreTransparent(src.data, src.w, src.h);
+      const skipped = bgMode === "off" || (bgMode !== "on" && pre.preTransparent);
+      if (!bg) bg = removeBackground(src.data, src.w, src.h, { threshold, glowWidth, bgMode });
       return {
         exactInfo: detectExactPixelArt(bg, src.w, src.h),
         comps: detectComponents(bg, src.w, src.h),
+        bgInfo: { mode: bgMode, skipped, clearFrac: pre.clearFrac, borderClearFrac: pre.borderClearFrac }, // §126
       };
     },
 

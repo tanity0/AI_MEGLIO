@@ -5,7 +5,7 @@ import * as cw from "./convertclient.js"; // §114: 重い変換はワーカー�
 import { hexToRgba, defaultTags, drawFrameToContext } from "./app.js";
 
 // §30: フレーム別に持つつまみ（サイズ・共有パレット以外＝サンプリング/背景除去系）
-const PER_FRAME_KEYS = ["bgThreshold", "glowWidth", "domBlend", "centerWeight", "edgeProtect", "satProtect", "offsetDX", "offsetDY"];
+const PER_FRAME_KEYS = ["bgMode", "bgThreshold", "glowWidth", "domBlend", "centerWeight", "edgeProtect", "satProtect", "offsetDX", "offsetDY"]; // §126: bgMode
 
 let store = null;
 let toast = null;
@@ -83,6 +83,7 @@ function defaultKnobs() {
     centerWeight: 0.5,
     edgeProtect: 0.3,
     satProtect: 0.5,
+    bgMode: "auto", // §126: 自動/する/しない
     bgThreshold: 48,
     glowWidth: 0,
   };
@@ -128,10 +129,21 @@ async function ensureSourceSent() {
 async function ensureBg() {
   await ensureSourceSent();
   if (!bgReady) {
+    // §126.7: ワーカー側の背景除去結果を必ず捨ててから作り直す。
+    // convertops.prepare は `if (!bg)` で守られているため、捨てずに呼ぶと
+    // 最初に計算した結果が使われ続ける。§114 でワーカー化したときから
+    // clearBg がどこからも呼ばれておらず、素材を読み込んだあとに
+    // 「背景除去閾値」を動かしても効いていなかった。
+    // bgReady が false になるのは「つまみが変わった」「素材が変わった」
+    // ときだけなので、ここで捨てるのが正しい。
+    await cw.call("clearBg");
     const out = await cw.call("prepare", {
       threshold: knobs.bgThreshold,
       glowWidth: knobs.glowWidth,
+      bgMode: knobs.bgMode, // §126
     });
+    bgInfo = out.bgInfo || null; // §126
+    syncBgModeUi();
     bgReady = true;
     split.gridBoxes = null; // §114: 背景が変われば区画内bboxも変わる
     grid = null; // 背景が変わればグリッドも再推定
@@ -290,6 +302,13 @@ async function runConvert() {
       (!knobs.oneToOne && exactInfo?.ok && res.srcCellSize && Math.abs(res.srcCellSize / exactInfo.block - Math.round(res.srcCellSize / exactInfo.block)) < 1e-6
         ? `・セルを元絵の${exactInfo.block}px格子に吸着` : "") + // §110
       (nf > 1 ? `・${nf}フレーム（プレビュー: フレーム${activeFrame + 1}）・共有パレット` : "") +
+      // §126: 色ベースの背景除去が効いていないときは、その理由を出す。
+      // 黙って止めると「透過されない」と誤解され、黙って効かせると絵を食う。
+      (knobs.bgMode === "off"
+        ? "・背景除去なし（しない）"
+        : bgInfo && bgInfo.skipped
+          ? `・背景除去なし（透過済みの画像・透明${Math.round(bgInfo.clearFrac * 100)}%）`
+          : "") +
       (candidateAutoNote ? ` ｜ ${candidateAutoNote}` : ""); // §43/§44: 自動調整の結果を併記
     syncTargetHNote(); // §106
     renderFrameBar();
@@ -333,6 +352,18 @@ function resultCanvasFor(res) {
   return resCanvasCache.canvas;
 }
 function dropResCanvasCache() { resCanvasCache = { key: null, canvas: null }; }
+
+// §126: 色ベースの背景除去を実際に行ったか（ワーカーからの報告）
+let bgInfo = null;
+// §126: 除去が効いていないときに「背景除去閾値」を無効表示にする。
+// 効かないつまみが動かせると「動かしたのに変わらない」という誤解のもとになる。
+function syncBgModeUi() {
+  const row = $("studioBgThresholdRow");
+  const sl = $("studioBgThreshold");
+  const skipped = knobs.bgMode === "off" || !!(bgInfo && bgInfo.skipped);
+  if (sl) sl.disabled = skipped;
+  if (row) row.style.opacity = skipped ? "0.45" : "";
+}
 
 let srcBitmapCanvas = null;
 function renderCompare() {
@@ -711,6 +742,7 @@ const KNOB_BINDINGS = [
   ["studioCenterWeight", "centerWeight", Number],
   ["studioEdgeProtect", "edgeProtect", Number],
   ["studioSatProtect", "satProtect", Number],
+  ["studioBgMode", "bgMode", String], // §126
   ["studioBgThreshold", "bgThreshold", Number],
   ["studioGlowWidth", "glowWidth", Number],
 ];
@@ -747,6 +779,7 @@ function syncKnobUi() {
   $("studioOffsetDY").textContent = String(knobs.offsetDY);
   $("studioColorsLabel").textContent = String(knobs.colors);
   syncTargetHNote(); // §103
+  syncBgModeUi(); // §126
 }
 
 function attachKnobs() {
@@ -775,7 +808,7 @@ function attachKnobs() {
       if (key === "colors") $("studioColorsLabel").textContent = String(knobs.colors);
       // §30: 多フレームでは背景除去はフレーム別に convertFramesShared 内で行うため
       // bgCache/ボックス検出は無効化しない（フレーム分割を安定させる）。単一時は従来どおり。
-      if ((key === "bgThreshold" || key === "glowWidth") && !isMulti()) {
+      if ((key === "bgThreshold" || key === "glowWidth" || key === "bgMode") && !isMulti()) { // §126
         bgReady = false; // 背景キャッシュ破棄 → グリッド再推定
       }
       // §30: 多フレームの per-frame つまみはアクティブフレームへ即時反映
@@ -1026,6 +1059,7 @@ async function loadSource(dataUrl) {
   srcSentGen = 0;
   bgReady = false;
   grid = null;
+  bgInfo = null; // §126
   result = null;
   dropResCanvasCache(); // §125
   frameParams = [];
@@ -1107,6 +1141,7 @@ export async function openStudioForCandidate(dataUrl, opts) {
   for (const k of ["bgThreshold", "glowWidth", "edgeProtect", "satProtect", "domBlend", "centerWeight", "sizeDelta", "offsetDX", "offsetDY"]) {
     if (typeof cp[k] === "number") knobs[k] = cp[k];
   }
+  if (cp.bgMode === "auto" || cp.bgMode === "on" || cp.bgMode === "off") knobs.bgMode = cp.bgMode; // §126
   if (cp.grid && typeof cp.grid.s === "number") grid = { ...cp.grid };
   $("studioPanel").hidden = false;
   $("studioGallery").innerHTML = "";
